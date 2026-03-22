@@ -1,4 +1,4 @@
-# ProTrade | Strategy Deep Dive
+# ProTrade | Strategy Deep Dive (v1.1)
 
 ProTrade uses a multi-layered approach to trading, combining specific technical setups with broad market gating and adaptive risk management. All strategies are **EOD (End of Day)**, meaning they evaluate data at the close and plan entries for the next market open.
 
@@ -22,19 +22,13 @@ Before any individual stock is evaluated, the system analyzes the broad market t
 
 *   **Setup Conditions**:
     *   **Trend Alignment**: EMA20 must be above EMA50.
-    *   **Weekly Bias**: Weekly EMA20 > Weekly EMA50 (optional filter).
-    *   **Pullback Zone**: The price must "touch" the band between EMA20 and EMA50 (or be within 0.5% of EMA20).
-    *   **Momentum Filter**: RSI14 must be between **40 and 55** (ensuring the stock is in a dip, not overextended).
+    *   **ATR-Normalized Touch (v1.1)**: Price must be within **0.3 ATR** of EMA20 or inside the EMA20-50 band.
+    *   **Momentum Filter**: RSI14 must be between **40 and 55**.
+    *   **Earnings Block (v1.1)**: No entries within 2 trading days of earnings.
 *   **Execution**:
-    *   **Entry**: `NEXT_OPEN` (Market order at next open).
+    *   **Entry**: `NEXT_OPEN`.
     *   **Stop Loss**: `Entry - (2.0 * ATR14)`.
     *   **Target**: `Entry + (3.0 * ATR14)`.
-
-#### Example: TATASTEEL.NS (Pullback)
-*   **Trend**: EMA20 (145) > EMA50 (140) — Bullish.
-*   **Dip**: Price retraces from 155 to **145.20** (touches EMA20).
-*   **Momentum**: RSI14 is **48** (healthy pullback, not oversold).
-*   **Signal**: GENERATED (BUY).
 
 ---
 
@@ -42,19 +36,14 @@ Before any individual stock is evaluated, the system analyzes the broad market t
 **Concept**: Riding momentum when a stock clears a high-conviction resistance level.
 
 *   **Setup Conditions**:
-    *   **Regime**: Must be `TREND` (Bullish).
+    *   **Regime**: Must be `TREND`.
     *   **Trend Alignment**: EMA20 > EMA50.
-    *   **The Break**: Today's **Close** must be higher than the **High** of the previous 20 trading days.
+    *   **20-Day High**: Today's Close > High of previous 20 trading days.
+    *   **Volume Confirm (v1.1)**: Volume must be **>= 1.2x SMA20 Volume**.
 *   **Execution**:
     *   **Entry**: `NEXT_OPEN`.
     *   **Stop Loss**: `Entry - (2.0 * ATR14)`.
     *   **Target**: `Entry + (3.0 * ATR14)`.
-
-#### Example: RELIANCE.NS (Breakout)
-*   **Trend**: Market is in `TREND` regime.
-*   **Resistance**: Prev 20-day high is **2950**.
-*   **The Break**: Stock closes at **2965** on high volume.
-*   **Signal**: GENERATED (BUY).
 
 ---
 
@@ -63,18 +52,11 @@ Before any individual stock is evaluated, the system analyzes the broad market t
 
 *   **Setup Conditions**:
     *   **Regime**: Must be `RANGE`.
-    *   **Volatility Context**: Price must close **below the Lower Bollinger Band** (2 standard deviations).
-    *   **Oversold Filter**: RSI14 must be **below 30**.
+    *   **Trend Neutrality (v1.1)**: |EMA20 - EMA50| / Close must be **< 1%**.
+    *   **Extreme**: Price Close < Lower Bollinger Band (2 SD).
+    *   **Oversold**: RSI14 < 30.
 *   **Execution**:
     *   **Entry**: `NEXT_OPEN`.
-    *   **Stop Loss**: `Entry - (2.0 * ATR14)`.
-    *   **Target**: `Entry + (3.0 * ATR14)`.
-
-#### Example: INFY.NS (Mean Reversion)
-*   **Market**: `RANGE`bound regime.
-*   **Extreme**: Lower Bollinger Band is at **1420**.
-*   **Oversold**: Price closes at **1412** with RSI at **28**.
-*   **Signal**: GENERATED (BUY).
 
 ---
 
@@ -82,36 +64,30 @@ Before any individual stock is evaluated, the system analyzes the broad market t
 **Concept**: "Selling the rip" during a confirmed downtrend.
 
 *   **Setup Conditions**:
-    *   **Regime**: Must be `BEAR` or `HIGH_VOL`.
-    *   **Trend Confirmation**: EMA20 must be below EMA50.
-    *   **The Bounce**: Price retraces upwards to "touch" the resistance band between EMA20 and EMA50.
-    *   **Momentum Filter**: RSI14 must be between **45 and 65** (bounce has strength but isn't a reversal).
+    *   **Regime**: `BEAR` or `HIGH_VOL`.
+    *   **Trend Confirmation**: EMA20 < EMA50.
+    *   **The Bounce**: ATR-normalized touch (0.3 ATR) of EMA20 or inside EMA band.
+    *   **Momentum Filter**: RSI14 between **45 and 65**.
 *   **Execution**:
-    *   **Direction**: SELL (Short).
-    *   **Entry**: `NEXT_OPEN`.
     *   **Stop Loss**: `Entry + (2.0 * ATR14)`.
-    *   **Target**: `Entry - (3.0 * ATR14)`.
-
-#### Example: SAIL.NS (Short Bounce)
-*   **Trend**: EMA20 (154) < EMA50 (160) — Bearish.
-*   **Bounce**: Price rallies from 148 to **155.52** (touches EMA20 resistance).
-*   **Momentum**: RSI14 is **52** (relief rally in progress).
-*   **Signal**: GENERATED (SELL).
+    *   **Target**: `Entry - (3.0 * ATR14)` (Overrides to **2.0 ATR** in `HIGH_VOL` regime).
 
 ---
 
-## 6. Risk & Portfolio Management (Rules of Engagement)
+## 6. Exit Management & Priority (v1.1)
 
-The app prioritizes survival and risk preservation over raw returns.
+The system manages open positions daily using a strict **Exit Priority** to protect capital:
 
-*   **Adaptive Sizing**: Positions are sized so that a stop-loss hit only loses **0.5% of total equity** (base risk). This is then further scaled down by the Regime's **Risk Multiplier**.
-*   **Portfolio Heat**: The system tracks "Total Open R" (sum of all risk) and enforces a cap (e.g., 4R total).
-*   **Correlation Clusters**: The system prevents over-concentration by limiting exposure to symbols with correlation > 0.75.
+1.  **HARD STOP**: Triggered if price hits the volatility-adjusted stop. (Highest Priority)
+2.  **TIME STOP**: If a trade is open for **5 trading days** and has not reached **+1.0 ATR** in profit, it is closed at the market.
+3.  **PARTIAL PROFIT**: If price reaches **+1.5 ATR** in profit, the system sells **33% (1/3rd)** of the position and moves the stop loss to **Breakeven**.
+4.  **PROFIT TARGET**: The final 2/3rds are held until the 3.0 ATR target is reached.
 
 ---
 
-## 7. Technical Indicators Used
-*   **EMA (20, 50)**: Trend and buy-zone detection.
+## 7. Technical Indicators Used (v1.1)
+*   **EMA (20, 50)**: Trend and ATR-normalized buy-zone detection.
 *   **RSI (14)**: Momentum and overextension gating.
-*   **ATR (14)**: Volatility-adjusted risk management.
+*   **ATR (14)**: Volatility-adjusted risk, stops, targets, and touch proximity.
 *   **Bollinger Bands**: Mean reversion boundaries.
+*   **Volume SMA (20)**: Breakout confirmation threshold.
