@@ -64,6 +64,7 @@ export interface Features {
     ret20d: number;
   };
   barsCount?: number; // Added for dashboard inventory grouping
+  volSma20?: number; // Added for V1.1 breakout confirmation
   liquidity?: {
     medVol20: number;
     medTradedValue20: number;
@@ -131,6 +132,7 @@ export interface Signal {
     hitStop?: boolean;
     hitTarget?: boolean;
   };
+  features?: Features; // Attached features for EOD logic
 }
 
 export interface PaperOrder {
@@ -155,7 +157,7 @@ export interface PaperFill {
   fillQty: number;
   slippageBps: number;
   feeEstimate: number;
-  fillType: 'ENTRY' | 'EXIT_STOP' | 'EXIT_TARGET' | 'EXIT_TIME' | 'EXIT_THESIS';
+  fillType: 'ENTRY' | 'EXIT_STOP' | 'EXIT_TARGET' | 'EXIT_TIME' | 'EXIT_THESIS' | 'PARTIAL_PROFIT';
   timestamp: FirebaseFirestore.Timestamp;
 }
 
@@ -174,6 +176,12 @@ export interface PaperPosition {
   entryFillId: string;
   exitFillId?: string;
   exitReason?: PaperFill['fillType'];
+  
+  // V1.1 Enhanced Tracking
+  atrAtEntry?: number;
+  partialTaken?: boolean;
+  mfeAtr?: number;
+  entryDateId?: string;
 }
 
 export interface Trade {
