@@ -399,17 +399,19 @@ export async function runMorningLogic(targetDate: string, targetJobId: string, t
   try {
     await db.collection('jobs').doc(targetJobId).update({ stage: 'ORDERS' });
     
-    // Dispatch tasks for each symbol
-    const taskPromises = symbols.map(symbol => 
-      taskClient.enqueueDispatch('processMorningSymbolTask', {
+    // Dispatch tasks for each symbol (Sequential to prevent gRPC/Memory congestion)
+    console.log(`[Morning Job ${targetJobId}] Dispatching ${symbols.length} tasks at 100ms intervals...`);
+    for (const symbol of symbols) {
+      await taskClient.enqueueDispatch('processMorningSymbolTask', {
         jobId: targetJobId,
         date: targetDate,
         symbol
-      })
-    );
+      });
+      // 100ms delay is safe for Google's internal dispatching
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
     
-    await Promise.all(taskPromises);
-    console.log(`[Morning Job ${targetJobId}] Dispatched ${taskPromises.length} symbol tasks.`);
+    console.log(`[Morning Job ${targetJobId}] All ${symbols.length} symbol tasks dispatched.`);
     
     await db.collection('jobs').doc(targetJobId).update({ stage: 'DONE', status: 'DONE', updatedAt: Timestamp.now() });
     
