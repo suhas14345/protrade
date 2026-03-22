@@ -11,7 +11,15 @@ import * as strategy from './services/strategy';
 import * as risk from './services/risk';
 import * as tradeManager from './services/tradeManager';
 
-// Options for public functions to avoid auth issues during transition
+// Options for orchestrator functions (need more time for sequential enqueuing)
+const orchestratorOptions = {
+  memory: '1GiB' as const,
+  timeoutSeconds: 3600,
+  cors: true,
+  invoker: 'public' as const,
+};
+
+// Options for normal task handlers
 const publicOptions = {
   memory: '512MiB' as const,
   timeoutSeconds: 900,
@@ -20,8 +28,8 @@ const publicOptions = {
 };
 
 // --- Orchestrator / Job Control ---
-export const startEodRun = onRequest(publicOptions, (req, res) => orchestrator.doStartEodRun(req, res));
-export const startMorningExecution = onRequest(publicOptions, (req, res) => orchestrator.doStartMorningExecution(req, res));
+export const startEodRun = onRequest(orchestratorOptions, (req, res) => orchestrator.doStartEodRun(req, res));
+export const startMorningExecution = onRequest(orchestratorOptions, (req, res) => orchestrator.doStartMorningExecution(req, res));
 export const terminateJob = onRequest({ cors: true, invoker: 'public' }, (req, res) => orchestrator.terminateJob(req, res));
 export const probeLogs = onRequest({ cors: true, invoker: 'public' }, (req, res) => {
     res.status(200).send({ message: "probeLogs placeholder - check Firestore for real-time status" });
