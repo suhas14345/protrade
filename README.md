@@ -56,3 +56,6 @@ Open the provided `localhost` URL in your browser.
 - **Backend**: Firebase Cloud Functions (Gen 1), Firestore.
 - **Frontend**: React, Vite, Lucide-React.
 - **Data**: Yahoo Finance 2, TechnicalIndicators.
+
+## 📖 Documentation
+- **[STRATEGIES.md](STRATEGIES.md)**: Detailed breakdown of the trading strategies (Pullback, Breakout, Mean Reversion, Short Bounce), market regimes, and risk management rules.
