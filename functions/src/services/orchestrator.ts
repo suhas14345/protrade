@@ -400,15 +400,15 @@ export async function runMorningLogic(targetDate: string, targetJobId: string, t
     await db.collection('jobs').doc(targetJobId).update({ stage: 'ORDERS' });
     
     // Dispatch tasks for each symbol (Sequential to prevent gRPC/Memory congestion)
-    console.log(`[Morning Job ${targetJobId}] Dispatching ${symbols.length} tasks at 100ms intervals...`);
+    console.log(`[Morning Job ${targetJobId}] Dispatching ${symbols.length} tasks at 350ms intervals...`);
     for (const symbol of symbols) {
       await taskClient.enqueueDispatch('processMorningSymbolTask', {
         jobId: targetJobId,
         date: targetDate,
         symbol
       });
-      // 100ms delay is safe for Google's internal dispatching
-      await new Promise(resolve => setTimeout(resolve, 100));
+      // 350ms delay is mandatory to respect Kite API limits and system stability
+      await new Promise(resolve => setTimeout(resolve, 350));
     }
     
     console.log(`[Morning Job ${targetJobId}] All ${symbols.length} symbol tasks dispatched.`);
