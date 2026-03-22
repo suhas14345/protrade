@@ -15,7 +15,6 @@ export async function doEvaluateOutcomes(dateId: string) {
   console.log(`[OutcomeEvaluator] Evaluating returns for signals on ${dateId}`);
 
   // Find signals that were FILLED or more and are missing monitor data
-  // Note: we might run this multiple times as days pass to fill in R3, R5
   const signalsSnap = await db.collection('signals')
     .doc(dateId)
     .collection('items')
@@ -30,7 +29,11 @@ export async function doEvaluateOutcomes(dateId: string) {
 
     const entryPrice = signal.execution.entryPrice;
     const entryDateId = signal.execution.entryDateId;
-    const stopPrice = signal.stopPrice;
+    
+    // Gap 4: Use definitive stopPrice, fallback to indicative if needed (should not happen if FILLED)
+    const stopPrice = signal.stopPrice ?? signal.indicativeStopPrice;
+    const targets = signal.targets ?? signal.indicativeTargets;
+    
     const riskPerShare = Math.abs(entryPrice - stopPrice);
     if (riskPerShare === 0) continue;
 
@@ -64,12 +67,12 @@ export async function doEvaluateOutcomes(dateId: string) {
         monitor.mfeR = (Math.max(...highs) - entryPrice) / riskPerShare;
         monitor.maeR = (entryPrice - Math.min(...lows)) / riskPerShare;
         monitor.hitStop = Math.min(...lows) <= stopPrice;
-        monitor.hitTarget = Math.max(...highs) >= (signal.targets[0] || 0);
+        monitor.hitTarget = Math.max(...highs) >= (targets[0] || 0);
     } else {
         monitor.mfeR = (entryPrice - Math.min(...lows)) / riskPerShare;
         monitor.maeR = (Math.max(...highs) - entryPrice) / riskPerShare;
         monitor.hitStop = Math.max(...highs) >= stopPrice;
-        monitor.hitTarget = Math.min(...lows) <= (signal.targets[0] || 0);
+        monitor.hitTarget = Math.min(...lows) <= (targets[0] || 0);
     }
 
     await db.collection('signals').doc(dateId).collection('items').doc(signalId).update({ monitor });

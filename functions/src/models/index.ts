@@ -104,9 +104,13 @@ export interface Signal {
   entryPlan: {
     type: 'NEXT_OPEN';
   };
-  stopPrice: number;
-  targets: number[];
-  rr: number;
+  indicativeStopPrice: number;
+  indicativeTargets: number[];
+  indicativeRr: number;
+  // Final values populated at Execution/Fill (Gap 4)
+  stopPrice?: number;
+  targets?: number[];
+  rr?: number;
   checklist: Record<string, boolean>;
   reasons: Record<string, any>;
   status: 'NEW' | 'APPROVED' | 'REJECTED' | 'ORDERED' | 'IN_TRADE' | 'DONE' | 'REJECTED_BY_RISK' | 'CANCELLED';
@@ -133,11 +137,16 @@ export interface Signal {
     hitTarget?: boolean;
   };
   features?: Features; // Attached features for EOD logic
+
+  // v1.1 ATR-based Rules for Execution
+  atrRef?: number;
+  stopAtrMult?: number;
+  targetAtrMult?: number;
 }
 
 export interface PaperOrder {
   symbol: string;
-  side: 'BUY';
+  side: 'BUY' | 'SELL';
   orderType: 'NEXT_OPEN';
   intendedQty: number;
   intendedEntryRef: 'OPEN';

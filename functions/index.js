@@ -1898,15 +1898,16 @@ async function runMorningLogic(targetDate, targetJobId, targetUniverse = "nifty5
   await db.collection("jobs").doc(targetJobId).set(newJob);
   try {
     await db.collection("jobs").doc(targetJobId).update({ stage: "ORDERS" });
-    const taskPromises = symbols.map(
-      (symbol) => taskClient.enqueueDispatch("processMorningSymbolTask", {
+    console.log(`[Morning Job ${targetJobId}] Dispatching ${symbols.length} tasks at 350ms intervals...`);
+    for (const symbol of symbols) {
+      await taskClient.enqueueDispatch("processMorningSymbolTask", {
         jobId: targetJobId,
         date: targetDate,
         symbol
-      })
-    );
-    await Promise.all(taskPromises);
-    console.log(`[Morning Job ${targetJobId}] Dispatched ${taskPromises.length} symbol tasks.`);
+      });
+      await new Promise((resolve) => setTimeout(resolve, 350));
+    }
+    console.log(`[Morning Job ${targetJobId}] All ${symbols.length} symbol tasks dispatched.`);
     await db.collection("jobs").doc(targetJobId).update({ stage: "DONE", status: "DONE", updatedAt: import_firestore7.Timestamp.now() });
     try {
       const { generateJobReport: generateJobReport2 } = await Promise.resolve().then(() => (init_reporting(), reporting_exports));
@@ -2478,11 +2479,12 @@ var diagnostics = functionsV18.https.onRequest(async (req, res) => {
 });
 var probeInventory = (0, import_https2.onRequest)({ cors: true, invoker: "public", memory: "1GiB", timeoutSeconds: 300 }, async (req, res) => {
   const db = getDb14();
+  const dateId = (/* @__PURE__ */ new Date()).toISOString().split("T")[0].replace(/-/g, "");
   try {
     const symbolRefs = await db.collection("barsD").listDocuments();
     const inventoryMap = {};
-    const BATCH_SIZE = 20;
-    const sampleLimit = 200;
+    const BATCH_SIZE = 25;
+    const sampleLimit = 250;
     const targetRefs = symbolRefs.slice(0, sampleLimit);
     for (let i = 0; i < targetRefs.length; i += BATCH_SIZE) {
       const chunk = targetRefs.slice(i, i + BATCH_SIZE);
@@ -2495,10 +2497,30 @@ var probeInventory = (0, import_https2.onRequest)({ cors: true, invoker: "public
       }));
     }
     const groupings = Object.entries(inventoryMap).map(([bars, symbols]) => ({ bars: Number(bars), symbols })).sort((a, b) => b.bars - a.bars);
+    const signalsSnap = await db.collection("signals").doc(dateId).collection("items").get();
+    const signalsByStrategy = {};
+    const signalsByStatus = {};
+    signalsSnap.docs.forEach((doc) => {
+      const data = doc.data();
+      signalsByStrategy[data.strategy] = (signalsByStrategy[data.strategy] || 0) + 1;
+      signalsByStatus[data.status] = (signalsByStatus[data.status] || 0) + 1;
+    });
+    const signalStats = {
+      total: signalsSnap.size,
+      byStrategy: Object.entries(signalsByStrategy).map(([name, count]) => ({ name, count })),
+      byStatus: Object.entries(signalsByStatus).map(([name, count]) => ({ name, count }))
+    };
+    const universeSnap = await db.collection("universes").get();
+    const universes = await Promise.all(universeSnap.docs.map(async (d) => {
+      const members = await d.ref.collection("members").count().get();
+      return { id: d.id, count: members.data().count };
+    }));
     res.status(200).json({
       groupings,
       totalSymbolsTracked: symbolRefs.length,
       sampleSize: targetRefs.length,
+      signalStats,
+      universes,
       timestamp: admin14.firestore.Timestamp.now().toDate().toISOString()
     });
   } catch (err) {
@@ -2615,14 +2637,20 @@ var manageTradesTask = functionsV19.https.onRequest(async (req, res) => {
 });
 
 // src/index.ts
+var orchestratorOptions = {
+  memory: "1GiB",
+  timeoutSeconds: 3600,
+  cors: true,
+  invoker: "public"
+};
 var publicOptions = {
   memory: "512MiB",
   timeoutSeconds: 900,
   cors: true,
   invoker: "public"
 };
-var startEodRun = (0, import_https3.onRequest)(publicOptions, (req, res) => doStartEodRun(req, res));
-var startMorningExecution = (0, import_https3.onRequest)(publicOptions, (req, res) => doStartMorningExecution(req, res));
+var startEodRun = (0, import_https3.onRequest)(orchestratorOptions, (req, res) => doStartEodRun(req, res));
+var startMorningExecution = (0, import_https3.onRequest)(orchestratorOptions, (req, res) => doStartMorningExecution(req, res));
 var terminateJob2 = (0, import_https3.onRequest)({ cors: true, invoker: "public" }, (req, res) => terminateJob(req, res));
 var probeLogs = (0, import_https3.onRequest)({ cors: true, invoker: "public" }, (req, res) => {
   res.status(200).send({ message: "probeLogs placeholder - check Firestore for real-time status" });

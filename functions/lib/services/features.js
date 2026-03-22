@@ -142,6 +142,7 @@ async function doComputeFeatures(jobId, symbol, runDate) {
         bbMid: bb.middle,
         bbLower: bb.lower,
         bbUpper: bb.upper,
+        volSma20: bars.slice(-20).reduce((a, b) => a + (b.volume || 0), 0) / Math.min(20, bars.length),
         trendState,
         computedAt: firestore_1.Timestamp.now(),
         swing: {

@@ -277,12 +277,21 @@ async function runEodLogic(targetDate, targetJobId, targetUniverse = 'nifty50') 
     const universeSnap = await db.collection('universes').doc(targetUniverse).collection('members').get();
     const indexSymbol = '^NSEI';
     const symbols = universeSnap.docs.map((d) => d.id).filter((s) => s !== indexSymbol);
+    const dateId = targetDate.replace(/-/g, '');
     // Update job with total count and stage
     await db.collection('jobs').doc(targetJobId).update({
         'counts.total': symbols.length,
         stage: 'FETCH'
     });
     try {
+        // 0. Trade Management (Risk-First: Process exits before new entries)
+        const { doManageTrades } = await Promise.resolve().then(() => __importStar(require('./tradeManager')));
+        try {
+            await doManageTrades(dateId);
+        }
+        catch (err) {
+            console.error(`[Job ${targetJobId}] Trade management failed: ${err}. Continuing...`);
+        }
         // 1. Index Processing
         const { doFetchCandles } = await Promise.resolve().then(() => __importStar(require('./marketdata')));
         const { doComputeFeatures } = await Promise.resolve().then(() => __importStar(require('./features')));
@@ -303,7 +312,9 @@ async function runEodLogic(targetDate, targetJobId, targetUniverse = 'nifty50') 
         // Holiday Check: Only abort if NO recent index data exists at all (last 5 days).
         // We query backwards because weekends/holidays may mean today's bar doesn't exist,
         // but yesterday's (or Friday's) bar proves the market was open recently.
-        const dateId = targetDate.replace(/-/g, '');
+        // Holiday Check: Only abort if NO recent index data exists at all (last 5 days).
+        // We query backwards because weekends/holidays may mean today's bar doesn't exist,
+        // but yesterday's (or Friday's) bar proves the market was open recently.
         const recentIndexSnap = await db.collection('barsD').doc(targetIndex).collection('days')
             .where(admin.firestore.FieldPath.documentId(), '<=', dateId)
             .orderBy(admin.firestore.FieldPath.documentId(), 'desc')
@@ -399,14 +410,18 @@ async function runMorningLogic(targetDate, targetJobId, targetUniverse = 'nifty5
     await db.collection('jobs').doc(targetJobId).set(newJob);
     try {
         await db.collection('jobs').doc(targetJobId).update({ stage: 'ORDERS' });
-        // Dispatch tasks for each symbol
-        const taskPromises = symbols.map(symbol => tasks_1.taskClient.enqueueDispatch('processMorningSymbolTask', {
-            jobId: targetJobId,
-            date: targetDate,
-            symbol
-        }));
-        await Promise.all(taskPromises);
-        console.log(`[Morning Job ${targetJobId}] Dispatched ${taskPromises.length} symbol tasks.`);
+        // Dispatch tasks for each symbol (Sequential to prevent gRPC/Memory congestion)
+        console.log(`[Morning Job ${targetJobId}] Dispatching ${symbols.length} tasks at 350ms intervals...`);
+        for (const symbol of symbols) {
+            await tasks_1.taskClient.enqueueDispatch('processMorningSymbolTask', {
+                jobId: targetJobId,
+                date: targetDate,
+                symbol
+            });
+            // 350ms delay is mandatory to respect Kite API limits and system stability
+            await new Promise(resolve => setTimeout(resolve, 350));
+        }
+        console.log(`[Morning Job ${targetJobId}] All ${symbols.length} symbol tasks dispatched.`);
         await db.collection('jobs').doc(targetJobId).update({ stage: 'DONE', status: 'DONE', updatedAt: firestore_1.Timestamp.now() });
         try {
             const { generateJobReport } = await Promise.resolve().then(() => __importStar(require('./reporting')));

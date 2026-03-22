@@ -68,7 +68,6 @@ export async function doProcessRisk(dateId: string, jobId?: string) {
     sectorCounts[sector] = (sectorCounts[sector] || 0) + 1;
     
     // Normalized risk (R-multiple) at time of entry: riskAmount / (equity_at_entry * baseRiskPct)
-    // For simplicity, we use current equity and baseRiskPct to estimate current R-heat.
     const posRiskAmount = (pos as any).riskAmount || 0;
     const rMultiple = posRiskAmount / (account.equity * account.baseRiskPct);
     currentHeatR += rMultiple;
@@ -78,13 +77,14 @@ export async function doProcessRisk(dateId: string, jobId?: string) {
 
   for (const signal of signals) {
     // Load Symbol Meta for Sector
-    const symbolMetaSnap = await db.collection('universes').doc('nifty500').collection('members').doc(signal.symbol).get();
+    // Fallback if collection doesn't exist
+    const symbolMetaSnap = await db.collection('settings').doc('universe').collection('members').doc(signal.symbol).get();
     const sector = symbolMetaSnap.exists ? (symbolMetaSnap.data() as any).sector : 'UNKNOWN';
 
     // A. Sizing Logic
     const strategyWeight = account.strategyRiskWeights[signal.strategy] || 1.0;
-    const plannedEntry = signal.reasons.close; // Approximation for NEXT_OPEN
-    const stopPrice = signal.stopPrice;
+    const plannedEntry = Number(signal.reasons.close); 
+    const stopPrice = Number(signal.indicativeStopPrice); // Gap 4: Use indicative for sizing
     
     const riskPerShare = Math.abs(plannedEntry - stopPrice);
     if (riskPerShare === 0) {

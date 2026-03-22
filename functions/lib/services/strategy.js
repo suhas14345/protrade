@@ -39,27 +39,87 @@ const functionsV1 = __importStar(require("firebase-functions"));
 const admin = __importStar(require("firebase-admin"));
 const runtime_1 = require("../config/runtime");
 const safety_1 = require("./safety");
-const logger_1 = require("./logger");
 const getDb = () => {
     if (admin.apps.length === 0)
         admin.initializeApp();
     return admin.firestore();
 };
 const toDateId = (date) => date.replace(/-/g, '');
+/**
+ * Helper: V1.1 Mandatory ATR Proximity (Strict)
+ */
+function isAtrNormalizedEmaTouch(close, ema20, ema50, atr14) {
+    if (atr14 <= 0)
+        return false;
+    if (Math.abs(close - ema20) <= runtime_1.STRATEGY_V11.EMA_TOUCH_ATR_MULT * atr14)
+        return true;
+    const lo = Math.min(ema20, ema50);
+    const hi = Math.max(ema20, ema50);
+    if (close >= lo && close <= hi)
+        return true;
+    return false;
+}
+/**
+ * Helper: V1.1 Volume Breakout Confirm (Strict)
+ */
+function breakoutVolumeOk(symbol, volume, volSma20) {
+    const v = Number(volume);
+    const vsma = Number(volSma20);
+    if (!vsma || vsma <= 0) {
+        console.warn(`[Strategy] Strict volume check failed for ${symbol}: volSma20 missing or zero.`);
+        return false;
+    }
+    return v >= runtime_1.STRATEGY_V11.BREAKOUT_VOL_MULT * vsma;
+}
+/**
+ * Helper: V1.1 Trend Neutrality
+ */
+function isTrendNeutral(close, ema20, ema50) {
+    return (Math.abs(ema20 - ema50) / close) < runtime_1.STRATEGY_V11.RANGE_TREND_NEUTRAL_MAX;
+}
+/**
+ * Helper: V1.1 Earnings Block (Hardened Gap 1 & 5)
+ * Blocks entries within 2 trading days of earnings using Date math.
+ */
+async function isEntryBlockedByEarnings(symbol, runDateId) {
+    var _a;
+    if (!runtime_1.STRATEGY_V11.ENABLE_EARNINGS_BLOCK)
+        return false;
+    const db = getDb();
+    // Location: Clean earnings root doc (Gap 5)
+    const earningsSnap = await db.collection('earnings').doc(symbol).get();
+    const nextEarningsDateId = (_a = earningsSnap.data()) === null || _a === void 0 ? void 0 : _a.nextEarningsDateId;
+    if (!nextEarningsDateId)
+        return false;
+    // Real Date Math to avoid YYYYMMDD subtraction errors (Gap 1)
+    const parseDateId = (id) => new Date(`${id.slice(0, 4)}-${id.slice(4, 6)}-${id.slice(6, 8)}`);
+    const d1 = parseDateId(runDateId);
+    const d2 = parseDateId(nextEarningsDateId);
+    const diffDays = Math.ceil((d2.getTime() - d1.getTime()) / (1000 * 60 * 60 * 24));
+    // Rule: Gap of 0 (today) to 4 (approx 2 trading days + weekend)
+    if (diffDays >= 0 && diffDays <= 4) {
+        console.log(`[Strategy] ${symbol} blocked by earnings on ${nextEarningsDateId} (Days: ${diffDays})`);
+        return true;
+    }
+    return false;
+}
+/**
+ * Optimized Historical Bar Fetch (Gap 3)
+ */
 async function getRecentBarsOnOrBefore(db, symbol, dateId, limit) {
     const snap = await db
         .collection('barsD')
         .doc(symbol)
         .collection('days')
         .where(admin.firestore.FieldPath.documentId(), '<=', dateId)
+        .orderBy(admin.firestore.FieldPath.documentId(), 'desc') // Optimized
+        .limit(limit)
         .get();
     if (snap.empty)
         return [];
-    // Emulator might not support desc, so we sort in memory
     return snap.docs
         .map(d => (Object.assign({ id: d.id }, d.data())))
-        .sort((a, b) => a.id.localeCompare(b.id))
-        .slice(-limit);
+        .reverse(); // Back to chronological order
 }
 function isFinitePos(n) {
     const x = Number(n);
@@ -69,165 +129,132 @@ function isFinitePos(n) {
  * Evaluate strategies and generate signals for a symbol.
  */
 async function doEvaluateSignals(jobId, symbol, runDate) {
-    var _a, _b, _c;
+    var _a;
     const db = getDb();
     const dateId = toDateId(runDate);
-    // Optimization: Skip if signals already exist for this symbol/date
-    // We check for one known strategy ID to infer if evaluation already happened
-    const checkId = `${symbol}_${dateId}_PullbackEOD`;
-    const existingSig = await db.collection('signals').doc(dateId).collection('items').doc(checkId).get();
-    if (existingSig.exists) {
-        console.log(`[Strategy] Job ${jobId} symbol ${symbol}: Signals for ${runDate} already exist. Skipping.`);
+    // Atomic Sentinel Lock for Race-Safety (Gap 2)
+    const sentinelRef = db.collection('signals').doc(dateId).collection('status').doc(`${symbol}_DONE`);
+    try {
+        await sentinelRef.create({
+            status: 'RUNNING',
+            jobId,
+            startedAt: admin.firestore.Timestamp.now()
+        });
+    }
+    catch (e) {
+        // create() fails if doc already exists -> Atomically guarded
+        console.log(`[Strategy] Job ${jobId} symbol ${symbol}: Task already in progress or completed for ${runDate}. skipping.`);
         return;
     }
-    console.log(`[Job ${jobId}] Evaluating signals for ${symbol} on ${runDate}`);
-    // 1. Load Features (must exist for the exact run date)
-    const featSnap = await db.collection('features').doc(symbol).collection('days').doc(dateId).get();
-    if (!featSnap.exists) {
-        await logger_1.logger.warn(`Features not found for ${symbol} on ${runDate}`, 'Strategy', { jobId, symbol });
-        return;
-    }
-    const features = featSnap.data();
-    // 2. Load Regime
-    const regimeSnap = await db.collection('regime').doc(dateId).get();
-    if (!regimeSnap.exists) {
-        await logger_1.logger.warn(`Regime not found for ${runDate}`, 'Strategy', { jobId });
-        return;
-    }
-    const regime = regimeSnap.data();
-    if (!regime.tradeAllowed) {
-        console.log(`Trading disabled for ${runDate} (marketState=${regime.marketState}). Skipping ${symbol}.`);
-        return;
-    }
-    // 3. Load enough bars for all strategies (breakout needs 21)
-    const bars = await getRecentBarsOnOrBefore(db, symbol, dateId, 30);
-    if (bars.length === 0) {
-        await logger_1.logger.warn(`No bars found for ${symbol} on or before ${runDate}`, 'Strategy', { jobId, symbol });
-        return;
-    }
-    // Prevent feature/bar mismatch: require the bar for dateId to exist.
-    // If your ingestion is always aligned, this is a strong safety check.
-    const lastBar = bars[bars.length - 1];
-    (0, safety_1.checkSafety)(lastBar);
-    if (lastBar.id > dateId) {
-        await logger_1.logger.error(`Latest bar for ${symbol} is ${lastBar.id}, which is AFTER ${dateId}. Data integrity error; skipping.`, 'Strategy', { jobId, symbol });
-        return;
-    }
-    if (lastBar.id < dateId) {
-        console.log(`[Strategy] Job ${jobId} symbol ${symbol}: Using latest available bar ${lastBar.id} for run date ${dateId} (Weekend/Holiday).`);
-    }
-    // 4. Extract key indicators with safety guards
-    const ema20 = Number(features.ema20);
-    const ema50 = Number(features.ema50);
-    const rsi = Number((_c = (_b = (_a = features.rsi14) !== null && _a !== void 0 ? _a : features.rsi14) !== null && _b !== void 0 ? _b : features.rsi) !== null && _c !== void 0 ? _c : 50);
-    const atr = Number(features.atr14);
-    const bbLower = Number(features.bbLower);
-    const currentClose = Number(lastBar.close);
-    // If critical indicators are missing, don't evaluate.
-    if (!isFinitePos(currentClose) || !isFinitePos(ema20) || !isFinitePos(ema50) || !Number.isFinite(rsi) || !isFinitePos(atr)) {
-        await logger_1.logger.warn(`Missing/invalid indicators for ${symbol} on ${runDate}. Skipping.`, 'Strategy', { jobId, symbol });
-        return;
-    }
-    const touchedEmaBand = () => {
-        const lower = Math.min(ema20, ema50);
-        const upper = Math.max(ema20, ema50);
-        // "Touch" means the candle range intersects the band
-        const touched = (Number(lastBar.low) <= upper) && (Number(lastBar.high) >= lower);
-        // Near EMA20 based on close distance
-        const nearEma20 = Math.abs(currentClose - ema20) / ema20 <= 0.005;
-        return touched || nearEma20;
-    };
-    // 4b. Weekly Bias Check
-    let weeklyTrendOk = true;
-    if (runtime_1.RUNTIME_CONFIG.USE_WEEKLY_BIAS) {
-        const date = new Date(runDate);
-        const d = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
-        const dayNum = d.getUTCDay() || 7;
-        d.setUTCDate(d.getUTCDate() + 4 - dayNum);
-        const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
-        const weekNo = Math.ceil((((d.getTime() - yearStart.getTime()) / 86400000) + 1) / 7);
-        const weekId = `${d.getUTCFullYear()}${weekNo.toString().padStart(2, '0')}`;
-        const weeklyFeatSnap = await db.collection('features').doc(symbol).collection('weeks').where(admin.firestore.FieldPath.documentId(), '<=', weekId).limit(1).get();
-        if (!weeklyFeatSnap.empty) {
-            const weeklyFeat = weeklyFeatSnap.docs[0].data();
-            const wEma20 = weeklyFeat.ema20 || 0;
-            const wEma50 = weeklyFeat.ema50 || 0;
-            weeklyTrendOk = wEma20 > wEma50;
+    let status = 'DONE';
+    let reason = '';
+    try {
+        // 1. Load Features
+        const featSnap = await db.collection('features').doc(symbol).collection('days').doc(dateId).get();
+        if (!featSnap.exists) {
+            status = 'SKIPPED';
+            reason = 'Features missing';
+            return;
+        }
+        const features = featSnap.data();
+        // 2. Load Regime
+        const regimeSnap = await db.collection('regime').doc(dateId).get();
+        if (!regimeSnap.exists) {
+            status = 'SKIPPED';
+            reason = 'Regime missing';
+            return;
+        }
+        const regime = regimeSnap.data();
+        if (!regime.tradeAllowed) {
+            status = 'SKIPPED';
+            reason = 'Trading barred by regime';
+            return;
+        }
+        // 3. Load bars
+        const bars = await getRecentBarsOnOrBefore(db, symbol, dateId, 30);
+        if (bars.length === 0) {
+            status = 'SKIPPED';
+            reason = 'Recent bars missing';
+            return;
+        }
+        const lastBar = bars[bars.length - 1];
+        (0, safety_1.checkSafety)(lastBar);
+        // 4. Extract key indicators
+        const ema20 = Number(features.ema20);
+        const ema50 = Number(features.ema50);
+        const rsi = Number((_a = features.rsi14) !== null && _a !== void 0 ? _a : 50);
+        const atr = Number(features.atr14);
+        const bbLower = Number(features.bbLower);
+        const volSma20 = Number(features.volSma20 || 0);
+        const currentClose = Number(lastBar.close);
+        if (!isFinitePos(currentClose) || !isFinitePos(ema20) || !isFinitePos(ema50) || !Number.isFinite(rsi) || !isFinitePos(atr)) {
+            status = 'SKIPPED';
+            reason = 'Numeric validation failed';
+            return;
+        }
+        // Earnings Block Check (Hardened)
+        const earningsBlocked = await isEntryBlockedByEarnings(symbol, dateId);
+        // 5. Strategy conditions
+        const isLongPullback = !earningsBlocked && (regime.marketState === 'TREND' || regime.marketState === 'RANGE') && ema20 > ema50 && isAtrNormalizedEmaTouch(currentClose, ema20, ema50, atr) && rsi >= 40 && rsi <= 55;
+        let isBreakout = false;
+        const volumeRatio = Number(lastBar.volume) / Number(volSma20 || 1);
+        if (!earningsBlocked && regime.marketState === 'TREND' && ema20 > ema50 && bars.length >= 21) {
+            const prev20 = bars.slice(-21, -1);
+            const prev20High = Math.max(...prev20.map(b => Number(b.high)));
+            isBreakout = currentClose > prev20High && breakoutVolumeOk(symbol, Number(lastBar.volume), volSma20);
+        }
+        const isMeanReversion = !earningsBlocked && regime.marketState === 'RANGE' && currentClose < bbLower && rsi < 30 && isTrendNeutral(currentClose, ema20, ema50);
+        const isShortBounce = !earningsBlocked && (regime.marketState === 'BEAR' || regime.marketState === 'HIGH_VOL') && ema20 < ema50 && isAtrNormalizedEmaTouch(currentClose, ema20, ema50, atr) && rsi >= 45 && rsi <= 65;
+        // 6. Create signals with Scoring and Indicative Pricing (Gap 4 & 6)
+        const activeStrategies = [
+            { condition: isLongPullback, name: 'PullbackEOD', direction: 'BUY',
+                baseScore: 70 + (30 - Math.min(30, (Math.abs(currentClose - ema20) / atr) * 10)) },
+            { condition: isShortBounce, name: 'ShortBounceEOD', direction: 'SELL',
+                baseScore: 70 + (30 - Math.min(30, (Math.abs(currentClose - ema20) / atr) * 10)) },
+            { condition: isBreakout, name: 'BreakoutCloseEOD', direction: 'BUY',
+                baseScore: 75 + Math.min(25, (volumeRatio - 1.2) * 20) },
+            { condition: isMeanReversion, name: 'MeanReversionEOD', direction: 'BUY',
+                baseScore: 80 + Math.min(20, (Math.abs(currentClose - bbLower) / atr) * 10) },
+        ].filter(s => s.condition);
+        for (const strat of activeStrategies) {
+            const stopMult = 2.0;
+            let targetMult = 3.0;
+            if (strat.name === 'ShortBounceEOD' && regime.marketState === 'HIGH_VOL') {
+                targetMult = runtime_1.STRATEGY_V11.HIGH_VOL_SHORT_TARGET_ATR;
+            }
+            const signal = {
+                symbol,
+                direction: strat.direction,
+                strategy: strat.name,
+                score: Math.max(0, Math.min(100, Math.round(strat.baseScore))),
+                features,
+                entryPlan: { type: 'NEXT_OPEN' },
+                indicativeStopPrice: strat.direction === 'BUY' ? currentClose - (atr * stopMult) : currentClose + (atr * stopMult),
+                indicativeTargets: [strat.direction === 'BUY' ? currentClose + (atr * targetMult) : currentClose - (atr * targetMult)],
+                indicativeRr: targetMult / stopMult,
+                checklist: { regimeAligned: true, indicatorMatch: true },
+                reasons: { rsi, close: currentClose, ema20, ema50, marketState: regime.marketState, v11: true },
+                status: 'NEW',
+                atrRef: atr,
+                stopAtrMult: stopMult,
+                targetAtrMult: targetMult
+            };
+            const signalId = `${symbol}_${dateId}_${strat.name}`;
+            await db.collection('signals').doc(dateId).collection('items').doc(signalId).set(signal);
         }
     }
-    // 5. Strategy conditions (as per your description)
-    // A) PullbackEOD (Bullish / Trend Following)
-    const isLongPullback = (regime.marketState === 'TREND' || regime.marketState === 'RANGE') &&
-        ema20 > ema50 &&
-        touchedEmaBand() &&
-        rsi >= 40 && rsi <= 55;
-    // B) BreakoutCloseEOD (Bullish / Momentum)
-    // Needs at least 21 bars to compute previous 20-day high excluding today
-    let isBreakout = false;
-    if (regime.marketState === 'TREND' && ema20 > ema50 && bars.length >= 21) {
-        const prev20 = bars.slice(-21, -1); // excludes today
-        const prev20High = Math.max(...prev20.map(b => Number(b.high)));
-        isBreakout = currentClose > prev20High;
+    catch (err) {
+        status = 'ERROR';
+        reason = err.message || String(err);
+        console.error(`[Strategy] Error for ${symbol}:`, err);
     }
-    // C) MeanReversionEOD (Bullish / Contrarian)
-    const isMeanReversion = regime.marketState === 'RANGE' &&
-        isFinitePos(bbLower) &&
-        currentClose < bbLower &&
-        rsi < 30;
-    // D) ShortBounceEOD (Bearish / Trend Following)
-    const isShortBounce = (regime.marketState === 'BEAR' || regime.marketState === 'HIGH_VOL') &&
-        ema20 < ema50 &&
-        touchedEmaBand() &&
-        rsi >= 45 && rsi <= 65;
-    // 6. Create signals for all active strategies (monitoring mode)
-    const activeStrategies = [
-        { condition: isLongPullback && weeklyTrendOk, name: 'PullbackEOD', direction: 'BUY' },
-        { condition: isShortBounce, name: 'ShortBounceEOD', direction: 'SELL' },
-        { condition: isBreakout && weeklyTrendOk, name: 'BreakoutCloseEOD', direction: 'BUY' },
-        { condition: isMeanReversion && weeklyTrendOk, name: 'MeanReversionEOD', direction: 'BUY' },
-    ].filter(s => s.condition);
-    if (activeStrategies.length === 0)
-        return;
-    for (const strat of activeStrategies) {
-        const score = 80;
-        // honor regime min score gate if present
-        if (typeof regime.minSignalScore === 'number' && score < regime.minSignalScore) {
-            continue;
-        }
-        const stopPrice = strat.direction === 'BUY'
-            ? currentClose - (atr * 2)
-            : currentClose + (atr * 2);
-        const targetPrice = strat.direction === 'BUY'
-            ? currentClose + (atr * 3)
-            : currentClose - (atr * 3);
-        const signal = {
-            symbol,
-            direction: strat.direction,
-            strategy: strat.name,
-            score,
-            features: features,
-            // You’re using NEXT_OPEN; for production you may want to compute stop/targets off fill.
-            entryPlan: { type: 'NEXT_OPEN' },
-            stopPrice,
-            targets: [targetPrice],
-            rr: 1.5,
-            checklist: { regimeAligned: true, indicatorMatch: true },
-            reasons: {
-                rsi,
-                close: currentClose,
-                ema20,
-                ema50,
-                marketState: regime.marketState
-            },
-            status: 'NEW',
-            // If your Signal model allows extra fields, these are useful:
-            // createdAt: admin.firestore.Timestamp.now(),
-            // runDateId: dateId,
-            // riskMultiplierAtSignal: regime.riskMultiplier
-        };
-        const signalId = `${symbol}_${dateId}_${strat.name}`;
-        await db.collection('signals').doc(dateId).collection('items').doc(signalId).set(signal);
-        await logger_1.logger.info(`Generated ${strat.name} signal for ${symbol} at ${currentClose}`, 'Strategy', { jobId, symbol });
+    finally {
+        await sentinelRef.set({
+            status,
+            reason,
+            completedAt: admin.firestore.Timestamp.now(),
+            jobId
+        }, { merge: true });
     }
 }
 exports.evaluateSignalsTask = functionsV1.https.onRequest(async (req, res) => {

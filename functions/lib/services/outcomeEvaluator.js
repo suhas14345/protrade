@@ -46,11 +46,10 @@ const getDb = () => {
  * Outcome Evaluator: Tracks forward performance of signals over a 5-day window.
  */
 async function doEvaluateOutcomes(dateId) {
-    var _a, _b, _c;
+    var _a, _b, _c, _d, _e;
     const db = getDb();
     console.log(`[OutcomeEvaluator] Evaluating returns for signals on ${dateId}`);
     // Find signals that were FILLED or more and are missing monitor data
-    // Note: we might run this multiple times as days pass to fill in R3, R5
     const signalsSnap = await db.collection('signals')
         .doc(dateId)
         .collection('items')
@@ -63,7 +62,9 @@ async function doEvaluateOutcomes(dateId) {
             continue;
         const entryPrice = signal.execution.entryPrice;
         const entryDateId = signal.execution.entryDateId;
-        const stopPrice = signal.stopPrice;
+        // Gap 4: Use definitive stopPrice, fallback to indicative if needed (should not happen if FILLED)
+        const stopPrice = (_c = signal.stopPrice) !== null && _c !== void 0 ? _c : signal.indicativeStopPrice;
+        const targets = (_d = signal.targets) !== null && _d !== void 0 ? _d : signal.indicativeTargets;
         const riskPerShare = Math.abs(entryPrice - stopPrice);
         if (riskPerShare === 0)
             continue;
@@ -95,16 +96,16 @@ async function doEvaluateOutcomes(dateId) {
             monitor.mfeR = (Math.max(...highs) - entryPrice) / riskPerShare;
             monitor.maeR = (entryPrice - Math.min(...lows)) / riskPerShare;
             monitor.hitStop = Math.min(...lows) <= stopPrice;
-            monitor.hitTarget = Math.max(...highs) >= (signal.targets[0] || 0);
+            monitor.hitTarget = Math.max(...highs) >= (targets[0] || 0);
         }
         else {
             monitor.mfeR = (entryPrice - Math.min(...lows)) / riskPerShare;
             monitor.maeR = (Math.max(...highs) - entryPrice) / riskPerShare;
             monitor.hitStop = Math.max(...highs) >= stopPrice;
-            monitor.hitTarget = Math.min(...lows) <= (signal.targets[0] || 0);
+            monitor.hitTarget = Math.min(...lows) <= (targets[0] || 0);
         }
         await db.collection('signals').doc(dateId).collection('items').doc(signalId).update({ monitor });
-        console.log(`[OutcomeEvaluator] Updated monitor for ${signal.symbol}: R5=${(_c = monitor.r5) === null || _c === void 0 ? void 0 : _c.toFixed(2)}`);
+        console.log(`[OutcomeEvaluator] Updated monitor for ${signal.symbol}: R5=${(_e = monitor.r5) === null || _e === void 0 ? void 0 : _e.toFixed(2)}`);
     }
 }
 exports.evaluateOutcomesTask = functionsV1.https.onRequest(async (req, res) => {

@@ -261,6 +261,7 @@ export async function runEodLogic(targetDate: string, targetJobId: string, targe
   const universeSnap = await db.collection('universes').doc(targetUniverse).collection('members').get();
   const indexSymbol = '^NSEI';
   const symbols: string[] = universeSnap.docs.map((d: any) => d.id).filter((s: string) => s !== indexSymbol);
+  const dateId = targetDate.replace(/-/g, '');
   
   // Update job with total count and stage
   await db.collection('jobs').doc(targetJobId).update({ 
@@ -269,6 +270,14 @@ export async function runEodLogic(targetDate: string, targetJobId: string, targe
   });
 
   try {
+    // 0. Trade Management (Risk-First: Process exits before new entries)
+    const { doManageTrades } = await import('./tradeManager');
+    try {
+      await doManageTrades(dateId);
+    } catch (err) {
+      console.error(`[Job ${targetJobId}] Trade management failed: ${err}. Continuing...`);
+    }
+
     // 1. Index Processing
     const { doFetchCandles } = await import('./marketdata');
     const { doComputeFeatures } = await import('./features');
@@ -291,7 +300,9 @@ export async function runEodLogic(targetDate: string, targetJobId: string, targe
     // Holiday Check: Only abort if NO recent index data exists at all (last 5 days).
     // We query backwards because weekends/holidays may mean today's bar doesn't exist,
     // but yesterday's (or Friday's) bar proves the market was open recently.
-    const dateId = targetDate.replace(/-/g, '');
+    // Holiday Check: Only abort if NO recent index data exists at all (last 5 days).
+    // We query backwards because weekends/holidays may mean today's bar doesn't exist,
+    // but yesterday's (or Friday's) bar proves the market was open recently.
     const recentIndexSnap = await db.collection('barsD').doc(targetIndex).collection('days')
       .where(admin.firestore.FieldPath.documentId(), '<=', dateId)
       .orderBy(admin.firestore.FieldPath.documentId(), 'desc')

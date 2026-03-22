@@ -10,6 +10,8 @@ const getDb = () => {
 
 /**
  * Trade Manager: Manages open trades daily with V1.1 Prioritized Exits.
+ * 
+ * Enforces Priority: 1. HARD STOP -> 2. TIME STOP -> 3. PARTIAL PROFIT -> 4. TARGET
  */
 export async function doManageTrades(dateId: string) {
   const db = getDb();
@@ -24,14 +26,20 @@ export async function doManageTrades(dateId: string) {
     const signalId = doc.id;
     const symbol = signal.symbol;
     
-    // V1.1: Use ATR at entry for MFE tracking
-    const atrAtEntry = Number(signal.features?.atr14 || 0);
+    // V1.1: Use ATR at entry for MFE tracking (consistent with Gap 4 anchoring)
+    const atrAtEntry = Number(signal.atrRef || signal.features?.atr14 || 0);
     const entryPrice = signal.execution?.entryPrice || 0;
     const entryDateId = signal.execution?.entryDateId || '';
-    const stopPrice = signal.stopPrice;
-    const target = signal.targets[0];
     
-    if (!atrAtEntry || !entryPrice) continue;
+    // Load existing position state for definitive stop/target (Gap 4)
+    const posDoc = await db.collection('portfolio').doc('default').collection('positions').doc(symbol).get();
+    if (!posDoc.exists) continue;
+    
+    const position = posDoc.data() as PaperPosition;
+    const stopPrice = position.stopPrice;
+    const target = position.targets[0];
+    
+    if (!atrAtEntry || !entryPrice || !stopPrice || !target) continue;
 
     // Load bars since entry to track duration and MFE
     const barsSnap = await db.collection('barsD')
@@ -53,20 +61,16 @@ export async function doManageTrades(dateId: string) {
       ? (highSeen - entryPrice) / atrAtEntry
       : (entryPrice - lowSeen) / atrAtEntry;
 
-    // Load existing position state for partial profit tracking
-    const posDoc = await db.collection('portfolio').doc('default').collection('positions').doc(symbol).get();
-    const position = posDoc.exists ? posDoc.data() as PaperPosition : {} as any;
-
     let exitPrice: number | null = null;
     let exitType: PaperFill['fillType'] | null = null;
-    let exitQty: number = signal.riskApproval?.sizedQty || 0;
+    let exitQty: number = position.qty || signal.riskApproval?.sizedQty || 0;
 
-    // EXIT PRIORITY: 1) HARD_STOP -> 2) TIME_STOP -> 3) PARTIAL -> 4) TARGET
+    // EXIT PRIORITY: 1) HARD_STOP -> 2) TIME_STOP -> 3) PARTIAL -> 4) TARGET (Gap 6)
 
     // 1. Hard Stop
     const isStopHit = signal.direction === 'BUY' ? currentBar.low <= stopPrice : currentBar.high >= stopPrice;
     if (isStopHit) {
-      exitPrice = stopPrice; // For simulation, we use the stop level
+      exitPrice = stopPrice; 
       exitType = 'EXIT_STOP';
     } 
     // 2. Time Stop (after 5 trading days if mfeAtr < 1.0)
@@ -93,18 +97,17 @@ export async function doManageTrades(dateId: string) {
       console.log(`[TradeManager] v1.1 Event for ${symbol}: ${exitType} at ${exitPrice.toFixed(2)} (MFE_ATR: ${mfeAtr.toFixed(2)})`);
 
       if (exitType === 'PARTIAL_PROFIT') {
-        const remainingQty = (signal.riskApproval?.sizedQty || 0) - exitQty;
-        // Handle Partial: Move stop to breakeven and stay in trade
+        const remainingQty = position.qty - exitQty;
+        // Handle Partial (Gap 6): Move stop to breakeven and stay in trade
         await db.collection('portfolio').doc('default').collection('positions').doc(symbol).update({
           partialTaken: true,
           stopPrice: entryPrice, // Move to breakeven
           qty: remainingQty,
           lastUpdatedAt: admin.firestore.Timestamp.now()
         });
-        // We also need to update the signal's stopPrice so subsequent days use the new stop
+        // We also need to update the signal's final stopPrice so subsequent days use the new stop
         await doc.ref.update({ stopPrice: entryPrice });
         
-        // Record the partial fill
         const fillId = `partial_${signalId}_${dateId}`;
         await db.collection('paperFills').doc(dateId).collection('items').doc(fillId).set({
           symbol, fillPrice: exitPrice, fillQty: exitQty, fillType: 'PARTIAL_PROFIT', timestamp: admin.firestore.Timestamp.now()
@@ -113,10 +116,10 @@ export async function doManageTrades(dateId: string) {
         // Full Exit
         const exitFillId = `exit_${signalId}_${dateId}`;
         const exitFill: PaperFill = {
-          orderId: signal.execution?.orderId || '',
+          orderId: signal.execution?.orderId || 'MANUAL',
           symbol,
           fillPrice: exitPrice,
-          fillQty: position.qty || exitQty, // Use currently held qty
+          fillQty: position.qty, 
           slippageBps: 5,
           feeEstimate: 0,
           fillType: exitType,
