@@ -30,6 +30,12 @@ Before any individual stock is evaluated, the system analyzes the broad market t
     *   **Stop Loss**: `Entry - (2.0 * ATR14)`.
     *   **Target**: `Entry + (3.0 * ATR14)`.
 
+#### Example: TATASTEEL.NS (Pullback)
+*   **Trend**: EMA20 (145) > EMA50 (140) — Bullish.
+*   **Dip**: Price retraces from 155 to **145.20** (touches EMA20).
+*   **Momentum**: RSI14 is **48** (healthy pullback, not oversold).
+*   **Signal**: GENERATED (BUY).
+
 ---
 
 ## 3. Long Strategy: Breakout Close EOD
@@ -44,6 +50,12 @@ Before any individual stock is evaluated, the system analyzes the broad market t
     *   **Stop Loss**: `Entry - (2.0 * ATR14)`.
     *   **Target**: `Entry + (3.0 * ATR14)`.
 
+#### Example: RELIANCE.NS (Breakout)
+*   **Trend**: Market is in `TREND` regime.
+*   **Resistance**: Prev 20-day high is **2950**.
+*   **The Break**: Stock closes at **2965** on high volume.
+*   **Signal**: GENERATED (BUY).
+
 ---
 
 ## 4. Long Strategy: Mean Reversion EOD
@@ -57,6 +69,12 @@ Before any individual stock is evaluated, the system analyzes the broad market t
     *   **Entry**: `NEXT_OPEN`.
     *   **Stop Loss**: `Entry - (2.0 * ATR14)`.
     *   **Target**: `Entry + (3.0 * ATR14)`.
+
+#### Example: INFY.NS (Mean Reversion)
+*   **Market**: `RANGE`bound regime.
+*   **Extreme**: Lower Bollinger Band is at **1420**.
+*   **Oversold**: Price closes at **1412** with RSI at **28**.
+*   **Signal**: GENERATED (BUY).
 
 ---
 
@@ -73,6 +91,12 @@ Before any individual stock is evaluated, the system analyzes the broad market t
     *   **Entry**: `NEXT_OPEN`.
     *   **Stop Loss**: `Entry + (2.0 * ATR14)`.
     *   **Target**: `Entry - (3.0 * ATR14)`.
+
+#### Example: SAIL.NS (Short Bounce)
+*   **Trend**: EMA20 (154) < EMA50 (160) — Bearish.
+*   **Bounce**: Price rallies from 148 to **155.52** (touches EMA20 resistance).
+*   **Momentum**: RSI14 is **52** (relief rally in progress).
+*   **Signal**: GENERATED (SELL).
 
 ---
 
