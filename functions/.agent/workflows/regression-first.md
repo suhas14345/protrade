@@ -2,6 +2,8 @@
 description: Mandatory Regression-First Development Workflow
 ---
 
+// turbo-all
+
 This workflow MUST be followed BEFORE and AFTER every code change or deployment to the `suhas-ag` project.
 
 ---
@@ -21,10 +23,10 @@ This workflow MUST be followed BEFORE and AFTER every code change or deployment 
 
 ## PRE-CHANGE CHECKS (Before writing code)
 
-1. **Run Regression Suite**
-   - Command: `npm run regression` (in `functions` directory).
-   - Expected Output: `--- REGRESSION TEST PASSED ---`.
-   - Do NOT proceed if this fails.
+1. **Run Regression & Rule Validation**
+   - Command: `npm run validate-rules && npm run regression` (in `functions` directory).
+   - Expected Output: `--- VALIDATION PASSED ---` and `--- REGRESSION TEST PASSED ---`.
+   - Do NOT proceed if either fails.
 
 2. **Check Rate Limiting Compliance**
    - Confirm the change does NOT:

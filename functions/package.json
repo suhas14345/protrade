@@ -3,8 +3,9 @@
   "version": "1.0.0",
   "scripts": {
     "lint": "eslint --ext .js,.ts .",
-    "build": "tsc",
-    "bundle": "esbuild src/index.ts --bundle --platform=node --target=node20 --outfile=index.js --external:firebase-admin --external:firebase-functions --external:cors --external:axios --external:kiteconnect --external:technicalindicators --external:totp-generator --external:@google-cloud/tasks",
+    "build": "npm run validate-rules && tsc",
+    "validate-rules": "ts-node src/services/regCheck.ts",
+    "bundle": "npm run validate-rules && esbuild src/index.ts --bundle --platform=node --target=node20 --outfile=index.js --external:firebase-admin --external:firebase-functions --external:cors --external:axios --external:kiteconnect --external:technicalindicators --external:totp-generator --external:@google-cloud/tasks",
     "test": "jest",
     "test:local": "node test_local.js",
     "serve": "npm run build && firebase emulators:start --only functions,firestore",
@@ -19,9 +20,9 @@
   },
   "main": "index.js",
   "dependencies": {
+    "@google-cloud/tasks": "^5.0.0",
     "axios": "^1.13.6",
     "cors": "^2.8.6",
-    "@google-cloud/tasks": "^5.0.0",
     "firebase-admin": "^12.1.0",
     "firebase-functions": "^7.1.1",
     "kiteconnect": "^5.1.0",
@@ -40,6 +41,7 @@
     "firebase-functions-test": "^3.1.0",
     "jest": "^30.3.0",
     "ts-jest": "^29.4.6",
+    "ts-node": "^10.9.2",
     "typescript": "^5.2.2"
   },
   "private": true
