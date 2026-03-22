@@ -118,18 +118,18 @@ export const diagnostics = functionsV1.https.onRequest(async (req, res) => {
 
 /**
  * Probes the market data repository to build a summary of historical data 
- * available across all symbols. This populates the "System Data Inventory" 
- * table in the dashboard.
+ * available across all symbols, and signal lifecycle stats.
  */
 export const probeInventory = onRequest({ cors: true, invoker: 'public', memory: '1GiB', timeoutSeconds: 300 }, async (req, res) => {
   const db = getDb();
+  const dateId = new Date().toISOString().split('T')[0].replace(/-/g, '');
+  
   try {
+    // 1. Symbol/Bars Inventory (Sampled)
     const symbolRefs = await db.collection('barsD').listDocuments();
     const inventoryMap: Record<number, number> = {};
-
-    // For better performance at scale, we process a large sample
-    const BATCH_SIZE = 20;
-    const sampleLimit = 200; // Only scan up to 200 symbols to stay within timeout
+    const BATCH_SIZE = 25;
+    const sampleLimit = 250;
     const targetRefs = symbolRefs.slice(0, sampleLimit);
 
     for (let i = 0; i < targetRefs.length; i += BATCH_SIZE) {
@@ -147,10 +147,36 @@ export const probeInventory = onRequest({ cors: true, invoker: 'public', memory:
       .map(([bars, symbols]) => ({ bars: Number(bars), symbols }))
       .sort((a, b) => b.bars - a.bars);
 
+    // 2. Signal Metrics for Today
+    const signalsSnap = await db.collection('signals').doc(dateId).collection('items').get();
+    const signalsByStrategy: Record<string, number> = {};
+    const signalsByStatus: Record<string, number> = {};
+    
+    signalsSnap.docs.forEach(doc => {
+      const data = doc.data();
+      signalsByStrategy[data.strategy] = (signalsByStrategy[data.strategy] || 0) + 1;
+      signalsByStatus[data.status] = (signalsByStatus[data.status] || 0) + 1;
+    });
+
+    const signalStats = {
+      total: signalsSnap.size,
+      byStrategy: Object.entries(signalsByStrategy).map(([name, count]) => ({ name, count })),
+      byStatus: Object.entries(signalsByStatus).map(([name, count]) => ({ name, count })),
+    };
+
+    // 3. Universe Metadata
+    const universeSnap = await db.collection('universes').get();
+    const universes = await Promise.all(universeSnap.docs.map(async d => {
+      const members = await d.ref.collection('members').count().get();
+      return { id: d.id, count: members.data().count };
+    }));
+
     res.status(200).json({ 
       groupings,
       totalSymbolsTracked: symbolRefs.length,
       sampleSize: targetRefs.length,
+      signalStats,
+      universes,
       timestamp: admin.firestore.Timestamp.now().toDate().toISOString()
     });
   } catch (err: any) {

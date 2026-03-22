@@ -52,6 +52,7 @@ function App() {
     (localStorage.getItem('protrade_universe') as any) || 'nifty50'
   )
   const [inventory, setInventory] = useState<any>(null);
+  const [isRefreshingInventory, setIsRefreshingInventory] = useState(false);
 
   useEffect(() => {
     localStorage.setItem('protrade_universe', universe);
@@ -176,6 +177,19 @@ function App() {
       alert(`❌ Failed to trigger scan.\nError: ${err.message}\nCheck console for details.`);
     } finally {
       setIsTriggering(false);
+    }
+  };
+
+  const handleRefreshInventory = async () => {
+    setIsRefreshingInventory(true);
+    try {
+      const res = await fetch('https://probeinventory-ippxlry6na-uc.a.run.app');
+      const data = await res.json();
+      setInventory(data);
+    } catch (err) {
+      console.error('Failed to refresh inventory:', err);
+    } finally {
+      setIsRefreshingInventory(false);
     }
   };
 
@@ -461,36 +475,78 @@ function App() {
           </section>
 
           <section className="card" style={{ marginBottom: '1.5rem', borderLeft: '4px solid #3b82f6' }}>
-            <h3 style={{ marginBottom: '1rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-              <BarChart3 size={18} color="#3b82f6" /> System Data Inventory
-            </h3>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
+              <h3 style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                <BarChart3 size={18} color="#3b82f6" /> System Data Inventory
+              </h3>
+              <button 
+                onClick={handleRefreshInventory} 
+                className="btn-premium" 
+                style={{ fontSize: '0.7rem', padding: '4px 10px' }}
+                disabled={isRefreshingInventory}
+              >
+                {isRefreshingInventory ? <Loader2 className="animate-spin" size={14} /> : 'Refresh Data'}
+              </button>
+            </div>
+
             {!inventory ? (
-              <div style={{ fontSize: '0.8rem', color: '#64748b' }}>Loading inventory...</div>
+              <div style={{ padding: '2rem', textAlign: 'center', color: '#64748b' }}>
+                <Loader2 className="animate-spin" size={24} style={{ margin: '0 auto 1rem' }} />
+                Loading detailed system inventory...
+              </div>
             ) : (
-              <table className="table" style={{ fontSize: '0.85rem' }}>
-                <thead>
-                  <tr>
-                    <th style={{ textAlign: 'left' }}>Bars Available</th>
-                    <th style={{ textAlign: 'left' }}>Symbol Count</th>
-                    <th style={{ textAlign: 'left' }}>Signals Found</th>
-                    <th style={{ textAlign: 'left' }}>Note</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {inventory.groupings.map((g: any, i: number) => (
-                    <tr key={i}>
-                      <td>{g.bars} days</td>
-                      <td>{g.symbols} symbols</td>
-                      <td style={{ fontWeight: 600, color: '#f59e0b' }}>
-                        {signals.filter(s => (s as any).features?.barsCount === g.bars).length} signals
-                      </td>
-                      <td style={{ color: '#94a3b8', fontStyle: 'italic' }}>
-                        {g.symbols === 1 ? 'Indices / NIFTY 50' : 'Universe Members'}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1.5rem' }}>
+                <div>
+                  <h4 style={{ fontSize: '0.8rem', color: '#94a3b8', marginBottom: '1rem' }}>Data Coverage (Bars Available)</h4>
+                  <div style={{ height: '180px' }}>
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart data={inventory.groupings}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#334155" vertical={false} />
+                        <XAxis dataKey="bars" stroke="#64748b" fontSize={10} label={{ value: 'Days', position: 'insideBottom', offset: -5, fill: '#64748b', fontSize: 10 }} />
+                        <YAxis stroke="#64748b" fontSize={10} />
+                        <Tooltip contentStyle={{ background: '#1e293b', border: 'none', borderRadius: '8px' }} />
+                        <Bar dataKey="symbols" fill="#3b82f6" radius={[4, 4, 0, 0]} label={{ position: 'top', fill: '#94a3b8', fontSize: 10 }} />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+                </div>
+
+                <div>
+                  <h4 style={{ fontSize: '0.8rem', color: '#94a3b8', marginBottom: '1rem' }}>Signal Strategy Distribution</h4>
+                  <div style={{ height: '180px' }}>
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart data={inventory.signalStats?.byStrategy || []}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#334155" vertical={false} />
+                        <XAxis dataKey="name" stroke="#64748b" fontSize={10} />
+                        <YAxis stroke="#64748b" fontSize={10} />
+                        <Tooltip contentStyle={{ background: '#1e293b', border: 'none', borderRadius: '8px' }} />
+                        <Bar dataKey="count" fill="#f59e0b" radius={[4, 4, 0, 0]} label={{ position: 'top', fill: '#94a3b8', fontSize: 10 }} />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+                </div>
+
+                <div style={{ gridColumn: 'span 2', display: 'flex', gap: '2rem', background: 'rgba(255,255,255,0.02)', padding: '1rem', borderRadius: '8px', marginTop: '0.5rem' }}>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: '0.7rem', color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Total Symbols Tracked</div>
+                    <div style={{ fontSize: '1.2rem', fontWeight: 700 }}>{inventory.totalSymbolsTracked}</div>
+                  </div>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: '0.7rem', color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Universe Coverage</div>
+                    <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.25rem' }}>
+                      {inventory.universes?.map((u: any) => (
+                        <div key={u.id} className="trend-badge range" style={{ fontSize: '0.65rem' }}>
+                          {u.id.toUpperCase()}: {u.count}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: '0.7rem', color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Inventory Refreshed</div>
+                    <div style={{ fontSize: '0.8rem', color: '#94a3b8' }}>{new Date(inventory.timestamp).toLocaleTimeString()}</div>
+                  </div>
+                </div>
+              </div>
             )}
           </section>
 
