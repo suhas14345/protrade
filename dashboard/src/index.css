@@ -1,0 +1,216 @@
+:root {
+  --bg-color: #0d0f14;
+  --card-bg: rgba(255, 255, 255, 0.03);
+  --card-border: rgba(255, 255, 255, 0.08);
+  --text-main: #ffffff;
+  --text-muted: #94a3b8;
+  --accent-primary: #10b981;
+  --accent-secondary: #ef4444;
+  --accent-gold: #fbbf24;
+  --glass-blur: blur(12px);
+  --font-main: 'Inter', system-ui, -apple-system, sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background-color: var(--bg-color);
+  color: var(--text-main);
+  font-family: var(--font-main);
+  -webkit-font-smoothing: antialiased;
+  min-height: 100vh;
+  padding: 1.5rem;
+}
+
+.dashboard-container {
+  width: 100%;
+  padding: 0 1rem;
+  display: grid;
+  gap: 1.5rem;
+  grid-template-areas: 
+    "header header header"
+    "stats stats stats"
+    "controls controls controls"
+    "positions positions signals"
+    "charts charts signals"
+    "history history history";
+  grid-template-columns: 1fr 1fr 450px;
+}
+
+@media (min-width: 1800px) {
+  .dashboard-container {
+    grid-template-columns: 1fr 1fr 500px;
+  }
+}
+
+.charts-area {
+  grid-area: charts;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1.5rem;
+}
+
+/* ... existing styles ... */
+
+.history-area {
+  grid-area: history;
+}
+
+.btn-premium {
+  background: var(--accent-primary);
+  color: #000;
+  border: none;
+  padding: 0.5rem 1rem;
+  border-radius: 8px;
+  font-weight: 700;
+  font-size: 0.8rem;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  transition: all 0.2s ease;
+}
+
+.btn-premium:hover {
+  filter: brightness(1.1);
+  box-shadow: 0 0 20px rgba(16, 185, 129, 0.3);
+}
+
+.btn-premium.secondary {
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--text-main);
+  border: 1px solid var(--card-border);
+}
+
+.up-text { color: var(--accent-primary); }
+.down-text { color: var(--accent-secondary); }
+
+.header {
+  grid-area: header;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding-bottom: 2rem;
+}
+
+.header h1 {
+  font-size: 1.5rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+
+.stats-grid {
+  grid-area: stats;
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 1.5rem;
+}
+
+.card {
+  background: var(--card-bg);
+  border: 1px solid var(--card-border);
+  border-radius: 16px;
+  padding: 1.5rem;
+  backdrop-filter: var(--glass-blur);
+  transition: transform 0.2s ease, border-color 0.2s ease;
+}
+
+.card:hover {
+  border-color: rgba(255, 255, 255, 0.15);
+  transform: translateY(-2px);
+}
+
+.stat-label {
+  color: var(--text-muted);
+  font-size: 0.875rem;
+  margin-bottom: 0.5rem;
+}
+
+.stat-value {
+  font-size: 1.75rem;
+  font-weight: 700;
+}
+
+.stat-value.up { color: var(--accent-primary); }
+.stat-value.down { color: var(--accent-secondary); }
+
+.positions-area {
+  grid-area: positions;
+}
+
+.signals-area {
+  grid-area: signals;
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 1rem;
+}
+
+.table th {
+  text-align: left;
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  padding: 0.75rem;
+  border-bottom: 1px solid var(--card-border);
+}
+
+.table td {
+  padding: 1rem 0.75rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+  font-size: 0.875rem;
+}
+
+.symbol-tag {
+  background: rgba(16, 185, 129, 0.1);
+  color: var(--accent-primary);
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-weight: 600;
+  font-size: 0.75rem;
+}
+
+.trend-badge {
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 0.7rem;
+  font-weight: 700;
+}
+
+.trend-badge.up { background: rgba(16, 185, 129, 0.2); color: var(--accent-primary); }
+.trend-badge.down { background: rgba(239, 68, 68, 0.2); color: var(--accent-secondary); }
+.trend-badge.range { background: rgba(251, 191, 36, 0.2); color: var(--accent-gold); }
+
+.signal-item {
+  display: flex;
+  justify-content: space-between;
+  padding: 1rem 0;
+  border-bottom: 1px solid var(--card-border);
+}
+
+.signal-info h4 { font-size: 0.9rem; margin-bottom: 2px; }
+.signal-info p { font-size: 0.75rem; color: var(--text-muted); }
+
+.signal-action {
+  text-align: right;
+}
+
+@media (max-width: 1024px) {
+  .dashboard-container {
+    grid-template-areas: 
+      "header"
+      "stats"
+      "positions"
+      "signals";
+    grid-template-columns: 1fr;
+  }
+  .stats-grid {
+    grid-template-columns: 1fr 1fr;
+  }
+}

@@ -1,0 +1,45 @@
+{
+  "name": "protrade-functions",
+  "scripts": {
+    "lint": "eslint --ext .js,.ts .",
+    "build": "tsc",
+    "bundle": "esbuild src/index.ts --bundle --platform=node --target=node20 --outfile=index.js --external:firebase-admin --external:firebase-functions --external:cors --external:axios --external:kiteconnect --external:technicalindicators --external:totp-generator --external:@google-cloud/tasks",
+    "test": "jest",
+    "test:local": "node test_local.js",
+    "serve": "npm run build && firebase emulators:start --only functions,firestore",
+    "shell": "npm run build && firebase functions:shell",
+    "start": "npm run shell",
+    "deploy": "firebase deploy --only functions",
+    "logs": "firebase functions:log",
+    "regression": "npm run build && node -e \"process.env.GCLOUD_PROJECT='suhas-ag'; require('./lib/services/regression').runSystemRegression().then(() => process.exit(0)).catch(e => { console.error(e); process.exit(1); })\""
+  },
+  "engines": {
+    "node": "20"
+  },
+  "main": "index.js",
+  "dependencies": {
+    "axios": "^1.13.6",
+    "cors": "^2.8.6",
+    "@google-cloud/tasks": "^5.0.0",
+    "firebase-admin": "^12.1.0",
+    "firebase-functions": "^7.1.1",
+    "kiteconnect": "^5.1.0",
+    "technicalindicators": "^3.1.0",
+    "totp-generator": "^2.0.1"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.19",
+    "@types/jest": "^30.0.0",
+    "@typescript-eslint/eslint-plugin": "^5.12.0",
+    "@typescript-eslint/parser": "^5.12.0",
+    "esbuild": "^0.27.4",
+    "eslint": "^8.9.0",
+    "eslint-config-google": "^0.14.0",
+    "eslint-plugin-import": "^2.25.4",
+    "firebase-functions-test": "^3.1.0",
+    "jest": "^30.3.0",
+    "ts-jest": "^29.4.6",
+    "typescript": "^5.2.2"
+  },
+  "private": true
+}
