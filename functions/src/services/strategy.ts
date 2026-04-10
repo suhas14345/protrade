@@ -146,6 +146,7 @@ function computeDynamicScore(
     if (strategyName === 'ShortBounceEOD') score += 5;
     else if (strategyName === 'BearBounceEOD') score += 0;  // Neutral — base score is already calibrated
     else if (strategyName === 'RSLeaderEOD') score += 5;     // Leaders in BEAR deserve extra credit
+    else if (strategyName === 'PullbackEOD') score -= 3;     // V3.2: Mild penalty — structural gates provide safety
     else score -= 5;  // Penalize generic longs in BEAR
   }
 
@@ -430,15 +431,18 @@ export async function doEvaluateSignals(jobId: string, symbol: string, runDate: 
 
     // V3.0: VDU (Volume Dry-Up) is a hard gate for PullbackEOD
     const vduActive = features.vduActive || false;
+    const liquidityBucket = features.liquidity?.bucket || 'C';
 
     // V3.0: Regime-aware RSI thresholds
     const rsiThresholds = REGIME_RSI_THRESHOLDS[regime.marketState] || REGIME_RSI_THRESHOLDS['RANGE'];
 
     // V3.0: Rejection reason collector — tracks ALL gate failures (not just first)
+    // V3.2: Allow PullbackEOD in BEAR regime with tighter gates
+    const isBearPullback = regime.marketState === 'BEAR';
     const pullbackReasons: string[] = [];
     if (eventCheck.blocked) pullbackReasons.push(`event_blocked:${eventCheck.reasons.join(',')}`);
     if (!vduActive) pullbackReasons.push('vdu_inactive');
-    if (regime.marketState !== 'TREND' && regime.marketState !== 'RANGE') pullbackReasons.push(`regime:${regime.marketState}`);
+    if (regime.marketState !== 'TREND' && regime.marketState !== 'RANGE' && regime.marketState !== 'BEAR') pullbackReasons.push(`regime:${regime.marketState}`);
     if (!(ema20 > ema50)) pullbackReasons.push('ema20_below_ema50');
     // V3.2: Structural uptrend — ema50 must be above ema200
     if (ema200 > 0 && !(ema50 > ema200)) pullbackReasons.push('ema50_below_ema200');
@@ -449,6 +453,8 @@ export async function doEvaluateSignals(jobId: string, symbol: string, runDate: 
     }
     if (!isAtrNormalizedEmaTouch(currentClose, ema20, ema50, atr)) pullbackReasons.push('no_ema_touch');
     if (rsi < rsiThresholds.pullbackMin || rsi > rsiThresholds.pullbackMax) pullbackReasons.push(`rsi_${rsi.toFixed(1)}_outside_${rsiThresholds.pullbackMin}-${rsiThresholds.pullbackMax}`);
+    // V3.2: BEAR pullback requires bucket A liquidity (tighter than TREND/RANGE)
+    if (isBearPullback && liquidityBucket !== 'A') pullbackReasons.push(`bear_liquidity:${liquidityBucket}`);
 
     // 2. Per-Strategy Regime Gating + V2.3 event + safety gates
     const isLongPullback = pullbackReasons.length === 0;
@@ -477,7 +483,6 @@ export async function doEvaluateSignals(jobId: string, symbol: string, runDate: 
     // V2.3: Mean Reversion Safety — restrict to bucket A/B + extended earnings check
     // V3.1: Now also works in BEAR regime with tighter criteria
     const meanRevEventCheck = await isEntryBlockedByEvents(symbol, dateId, 'MeanReversionEOD');
-    const liquidityBucket = features.liquidity?.bucket || 'C';
     const isRangeMR = regime.marketState === 'RANGE' && 
                       (liquidityBucket === 'A' || liquidityBucket === 'B') &&
                       currentClose < Number(features.bbLower) && 

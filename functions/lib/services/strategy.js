@@ -415,9 +415,11 @@ async function doEvaluateSignals(jobId, symbol, runDate, forceRegime, universeId
         (0, safety_1.checkSafety)(lastBar, runDate);
         const ema20 = Number(features.ema20);
         const ema50 = Number(features.ema50);
+        const ema200 = Number(features.ema200 || 0);
         const atr = Number(features.atr14);
         const currentClose = Number(lastBar.close);
         const volSma20 = Number(features.volSma20 || 0);
+        const low20 = Number(features.low20 || 0);
         // V3.0: RSI fail-closed — reject if unavailable (not default to 50)
         const rsiRaw = features.rsi14;
         if (rsiRaw === undefined || rsiRaw === null || !Number.isFinite(Number(rsiRaw))) {
@@ -448,6 +450,15 @@ async function doEvaluateSignals(jobId, symbol, runDate, forceRegime, universeId
             pullbackReasons.push(`regime:${regime.marketState}`);
         if (!(ema20 > ema50))
             pullbackReasons.push('ema20_below_ema50');
+        // V3.2: Structural uptrend — ema50 must be above ema200
+        if (ema200 > 0 && !(ema50 > ema200))
+            pullbackReasons.push('ema50_below_ema200');
+        // V3.2: Pullback proximity — close must be within 0-5% above 20-day low
+        if (low20 > 0) {
+            const pctAboveLow20 = (currentClose - low20) / low20;
+            if (pctAboveLow20 < 0 || pctAboveLow20 > 0.05)
+                pullbackReasons.push(`low20_dist_${(pctAboveLow20 * 100).toFixed(1)}pct`);
+        }
         if (!isAtrNormalizedEmaTouch(currentClose, ema20, ema50, atr))
             pullbackReasons.push('no_ema_touch');
         if (rsi < rsiThresholds.pullbackMin || rsi > rsiThresholds.pullbackMax)
