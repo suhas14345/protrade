@@ -20,6 +20,8 @@ describe('Strategy Service', () => {
     const mockFeatures = {
       ema20: 100,
       ema50: 90,
+      ema200: 80,          // V3.2: Structural uptrend (ema50 90 > ema200 80)
+      low20: 95,           // V3.2: 20-day low; close 98 is ~3.2% above — within 0-5%
       rsi14: 45, // In pullback range 40-55
       atr14: 2,
       barsCount: 50,
