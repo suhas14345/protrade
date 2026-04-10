@@ -1,161 +1,169 @@
 import * as functionsV1 from 'firebase-functions';
 import * as admin from 'firebase-admin';
-import { Signal, PaperFill, Bar, PaperPosition } from '../models';
-import { STRATEGY_V11 } from '../config/runtime';
+import { PaperPosition, PaperOrder } from '../models';
+import { CalendarService } from './calendar';
+import { EXIT_PROFILES } from '../config/runtime';
 
 const getDb = () => {
-  if (admin.apps.length === 0) admin.initializeApp();
-  return admin.firestore();
+    if (admin.apps.length === 0) admin.initializeApp();
+    return admin.firestore();
 };
 
 /**
- * Trade Manager: Manages open trades daily with V1.1 Prioritized Exits.
- * 
- * Enforces Priority: 1. HARD STOP -> 2. TIME STOP -> 3. PARTIAL PROFIT -> 4. TARGET
+ * V2.3: Get exit profile for a strategy (falls back to PullbackEOD defaults)
  */
-export async function doManageTrades(dateId: string) {
-  const db = getDb();
-  console.log(`[TradeManager] Managing open trades for ${dateId} (V1.1 Priority)`);
+function getExitProfile(strategy?: string) {
+    return EXIT_PROFILES[strategy || 'PullbackEOD'] || EXIT_PROFILES['PullbackEOD'];
+}
 
-  const signalsSnap = await db.collectionGroup('items')
-    .where('status', '==', 'IN_TRADE')
-    .get();
-
-  for (const doc of signalsSnap.docs) {
-    const signal = doc.data() as Signal;
-    const signalId = doc.id;
-    const symbol = signal.symbol;
+/**
+ * Manage existing OPEN positions with V2.3 per-strategy exit profiles
+ */
+export async function doManageTrades(dateId: string, jobId: string) {
+    const db = getDb();
     
-    // V1.1: Use ATR at entry for MFE tracking (consistent with Gap 4 anchoring)
-    const atrAtEntry = Number(signal.atrRef || signal.features?.atr14 || 0);
-    const entryPrice = signal.execution?.entryPrice || 0;
-    const entryDateId = signal.execution?.entryDateId || '';
-    
-    // Load existing position state for definitive stop/target (Gap 4)
-    const posDoc = await db.collection('portfolio').doc('default').collection('positions').doc(symbol).get();
-    if (!posDoc.exists) continue;
-    
-    const position = posDoc.data() as PaperPosition;
-    const stopPrice = position.stopPrice;
-    const target = position.targets[0];
-    
-    if (!atrAtEntry || !entryPrice || !stopPrice || !target) continue;
+    const positionsSnap = await db.collection('portfolio').doc('default').collection('positions')
+        .where('status', '==', 'OPEN')
+        .get();
 
-    // Load bars since entry to track duration and MFE
-    const barsSnap = await db.collection('barsD')
-      .doc(symbol)
-      .collection('days')
-      .where(admin.firestore.FieldPath.documentId(), '>=', entryDateId)
-      .where(admin.firestore.FieldPath.documentId(), '<=', dateId)
-      .get();
+    if (positionsSnap.empty) return;
 
-    const bars = barsSnap.docs.map(d => ({ id: d.id, ...(d.data() as Bar) })).sort((a, b) => a.id.localeCompare(b.id));
-    if (bars.length === 0) continue;
+    for (const doc of positionsSnap.docs) {
+        const pos = doc.data() as PaperPosition;
+        const symbol = pos.symbol;
+        const profile = getExitProfile(pos.strategy);
 
-    const currentBar = bars[bars.length - 1];
-    const highSeen = Math.max(...bars.map(b => b.high));
-    const lowSeen = Math.min(...bars.map(b => b.low));
+        const barSnap = await db.collection('barsD').doc(symbol).collection('days').doc(dateId).get();
+        if (!barSnap.exists) continue;
+        const currentBar = barSnap.data() as any;
+        const currentClose = Number(currentBar.close);
+        const currentHigh = Number(currentBar.high);
+        const currentLow = Number(currentBar.low);
 
-    // Update MFE in ATR units (V1.1 requirement)
-    const mfeAtr = signal.direction === 'BUY' 
-      ? (highSeen - entryPrice) / atrAtEntry
-      : (entryPrice - lowSeen) / atrAtEntry;
-
-    let exitPrice: number | null = null;
-    let exitType: PaperFill['fillType'] | null = null;
-    let exitQty: number = position.qty || signal.riskApproval?.sizedQty || 0;
-
-    // EXIT PRIORITY: 1) HARD_STOP -> 2) TIME_STOP -> 3) PARTIAL -> 4) TARGET (Gap 6)
-
-    // 1. Hard Stop
-    const isStopHit = signal.direction === 'BUY' ? currentBar.low <= stopPrice : currentBar.high >= stopPrice;
-    if (isStopHit) {
-      exitPrice = stopPrice; 
-      exitType = 'EXIT_STOP';
-    } 
-    // 2. Time Stop (after 5 trading days if mfeAtr < 1.0)
-    else if (bars.length >= STRATEGY_V11.TIME_STOP_DAYS && mfeAtr < STRATEGY_V11.TIME_STOP_PROGRESS_ATR) {
-      exitPrice = currentBar.close;
-      exitType = 'EXIT_TIME';
-    }
-    // 3. Partial Profit (+1.5 ATR take 33% and move stop to breakeven)
-    else if (STRATEGY_V11.PARTIAL_PROFIT_ENABLED && !position.partialTaken && mfeAtr >= STRATEGY_V11.PARTIAL_PROFIT_ATR) {
-      exitPrice = currentBar.close;
-      exitType = 'PARTIAL_PROFIT';
-      exitQty = Math.floor(exitQty * STRATEGY_V11.PARTIAL_PROFIT_FRACTION);
-    }
-    // 4. Profit Target
-    else {
-      const isTargetHit = signal.direction === 'BUY' ? currentBar.high >= target : currentBar.low <= target;
-      if (isTargetHit) {
-        exitPrice = target;
-        exitType = 'EXIT_TARGET';
-      }
-    }
-
-    if (exitPrice !== null && exitType !== null) {
-      console.log(`[TradeManager] v1.1 Event for ${symbol}: ${exitType} at ${exitPrice.toFixed(2)} (MFE_ATR: ${mfeAtr.toFixed(2)})`);
-
-      if (exitType === 'PARTIAL_PROFIT') {
-        const remainingQty = position.qty - exitQty;
-        // Handle Partial (Gap 6): Move stop to breakeven and stay in trade
-        await db.collection('portfolio').doc('default').collection('positions').doc(symbol).update({
-          partialTaken: true,
-          stopPrice: entryPrice, // Move to breakeven
-          qty: remainingQty,
-          lastUpdatedAt: admin.firestore.Timestamp.now()
-        });
-        // We also need to update the signal's final stopPrice so subsequent days use the new stop
-        await doc.ref.update({ stopPrice: entryPrice });
+        const atrAtEntry = pos.atrAtEntry || 1.0;
+        const priceDiff = pos.direction === 'BUY'
+            ? (currentHigh - pos.avgEntryPrice)
+            : (pos.avgEntryPrice - currentLow);
+        const mfeAtr = Math.max(pos.mfeAtr || 0, priceDiff / atrAtEntry);
         
-        const fillId = `partial_${signalId}_${dateId}`;
-        await db.collection('paperFills').doc(dateId).collection('items').doc(fillId).set({
-          symbol, fillPrice: exitPrice, fillQty: exitQty, fillType: 'PARTIAL_PROFIT', timestamp: admin.firestore.Timestamp.now()
-        });
-      } else {
-        // Full Exit
-        const exitFillId = `exit_${signalId}_${dateId}`;
-        const exitFill: PaperFill = {
-          orderId: signal.execution?.orderId || 'MANUAL',
-          symbol,
-          fillPrice: exitPrice,
-          fillQty: position.qty, 
-          slippageBps: 5,
-          feeEstimate: 0,
-          fillType: exitType,
-          timestamp: admin.firestore.Timestamp.now()
-        };
-        await db.collection('paperFills').doc(dateId).collection('items').doc(exitFillId).set(exitFill);
-        
-        await doc.ref.update({ status: 'DONE' });
-        await db.collection('portfolio').doc('default').collection('positions').doc(symbol).update({ 
-          status: 'CLOSED',
-          exitReason: exitType,
-          closedAt: admin.firestore.Timestamp.now()
-        });
-      }
-    } else {
-        // Just update MFE/MAE for monitoring
-        await db.collection('portfolio').doc('default').collection('positions').doc(symbol).update({
-            lastUpdatedAt: admin.firestore.Timestamp.now(),
+        // V2.3: Trailing stop logic (for Pullback and Breakout strategies)
+        let currentStopPrice = pos.stopPrice;
+        let trailingActive = pos.trailingStopActive || false;
+        let trailingStopPrice = pos.trailingStopPrice || pos.stopPrice;
+
+        if (profile.useTrailingStop && mfeAtr >= profile.trailingActivationAtr) {
+            trailingActive = true;
+            if (pos.direction === 'BUY') {
+                const newTrail = currentHigh - (profile.trailingStopAtr * atrAtEntry);
+                trailingStopPrice = Math.max(trailingStopPrice, newTrail);
+                currentStopPrice = Math.max(currentStopPrice, trailingStopPrice);
+            } else {
+                const newTrail = currentLow + (profile.trailingStopAtr * atrAtEntry);
+                trailingStopPrice = Math.min(trailingStopPrice, newTrail);
+                currentStopPrice = Math.min(currentStopPrice, trailingStopPrice);
+            }
+        }
+
+        await doc.ref.update({
             mfeAtr,
-            barsActive: bars.length
+            stopPrice: currentStopPrice,
+            trailingStopActive: trailingActive,
+            trailingStopPrice: trailingActive ? trailingStopPrice : null,
+            lastUpdatedAt: admin.firestore.Timestamp.now()
         });
+
+        let exitTriggered = false;
+        let exitType: PaperOrder['exitType'] = undefined;
+
+        // 1. Stop loss check (uses trailing stop if active)
+        if (pos.direction === 'BUY' && currentClose <= currentStopPrice) {
+            exitTriggered = true; exitType = 'EXIT_STOP';
+        } else if (pos.direction === 'SELL' && currentClose >= currentStopPrice) {
+            exitTriggered = true; exitType = 'EXIT_STOP';
+        }
+
+        // 2. Target check
+        const targetPrice = pos.targets && pos.targets.length > 0 ? pos.targets[0] : null;
+        if (!exitTriggered && targetPrice) {
+            if (pos.direction === 'BUY' && currentClose >= targetPrice) {
+                exitTriggered = true; exitType = 'EXIT_TARGET';
+            } else if (pos.direction === 'SELL' && currentClose <= targetPrice) {
+                exitTriggered = true; exitType = 'EXIT_TARGET';
+            }
+        }
+
+        // 3. Time stop — per-strategy hold period
+        if (!exitTriggered && pos.entryDateId) {
+            const [entryDay, currentDay] = await Promise.all([
+                CalendarService.getCalendarDay(pos.entryDateId),
+                CalendarService.getCalendarDay(dateId)
+            ]);
+            if (entryDay && currentDay) {
+                const heldDays = currentDay.tradingIndex - entryDay.tradingIndex;
+                if (heldDays >= profile.timeStopDays) {
+                    exitTriggered = true; exitType = 'EXIT_TIME';
+                }
+            }
+        }
+
+        // 4. Partial profit — per-strategy thresholds
+        if (!exitTriggered && !pos.partialTaken && mfeAtr >= profile.partialProfitAtr) {
+           const partialQty = Math.floor(pos.qty * profile.partialFraction);
+           if (partialQty > 0) {
+             await queueExitOrder(db, pos, doc.ref.path, 'PARTIAL_PROFIT', dateId, jobId, true, partialQty);
+             // Move stop to breakeven after partial
+             await doc.ref.update({ partialTaken: true, stopPrice: pos.avgEntryPrice });
+           }
+        }
+
+        if (exitTriggered) {
+            await queueExitOrder(db, pos, doc.ref.path, exitType!, dateId, jobId);
+        }
     }
-  }
+}
+
+async function queueExitOrder(
+    db: FirebaseFirestore.Firestore,
+    pos: PaperPosition,
+    posPath: string,
+    type: NonNullable<PaperOrder['exitType']>,
+    dateId: string,
+    jobId: string,
+    isPartial = false,
+    overrideQty?: number
+) {
+    const orderId = `EXIT_${pos.symbol}_${dateId}_${type}`;
+    const qty = overrideQty ?? (isPartial ? Math.floor(pos.qty / 2) : pos.qty);
+    
+    if (qty <= 0) return;
+
+    const exitOrder: PaperOrder = {
+        symbol: pos.symbol,
+        orderType: 'EXIT',
+        side: pos.direction === 'BUY' ? 'SELL' : 'BUY',
+        intendedQty: qty,
+        intendedEntryRef: 'OPEN',
+        createdFromSignalId: pos.signalId || 'MANUAL',
+        risk: {
+            plannedR: 1,
+            riskAmount: pos.riskAmount || 0,
+            stopDistance: 0
+        },
+        status: 'ACCEPTED',
+        exitType: type,
+        parentPositionPath: posPath,
+        createdAt: admin.firestore.Timestamp.now(),
+        jobId
+    };
+
+    await db.collection('paperOrders').doc(dateId).collection('items').doc(orderId).set(exitOrder);
+    console.log(`[TradeManager] Queued ${type} for ${pos.symbol} (Qty: ${qty}, Strategy: ${pos.strategy || 'legacy'})`);
 }
 
 export const manageTradesTask = functionsV1.https.onRequest(async (req, res) => {
-  const { dateId } = req.body;
-  if (!dateId) {
-    res.status(400).send('Missing dateId');
-    return;
-  }
-  try {
-    await doManageTrades(dateId);
-    res.status(200).send('Trades managed');
-  } catch (error) {
-    console.error('Trade management failed:', error);
-    res.status(500).send(error instanceof Error ? error.message : 'Internal Error');
-  }
+    const { dateId, jobId } = req.body || {};
+    try {
+        await doManageTrades(String(dateId), String(jobId));
+        res.status(200).send('OK');
+    } catch (e: any) { res.status(500).send(e.message); }
 });

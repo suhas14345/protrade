@@ -39,6 +39,7 @@ const functionsV1 = __importStar(require("firebase-functions"));
 const admin = __importStar(require("firebase-admin"));
 const firestore_1 = require("firebase-admin/firestore");
 const logger_1 = require("./logger");
+const runtime_1 = require("../config/runtime");
 // Lazy load technicalindicators inside functions to avoid deployment timeouts
 const getDb = () => {
     if (admin.apps.length === 0)
@@ -85,7 +86,8 @@ async function doComputeFeatures(jobId, symbol, runDate) {
     // Sort and limit locally to avoid emulator 'descending key scan' error
     const allBars = barsSnap.docs.map(d => d.data());
     allBars.sort((a, b) => a.timestamp.toMillis() - b.timestamp.toMillis());
-    // Take last 200 for indicator stability
+    // Take last 200 for indicator stability; use slice(-200) — current closed bar is included
+    // Note: signals are for NEXT_OPEN entry so today's EOD bar IS the signal bar
     const bars = allBars.slice(-200);
     // 2. Compute Real Indicators with adaptive periods for simulation stability
     const closes = bars.map(b => b.close);
@@ -142,6 +144,9 @@ async function doComputeFeatures(jobId, symbol, runDate) {
         bbMid: bb.middle,
         bbLower: bb.lower,
         bbUpper: bb.upper,
+        // V2.4: Rolling 20-day high/low for breadth computation
+        high20: Math.max(...closes.slice(-20)),
+        low20: Math.min(...closes.slice(-20)),
         volSma20: bars.slice(-20).reduce((a, b) => a + (b.volume || 0), 0) / Math.min(20, bars.length),
         trendState,
         computedAt: firestore_1.Timestamp.now(),
@@ -151,15 +156,92 @@ async function doComputeFeatures(jobId, symbol, runDate) {
         },
         srZones,
         returns: {
-            ret1d: (closes[closes.length - 1] / closes[closes.length - 2]) - 1,
-            ret5d: (closes[closes.length - 1] / (closes[closes.length - 6] || closes[0])) - 1,
-            ret20d: (closes[closes.length - 1] / (closes[closes.length - 21] || closes[0])) - 1,
+            ret1d: closes.length >= 2 ? (closes[closes.length - 1] / closes[closes.length - 2]) - 1 : 0,
+            ret5d: closes.length >= 6 ? (closes[closes.length - 1] / closes[closes.length - 6]) - 1 : 0,
+            ret20d: closes.length >= 21 ? (closes[closes.length - 1] / closes[closes.length - 21]) - 1 : 0,
+            ret60d: closes.length >= 61 ? (closes[closes.length - 1] / closes[closes.length - 61]) - 1 : 0, // V2.2
         },
-        barsCount: barsSnap.size, // Added for dashboard inventory grouping
-        patterns: [] // Patterns logic can be expanded if needed
+        barsCount: barsSnap.size,
+        // V2.2: Computed liquidity bucket from median traded value
+        liquidity: computeLiquidity(bars),
+        // V2.2: Volume Dry-Up flag
+        vduActive: computeVDU(bars),
+        // V2.2: Gap risk score (0-100 percentile)
+        gapRiskScore: computeGapRiskScore(bars, atr14),
+        // rsScore is null here — filled by RS ranking pass after all features are done
+        rsScore: undefined,
+        patterns: [],
     };
     await db.collection('features').doc(symbol).collection('days').doc(dateId).set(featureDoc);
     await logger_1.logger.info(`Features computed for ${symbol}: Trend=${trendState}, RSI=${rsi14.toFixed(2)}`, 'Features', { jobId, symbol });
+}
+/**
+ * V2.2: Compute liquidity bucket from actual median traded value (not hardcoded 'A').
+ * Bucket A = top-tier liquid (medTradedValue20 >= 50 Cr), B = mid, C = low.
+ */
+function computeLiquidity(bars) {
+    const recent20 = bars.slice(-20);
+    const volumes = recent20.map(b => b.volume || 0);
+    const tradedValues = recent20.map(b => (b.close || 0) * (b.volume || 0));
+    const medVol20 = volumes.sort((a, b) => a - b)[Math.floor(volumes.length / 2)] || 0;
+    const medTradedValue20 = tradedValues.sort((a, b) => a - b)[Math.floor(tradedValues.length / 2)] || 0;
+    // Thresholds in INR: A >= 5 Cr (50M), B >= 1 Cr (10M), C = below
+    let bucket;
+    if (medTradedValue20 >= 50000000) {
+        bucket = 'A';
+    }
+    else if (medTradedValue20 >= 10000000) {
+        bucket = 'B';
+    }
+    else {
+        bucket = 'C';
+    }
+    return { medVol20, medTradedValue20, bucket };
+}
+/**
+ * V2.2: Volume Dry-Up (VDU) detection.
+ * Returns true if last MIN_DECLINE_DAYS consecutive bars show declining volume
+ * AND price is near EMA zone (not in a strong move). Signals institutional patience.
+ */
+function computeVDU(bars) {
+    const lookback = bars.slice(-(runtime_1.VDU_CONFIG.LOOKBACK_DAYS + 1));
+    if (lookback.length < runtime_1.VDU_CONFIG.MIN_DECLINE_DAYS + 1)
+        return false;
+    let consecutiveDeclines = 0;
+    for (let i = lookback.length - 1; i > 0; i--) {
+        if ((lookback[i].volume || 0) < (lookback[i - 1].volume || 0)) {
+            consecutiveDeclines++;
+        }
+        else {
+            break;
+        }
+    }
+    return consecutiveDeclines >= runtime_1.VDU_CONFIG.MIN_DECLINE_DAYS;
+}
+/**
+ * V2.2: Gap Risk Score (0-100 percentile).
+ * Measures how historically "gappy" a stock is — large/frequent gaps = higher risk score.
+ * Score 80+ = reject entry; 60–79 = reduce position size.
+ */
+function computeGapRiskScore(bars, atr14) {
+    const lookback = bars.slice(-(runtime_1.GAP_RISK_CONFIG.LOOKBACK_DAYS + 1));
+    if (lookback.length < 5 || atr14 <= 0)
+        return 0;
+    const gapRatios = [];
+    for (let i = 1; i < lookback.length; i++) {
+        const prevClose = lookback[i - 1].close;
+        const openPrice = lookback[i].open;
+        if (prevClose > 0) {
+            gapRatios.push(Math.abs(openPrice - prevClose) / atr14);
+        }
+    }
+    if (gapRatios.length === 0)
+        return 0;
+    const sorted = [...gapRatios].sort((a, b) => a - b);
+    const mean = sorted.reduce((a, b) => a + b, 0) / sorted.length;
+    // Normalize: mean gap ratio of 2.0 ATR maps to score ~80; 0 maps to 0; 3.0+ maps to 100
+    const rawScore = Math.min(100, Math.round((mean / 2.5) * 100));
+    return rawScore;
 }
 function calculateSwings(bars, window = 3) {
     const highs = [];

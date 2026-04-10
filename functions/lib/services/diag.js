@@ -33,7 +33,7 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.probeInventory = exports.diagnostics = exports.downloadReport = void 0;
+exports.probeInventory = exports.diagnostics = exports.diagnosticsHandler = exports.downloadReport = void 0;
 const functionsV1 = __importStar(require("firebase-functions"));
 const https_1 = require("firebase-functions/v2/https");
 const admin = __importStar(require("firebase-admin"));
@@ -47,7 +47,7 @@ const getDb = () => {
     return admin.firestore();
 };
 const downloadReport = async (req, res) => {
-    const { jobId } = req.query;
+    const { jobId } = Object.assign(Object.assign({}, req.query), req.body);
     if (!jobId) {
         res.status(400).send({ error: 'Missing jobId query parameter' });
         return;
@@ -64,13 +64,14 @@ const downloadReport = async (req, res) => {
     res.send(data.content);
 };
 exports.downloadReport = downloadReport;
-exports.diagnostics = functionsV1.https.onRequest(async (req, res) => {
+const diagnosticsHandler = async (req, res) => {
     const db = getDb();
-    const { type = 'jobs' } = req.query;
+    const params = Object.assign(Object.assign({}, req.query), req.body);
+    const { type = 'jobs' } = params;
     try {
         switch (type) {
             case 'jobs': {
-                const { limit = 20 } = req.query;
+                const { limit = 20 } = params;
                 const finalLimit = Math.min(Math.max(Number(limit), 1), 100);
                 const snap = await db.collection('jobs').orderBy('startedAt', 'desc').limit(finalLimit).get();
                 const jobs = await Promise.all(snap.docs.map(async (doc) => {
@@ -82,7 +83,7 @@ exports.diagnostics = functionsV1.https.onRequest(async (req, res) => {
                 break;
             }
             case 'errors': {
-                const { limit = 50 } = req.query;
+                const { limit = 50 } = params;
                 const finalLimit = Math.min(Math.max(Number(limit), 1), 100);
                 const snap = await db.collection('system_errors').orderBy('timestamp', 'desc').limit(finalLimit).get();
                 const errors = snap.docs.map(doc => (Object.assign({ id: doc.id }, doc.data())));
@@ -90,20 +91,20 @@ exports.diagnostics = functionsV1.https.onRequest(async (req, res) => {
                 break;
             }
             case 'logs': {
-                const { jobId, date, level } = req.query;
+                const { jobId, date, level } = params;
                 const dateId = date ? date.replace(/-/g, '') : new Date().toISOString().split('T')[0].replace(/-/g, '');
                 let query = db.collection('logs').doc(dateId).collection('entries');
                 if (jobId)
                     query = query.where('metadata.jobId', '==', jobId);
                 if (level)
                     query = query.where('level', '==', level);
-                const snapshot = await query.limit(100).get();
+                const snapshot = await query.orderBy('timestamp', 'desc').limit(200).get();
                 const logs = snapshot.docs.map((doc) => doc.data());
                 res.json({ count: logs.length, jobId: jobId || 'all', date: dateId, level: level || 'all', logs });
                 break;
             }
             case 'features': {
-                const { symbol = 'NIFTY 50', colType = 'days', includeBar = 'false' } = req.query;
+                const { symbol = 'NIFTY 50', colType = 'days', includeBar = 'false' } = params;
                 const col = colType === 'weeks' ? 'weeks' : 'days';
                 const snap = await db.collection('features').doc(symbol).collection(col).get();
                 const lastDoc = snap.empty ? null : snap.docs[snap.docs.length - 1].data();
@@ -118,21 +119,21 @@ exports.diagnostics = functionsV1.https.onRequest(async (req, res) => {
                 break;
             }
             case 'bars': {
-                const { symbol = 'NIFTY 50', colType = 'days' } = req.query;
+                const { symbol = 'NIFTY 50', colType = 'days' } = params;
                 const col = colType === 'weeks' ? 'weeks' : 'days';
                 const snap = await db.collection('barsD').doc(symbol).collection(col).get();
                 res.json({ symbol, type: col, count: snap.size, last5: snap.docs.slice(-5).map(d => d.id) });
                 break;
             }
             case 'universe': {
-                const { universe = 'nifty500', limit = 1000 } = req.query;
+                const { universe = 'nifty500', limit = 1000 } = params;
                 const snap = await db.collection('universes').doc(universe).collection('members').limit(Number(limit)).get();
                 const members = snap.docs.map(d => d.id);
                 res.json({ universe, totalInFirestore: members.length, members: members.slice(0, 50) });
                 break;
             }
             case 'signals': {
-                const { date, limit = 100, status = 'ORDERED' } = req.query;
+                const { date, limit = 100, status = 'ORDERED' } = params;
                 const dateId = date ? date.replace(/-/g, '') : new Date().toISOString().split('T')[0].replace(/-/g, '');
                 let query = db.collection('signals').doc(dateId).collection('items');
                 if (status !== 'all') {
@@ -151,7 +152,10 @@ exports.diagnostics = functionsV1.https.onRequest(async (req, res) => {
         console.error(`Diagnostics failed for ${type}:`, err);
         res.status(500).send({ error: 'Diagnostics failed', details: err.message });
     }
-});
+};
+exports.diagnosticsHandler = diagnosticsHandler;
+// Cloud Function wrapper (for direct invocation)
+exports.diagnostics = functionsV1.https.onRequest(exports.diagnosticsHandler);
 /**
  * Probes the market data repository to build a summary of historical data
  * available across all symbols, and signal lifecycle stats.
@@ -160,25 +164,54 @@ exports.probeInventory = (0, https_1.onRequest)({ cors: true, invoker: 'public',
     const db = getDb();
     const dateId = new Date().toISOString().split('T')[0].replace(/-/g, '');
     try {
-        // 1. Symbol/Bars Inventory (Sampled)
+        // 1. Symbol/Bars Inventory — Scan ALL symbols, no artificial cap
         const symbolRefs = await db.collection('barsD').listDocuments();
-        const inventoryMap = {};
         const BATCH_SIZE = 25;
-        const sampleLimit = 250;
-        const targetRefs = symbolRefs.slice(0, sampleLimit);
-        for (let i = 0; i < targetRefs.length; i += BATCH_SIZE) {
-            const chunk = targetRefs.slice(i, i + BATCH_SIZE);
-            await Promise.all(chunk.map(async (ref) => {
-                const daysSnap = await ref.collection('days').get();
-                const count = daysSnap.size || 0;
-                if (count > 0) {
-                    inventoryMap[count] = (inventoryMap[count] || 0) + 1;
-                }
+        // Track per-symbol counts for bucketing
+        const symbolBarCounts = [];
+        for (let i = 0; i < symbolRefs.length; i += BATCH_SIZE) {
+            const chunk = symbolRefs.slice(i, i + BATCH_SIZE);
+            const counts = await Promise.all(chunk.map(async (ref) => {
+                const countSnap = await ref.collection('days').count().get();
+                return countSnap.data().count;
             }));
+            counts.forEach(c => { if (c > 0)
+                symbolBarCounts.push(c); });
         }
-        const groupings = Object.entries(inventoryMap)
-            .map(([bars, symbols]) => ({ bars: Number(bars), symbols }))
-            .sort((a, b) => b.bars - a.bars);
+        // Bucket into meaningful ranges for display
+        const buckets = {
+            '0-14': 0,
+            '15-29': 0,
+            '30-44': 0,
+            '45-59': 0,
+            '60-89': 0,
+            '90-119': 0,
+            '120+': 0,
+        };
+        let sufficientCount = 0; // symbols with >= 60 bars (enough for strategy)
+        let insufficientCount = 0;
+        symbolBarCounts.forEach(count => {
+            if (count <= 14)
+                buckets['0-14']++;
+            else if (count <= 29)
+                buckets['15-29']++;
+            else if (count <= 44)
+                buckets['30-44']++;
+            else if (count <= 59)
+                buckets['45-59']++;
+            else if (count <= 89)
+                buckets['60-89']++;
+            else if (count <= 119)
+                buckets['90-119']++;
+            else
+                buckets['120+']++;
+            if (count >= 60)
+                sufficientCount++;
+            else
+                insufficientCount++;
+        });
+        const groupings = Object.entries(buckets)
+            .map(([range, symbols]) => ({ bars: range, symbols }));
         // 2. Signal Metrics for Today
         const signalsSnap = await db.collection('signals').doc(dateId).collection('items').get();
         const signalsByStrategy = {};
@@ -202,7 +235,9 @@ exports.probeInventory = (0, https_1.onRequest)({ cors: true, invoker: 'public',
         res.status(200).json({
             groupings,
             totalSymbolsTracked: symbolRefs.length,
-            sampleSize: targetRefs.length,
+            symbolsWithSufficientData: sufficientCount,
+            symbolsInsufficient: insufficientCount,
+            sampleSize: symbolRefs.length, // no longer a sample — full scan
             signalStats,
             universes,
             timestamp: admin.firestore.Timestamp.now().toDate().toISOString()

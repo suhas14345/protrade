@@ -95,10 +95,13 @@ export async function autoRenewKiteSessionHandler(event: any) {
 
     console.log('[KiteAuto] Successfully auto-renewed Kite session');
   } catch (err) {
-    console.error('[KiteAuto] Auto-renewal failed:', err);
+    const errMsg = err instanceof Error ? err.message : 'Auto-renewal failed';
+    const axiosData = (err as any)?.response?.data;
+    const detail = axiosData ? JSON.stringify(axiosData) : errMsg;
+    console.error('[KiteAuto] Auto-renewal failed:', detail);
     await db.collection('settings').doc('kite').set({
       status: 'ERROR',
-      lastError: err instanceof Error ? err.message : 'Auto-renewal failed'
+      lastError: detail.substring(0, 500)
     }, { merge: true });
   }
 }

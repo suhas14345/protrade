@@ -1,9 +1,26 @@
 import { useEffect, useState } from 'react'
 import { db } from './firebase'
 import { collection, onSnapshot, query, orderBy, limit } from 'firebase/firestore'
-import { LayoutDashboard, Activity, Zap, Download, History, PieChart as PieIcon, BarChart3, LogOut, Terminal, Play, CheckCircle2, XCircle, Loader2 } from 'lucide-react'
+import { LayoutDashboard, Activity, Zap, Download, History, PieChart as PieIcon, BarChart3, LogOut, Terminal, Play, CheckCircle2, XCircle, Loader2, Settings } from 'lucide-react'
 import { ResponsiveContainer, BarChart, Bar, LineChart, Line, XAxis, YAxis, Tooltip, CartesianGrid } from 'recharts'
 import Login from './components/Login'
+
+const GATEWAY_URL = 'https://us-central1-suhas-ag.cloudfunctions.net/gateway';
+
+async function gw(action: string, body: Record<string, unknown> = {}, opts?: { raw?: boolean }) {
+  const res = await fetch(GATEWAY_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    mode: 'cors',
+    body: JSON.stringify({ action, ...body }),
+  });
+  if (opts?.raw) return res;
+  if (!res.ok) {
+    const txt = await res.text();
+    throw new Error(`HTTP ${res.status}: ${txt}`);
+  }
+  return res.json();
+}
 
 // Basic types to match backend models
 interface Position {
@@ -39,7 +56,7 @@ interface Job {
 
 function App() {
   const [authToken, setAuthToken] = useState<string | null>(localStorage.getItem('protrade_auth'))
-  const [view, setView] = useState<'DASHBOARD' | 'HISTORY' | 'LOGS'>('DASHBOARD')
+  const [view, setView] = useState<'DASHBOARD' | 'HISTORY' | 'LOGS' | 'SETTINGS'>('DASHBOARD')
   const [positions, setPositions] = useState<Position[]>([])
   const [history, setHistory] = useState<Position[]>([])
   const [jobs, setJobs] = useState<Job[]>([])
@@ -53,6 +70,33 @@ function App() {
   )
   const [inventory, setInventory] = useState<any>(null);
   const [isRefreshingInventory, setIsRefreshingInventory] = useState(false);
+  const [selectedDate, setSelectedDate] = useState(() => new Date().toISOString().split('T')[0]);
+  const [settingsForm, setSettingsForm] = useState({ apiKey: '', apiSecret: '', userId: '', password: '', totpSecret: '' });
+  const [settingsStatus, setSettingsStatus] = useState<string | null>(null);
+  const [settingsSaving, setSettingsSaving] = useState(false);
+
+  // Auto-capture request_token from Kite redirect URL
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const reqToken = params.get('request_token');
+    if (reqToken) {
+      setFormConfig(prev => ({ ...prev, requestToken: reqToken }));
+      // Clean URL without reload
+      window.history.replaceState({}, '', window.location.pathname);
+      // Auto-link if we have credentials
+      const autoLink = async () => {
+        try {
+          const data = await gw('updateToken', { requestToken: reqToken });
+          alert(data.message || 'Kite session linked automatically!');
+          setKiteStatus('UPDATING');
+          setTimeout(() => window.location.reload(), 1500);
+        } catch (err: any) {
+          alert(`Auto-link failed. Token captured — click "Link Token" manually.\n${err.message}`);
+        }
+      };
+      autoLink();
+    }
+  }, []);
 
   useEffect(() => {
     localStorage.setItem('protrade_universe', universe);
@@ -62,8 +106,7 @@ function App() {
     if (!authToken) return;
     const fetchInventory = async () => {
       try {
-        const res = await fetch('https://probeinventory-ippxlry6na-uc.a.run.app');
-        const data = await res.json();
+        const data = await gw('probeInventory');
         setInventory(data);
       } catch (err) {
         console.error('Failed to fetch inventory:', err);
@@ -95,14 +138,6 @@ function App() {
       setStats((prev: any) => ({ ...prev, openPositions: active.length, realizedPnl: totalRealized, winRate: wr }));
     });
 
-    // 2. Listen for signals (Today's items)
-    const dateId = new Date().toISOString().split('T')[0].replace(/-/g, '');
-    const currentSignalsQuery = query(collection(db, 'signals', dateId, 'items'));
-    const unsubSignalsCurrent = onSnapshot(currentSignalsQuery, (snap) => {
-        setSignals(snap.docs.map(d => ({ id: d.id, ...d.data() })));
-        console.log(`[Dashboard] Signals for today:`, snap.size);
-    });
-
     // 4. Listen for aggregate stats (Scoreboard)
     const unsubStats = onSnapshot(collection(db, 'aggregateStats'), (snap) => {
       setStatsByRegime(snap.docs.map(d => ({ id: d.id, ...d.data() })));
@@ -116,22 +151,36 @@ function App() {
       console.log(`[Dashboard] Jobs loaded:`, allJobs.length);
     });
 
-    // 7. Listen for logs (Use UTC date to match backend)
-    const logDateId = new Date().toISOString().split('T')[0].replace(/-/g, '');
-    const logsQuery = query(collection(db, 'logs', logDateId, 'entries'), orderBy('timestamp', 'desc'), limit(50));
+    return () => {
+      unsubPos();
+      unsubJobs();
+      unsubStats();
+    };
+  }, [authToken])
+
+  useEffect(() => {
+    if (!authToken) return;
+
+    const dateId = selectedDate.replace(/-/g, '');
+    
+    // Listen for signals
+    const currentSignalsQuery = query(collection(db, 'signals', dateId, 'items'));
+    const unsubSignalsCurrent = onSnapshot(currentSignalsQuery, (snap) => {
+        setSignals(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+        console.log(`[Dashboard] Signals for ${dateId}:`, snap.size);
+    });
+
+    // Listen for logs
+    const logsQuery = query(collection(db, 'logs', dateId, 'entries'), orderBy('timestamp', 'desc'), limit(50));
     const unsubLogs = onSnapshot(logsQuery, (snap: any) => {
       setLogs(snap.docs.map((d: any) => ({ id: d.id, ...d.data() })));
     });
 
-    
     return () => {
-      unsubPos();
-      unsubJobs();
-      unsubLogs();
       unsubSignalsCurrent();
-      unsubStats();
+      unsubLogs();
     };
-  }, [authToken])
+  }, [authToken, selectedDate])
 
   useEffect(() => {
     if (!authToken || jobs.length === 0) return;
@@ -144,7 +193,7 @@ function App() {
 
     if (stuckJobs.length > 0) {
       console.log(`[Dashboard] Detected ${stuckJobs.length} potentially stuck jobs. Triggering Audit...`);
-      fetch('https://us-central1-suhas-ag.cloudfunctions.net/auditJobs').catch(err => console.error('Audit trigger failed:', err));
+      gw('auditJobs').catch(err => console.error('Audit trigger failed:', err));
     }
   }, [jobs, authToken]);
 
@@ -157,19 +206,10 @@ function App() {
     setIsTriggering(true);
     console.log(`[Dashboard] Triggering scan for universe: ${universe}`);
     try {
-      // Use local date string to avoid timezone shifts when triggering manually
       const today = new Date().toLocaleDateString('en-CA'); // YYYY-MM-DD
-      const url = `https://us-central1-suhas-ag.cloudfunctions.net/startEodRun?date=${today}&universe=${universe}`;
       
-      console.log(`[Dashboard] Calling URL: ${url}`);
-      const res = await fetch(url);
-      
-      if (!res.ok) {
-        const errorText = await res.text();
-        throw new Error(`HTTP ${res.status}: ${errorText}`);
-      }
-      
-      const data = await res.json();
+      console.log(`[Dashboard] Triggering EOD for ${universe} on ${today}`);
+      const data = await gw('startEod', { date: today, universe });
       console.log(`[Dashboard] Trigger Success:`, data);
       alert(`✅ Scan Triggered Successfully!\nUniverse: ${universe.toUpperCase()}\nJob ID: ${data.jobId}`);
     } catch (err: any) {
@@ -183,8 +223,7 @@ function App() {
   const handleRefreshInventory = async () => {
     setIsRefreshingInventory(true);
     try {
-      const res = await fetch('https://probeinventory-ippxlry6na-uc.a.run.app');
-      const data = await res.json();
+      const data = await gw('probeInventory');
       setInventory(data);
     } catch (err) {
       console.error('Failed to refresh inventory:', err);
@@ -231,8 +270,7 @@ function App() {
     if (!authToken) return;
     const checkHealth = async () => {
       try {
-        const res = await fetch('https://us-central1-suhas-ag.cloudfunctions.net/checkKiteHealth');
-        const data = await res.json();
+        const data = await gw('checkHealth');
         setKiteStatus(data.status);
       } catch (err) {
         setKiteStatus('ERROR');
@@ -245,19 +283,14 @@ function App() {
 
   const handleUpdateConfig = async () => {
     try {
-      const res = await fetch('https://us-central1-suhas-ag.cloudfunctions.net/updateKiteCredentials', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        mode: 'cors',
-        body: JSON.stringify({ 
-          apiKey: formConfig.apiKey, 
-          apiSecret: formConfig.apiSecret, 
-          userId: formConfig.userId, 
-          password: formConfig.password, 
-          totpSecret: formConfig.totpSecret,
-          disableFallback: formConfig.disableFallback
-        })
-      });
+      const res = await gw('updateCredentials', {
+        apiKey: formConfig.apiKey,
+        apiSecret: formConfig.apiSecret,
+        userId: formConfig.userId,
+        password: formConfig.password,
+        totpSecret: formConfig.totpSecret,
+        disableFallback: formConfig.disableFallback
+      }, { raw: true }) as Response;
       if (res.ok) {
         alert('Configuration saved successfully.');
       } else {
@@ -277,44 +310,39 @@ function App() {
     }
 
     try {
-      const res = await fetch('https://us-central1-suhas-ag.cloudfunctions.net/updateKitetoken', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        mode: 'cors',
-        body: JSON.stringify({ 
-          requestToken: formConfig.requestToken, 
-          apiKey: formConfig.apiKey || kiteMeta?.apiKey,
-          apiSecret: formConfig.apiSecret || kiteMeta?.apiSecret
-        })
+      const data = await gw('updateToken', {
+        requestToken: formConfig.requestToken,
+        apiKey: formConfig.apiKey || kiteMeta?.apiKey,
+        apiSecret: formConfig.apiSecret || kiteMeta?.apiSecret
       });
-      const data = await res.json();
-      if (res.ok) {
-        alert(data.message || 'Kite session updated');
-        setKiteStatus('UPDATING');
-        setTimeout(() => window.location.reload(), 1500);
-      } else {
-        alert(`Error: ${data.error || data.message || 'Failed to update'}`);
-      }
+      alert(data.message || 'Kite session updated');
+      setKiteStatus('UPDATING');
+      setTimeout(() => window.location.reload(), 1500);
     } catch (err: any) {
-      alert(`Network Error: ${err.message}`);
+      alert(`Error: ${err.message}`);
     }
   };
 
   const handleKiteLogin = () => {
     const apiKey = kiteMeta?.apiKey || 'm0unb8k99qo1ak4m';
-    window.open(`https://kite.zerodha.com/connect/login?v=3&api_key=${apiKey}`, '_blank');
+    window.location.href = `https://kite.zerodha.com/connect/login?v=3&api_key=${apiKey}`;
   };
 
   const handleRunPaperTrading = async () => {
     setIsTriggering(true);
     const today = new Date().toISOString().split('T')[0];
     try {
-      const res = await fetch(`https://us-central1-suhas-ag.cloudfunctions.net/startMorningExecution?date=${today}&universe=${universe}`, { mode: 'cors' });
+      const res = await fetch(GATEWAY_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        mode: 'cors',
+        body: JSON.stringify({ action: 'startEod', date: today, universe, force: true }),
+      });
       const data = await res.json();
       if (res.ok) {
         alert(data.message || 'Paper trading simulation started');
       } else {
-        alert(`Error: ${data.message || 'Failed to start simulation'}`);
+        alert(`Error: ${data.error || data.message || 'Failed to start simulation'}`);
       }
     } catch (err: any) {
       alert(`Network Error: ${err.message}`);
@@ -326,8 +354,7 @@ function App() {
   const handleStopJob = async (jobId: string) => {
     if (!confirm(`Are you sure you want to stop job ${jobId}?`)) return;
     try {
-      const res = await fetch(`https://terminatejob-ippxlry6na-uc.a.run.app?jobId=${jobId}`, { mode: 'cors' });
-      const data = await res.json();
+      const data = await gw('terminate', { jobId });
       alert(data.message || 'Termination requested');
     } catch (err) {
       alert('Failed to stop job');
@@ -419,9 +446,25 @@ function App() {
           >
             <Terminal size={16} /> Logs
           </button>
+          <button 
+            onClick={() => setView('SETTINGS')}
+            style={{ 
+              background: 'none', border: 'none', color: view === 'SETTINGS' ? '#10b981' : '#444', 
+              fontWeight: 600, cursor: 'pointer', fontSize: '0.9rem', display: 'flex', alignItems: 'center', gap: '0.5rem' 
+            }}
+          >
+            <Settings size={16} /> Settings
+          </button>
         </nav>
 
         <div style={{ display: 'flex', gap: '1rem', alignItems: 'center', marginLeft: 'auto' }}>
+          <input 
+            type="date" 
+            className="input" 
+            style={{ fontSize: '0.8rem', padding: '0.4rem', height: 'auto', background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', color: '#fff', borderRadius: '4px' }}
+            value={selectedDate}
+            onChange={e => setSelectedDate(e.target.value)}
+          />
           <button className="btn-premium" onClick={downloadHistory}>
             <Download size={16} /> Download Report
           </button>
@@ -532,6 +575,14 @@ function App() {
                     <div style={{ fontSize: '1.2rem', fontWeight: 700 }}>{inventory.totalSymbolsTracked}</div>
                   </div>
                   <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: '0.7rem', color: '#10b981', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Sufficient Data (≥60 bars)</div>
+                    <div style={{ fontSize: '1.2rem', fontWeight: 700, color: '#10b981' }}>{inventory.symbolsWithSufficientData ?? '—'}</div>
+                  </div>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: '0.7rem', color: '#ef4444', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Insufficient (&lt;60 bars)</div>
+                    <div style={{ fontSize: '1.2rem', fontWeight: 700, color: '#ef4444' }}>{inventory.symbolsInsufficient ?? '—'}</div>
+                  </div>
+                  <div style={{ flex: 1 }}>
                     <div style={{ fontSize: '0.7rem', color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Universe Coverage</div>
                     <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.25rem' }}>
                       {inventory.universes?.map((u: any) => (
@@ -546,6 +597,30 @@ function App() {
                     <div style={{ fontSize: '0.8rem', color: '#94a3b8' }}>{new Date(inventory.timestamp).toLocaleTimeString()}</div>
                   </div>
                 </div>
+
+                {/* Data coverage summary table */}
+                {inventory.groupings?.length > 0 && (
+                  <div style={{ marginTop: '1rem', overflowX: 'auto' }}>
+                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.8rem' }}>
+                      <thead>
+                        <tr style={{ borderBottom: '1px solid #334155' }}>
+                          <th style={{ textAlign: 'left', padding: '6px 8px', color: '#94a3b8', fontWeight: 600 }}>Date Range</th>
+                          <th style={{ textAlign: 'right', padding: '6px 8px', color: '#94a3b8', fontWeight: 600 }}>Symbols</th>
+                          <th style={{ textAlign: 'right', padding: '6px 8px', color: '#94a3b8', fontWeight: 600 }}>Signals Found</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {inventory.groupings.map((g: any, i: number) => (
+                          <tr key={i} style={{ borderBottom: '1px solid #1e293b' }}>
+                            <td style={{ padding: '6px 8px', color: '#e2e8f0' }}>{g.bars} days</td>
+                            <td style={{ padding: '6px 8px', color: '#e2e8f0', textAlign: 'right' }}>{g.symbols} symbols</td>
+                            <td style={{ padding: '6px 8px', color: '#10b981', textAlign: 'right' }}>{inventory.signalStats?.total ?? 0} signals</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
               </div>
             )}
           </section>
@@ -635,7 +710,7 @@ function App() {
                 <div style={{ fontSize: '0.8rem', fontWeight: 600, marginBottom: '1rem', color: '#fbbf24' }}>2. Active Session Management</div>
                 <div style={{ display: 'grid', gap: '0.75rem' }}>
                   <button 
-                    onClick={() => window.open(`https://kite.zerodha.com/connect/login?v=3&api_key=${formConfig.apiKey || kiteMeta?.apiKey || 'm0unb8k99qo1ak4m'}`, '_blank')}
+                    onClick={() => { window.location.href = `https://kite.zerodha.com/connect/login?v=3&api_key=${formConfig.apiKey || kiteMeta?.apiKey || 'm0unb8k99qo1ak4m'}`; }}
                     className="btn-premium" style={{ width: '100%', fontSize: '0.7rem', background: '#fbbf24', color: '#000' }}
                   >
                     Open Kite Login Page
@@ -986,7 +1061,7 @@ function App() {
                       )}
                       {(job.status === 'DONE' || job.status === 'SUCCESS') && (
                         <button 
-                          onClick={() => window.open(`https://us-central1-suhas-ag.cloudfunctions.net/downloadReport?jobId=${job.id}`, '_blank')}
+                          onClick={() => window.open(`${GATEWAY_URL}?action=downloadReport&jobId=${job.id}`, '_blank')}
                           style={{ background: 'none', border: 'none', color: '#3b82f6', cursor: 'pointer', padding: '4px' }}
                           title="Download Report"
                         >
@@ -1044,6 +1119,100 @@ function App() {
                   ))}
                 </tbody>
               </table>
+            </div>
+          </div>
+        )}
+
+        {view === 'SETTINGS' && (
+          <div style={{ maxWidth: '640px' }}>
+            <div className="card" style={{ marginBottom: '1.5rem' }}>
+              <h3 style={{ color: '#94a3b8', marginBottom: '1rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                <Settings size={18} /> Kite Connect Credentials
+              </h3>
+              <p style={{ color: '#64748b', fontSize: '0.8rem', marginBottom: '1rem' }}>
+                Required for automated daily Kite session renewal via TOTP. Credentials are stored encrypted in Firestore.
+              </p>
+              {(['apiKey', 'apiSecret', 'userId', 'password', 'totpSecret'] as const).map(field => (
+                <div key={field} style={{ marginBottom: '0.75rem' }}>
+                  <label style={{ display: 'block', color: '#94a3b8', fontSize: '0.75rem', fontWeight: 600, marginBottom: '0.25rem', textTransform: 'capitalize' }}>
+                    {field === 'totpSecret' ? 'TOTP Secret' : field === 'apiKey' ? 'API Key' : field === 'apiSecret' ? 'API Secret' : field === 'userId' ? 'User ID' : 'Password'}
+                  </label>
+                  <input
+                    type={field === 'password' || field === 'apiSecret' || field === 'totpSecret' ? 'password' : 'text'}
+                    className="input"
+                    style={{ width: '100%', fontSize: '0.85rem', padding: '0.5rem', background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', color: '#fff', borderRadius: '4px' }}
+                    placeholder={field === 'totpSecret' ? 'Base32 TOTP secret from Kite' : `Enter ${field}`}
+                    value={(settingsForm as any)[field]}
+                    onChange={e => setSettingsForm(prev => ({ ...prev, [field]: e.target.value }))}
+                  />
+                </div>
+              ))}
+              <button
+                className="btn-premium"
+                disabled={settingsSaving}
+                style={{ marginTop: '0.5rem' }}
+                onClick={async () => {
+                  setSettingsSaving(true);
+                  setSettingsStatus(null);
+                  try {
+                    const payload: any = {};
+                    for (const [k, v] of Object.entries(settingsForm)) { if (v) payload[k] = v; }
+                    await gw('updateCredentials', payload);
+                    setSettingsStatus('✅ Credentials saved successfully');
+                    setSettingsForm({ apiKey: '', apiSecret: '', userId: '', password: '', totpSecret: '' });
+                  } catch (err: any) {
+                    setSettingsStatus(`❌ ${err.message}`);
+                  } finally {
+                    setSettingsSaving(false);
+                  }
+                }}
+              >
+                {settingsSaving ? <Loader2 size={14} className="spin" /> : null}
+                Save Credentials
+              </button>
+              {settingsStatus && <p style={{ marginTop: '0.75rem', fontSize: '0.8rem', color: settingsStatus.startsWith('✅') ? '#10b981' : '#ef4444' }}>{settingsStatus}</p>}
+            </div>
+
+            <div className="card" style={{ marginBottom: '1.5rem' }}>
+              <h3 style={{ color: '#94a3b8', marginBottom: '1rem' }}>🔄 Test Auto-Renewal</h3>
+              <p style={{ color: '#64748b', fontSize: '0.8rem', marginBottom: '1rem' }}>
+                Trigger a manual Kite session refresh using saved TOTP credentials.
+              </p>
+              <button
+                className="btn-premium"
+                onClick={async () => {
+                  setSettingsStatus(null);
+                  try {
+                    const res = await gw('scheduledKiteRenew');
+                    setSettingsStatus(`✅ ${(res as any)?.message || 'Kite session renewed'}`);
+                  } catch (err: any) {
+                    setSettingsStatus(`❌ Auto-renew failed: ${err.message}`);
+                  }
+                }}
+              >
+                🔑 Renew Kite Session Now
+              </button>
+            </div>
+
+            <div className="card">
+              <h3 style={{ color: '#94a3b8', marginBottom: '1rem' }}>⏰ Daily Automation Schedule</h3>
+              <div style={{ color: '#94a3b8', fontSize: '0.85rem', lineHeight: 1.8 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid #1e293b', padding: '0.5rem 0' }}>
+                  <span>🔑 Kite Auto-Renew</span>
+                  <span style={{ color: '#10b981' }}>8:30 AM IST (Mon-Fri)</span>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid #1e293b', padding: '0.5rem 0' }}>
+                  <span>📊 EOD Signal Run</span>
+                  <span style={{ color: '#10b981' }}>3:45 PM IST (Mon-Fri)</span>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', padding: '0.5rem 0' }}>
+                  <span>📈 Order Fill Simulation</span>
+                  <span style={{ color: '#10b981' }}>Next day EOD run</span>
+                </div>
+              </div>
+              <p style={{ color: '#475569', fontSize: '0.75rem', marginTop: '1rem' }}>
+                Requires 2 Cloud Scheduler jobs in GCP Console pointing at the gateway. See documentation for setup.
+              </p>
             </div>
           </div>
         )}

@@ -59,9 +59,80 @@ async function getEma200SlopeNeg(
 }
 
 /**
+ * V2.3: Compute real breadth metrics from universe member features.
+ * Scans all universe members' features for the given date to compute:
+ * - % above EMA50, % above EMA200
+ * - New 20-day highs, new 20-day lows
+ * Falls back to neutral defaults if data is insufficient.
+ */
+async function computeUniverseBreadth(db: FirebaseFirestore.Firestore, dateId: string, universeId: string = 'nifty500'): Promise<{
+  pctAboveEMA50: number;
+  pctAboveEMA200: number;
+  newHighs20: number;
+  newLows20: number;
+}> {
+  const defaults = { pctAboveEMA50: 50, pctAboveEMA200: 50, newHighs20: 25, newLows20: 25 };
+
+  try {
+    const universeSnap = await db.collection('universes').doc(universeId).collection('members').get();
+    if (universeSnap.empty) return defaults;
+
+    const symbols = universeSnap.docs.map(d => d.id);
+    let total = 0;
+    let aboveEma50 = 0;
+    let aboveEma200 = 0;
+    let newHighs = 0;
+    let newLows = 0;
+
+    // Process in batches of 50 to avoid overwhelming Firestore
+    const batchSize = 50;
+    for (let i = 0; i < symbols.length; i += batchSize) {
+      const batch = symbols.slice(i, i + batchSize);
+      const featurePromises = batch.map(sym =>
+        db.collection('features').doc(sym).collection('days').doc(dateId).get()
+      );
+      const featureSnaps = await Promise.all(featurePromises);
+
+      for (const snap of featureSnaps) {
+        if (!snap.exists) continue;
+        const feat = snap.data() as any;
+        const close = Number(feat.close || feat.ema20); // Use EMA20 as close proxy if close unavailable
+        const ema50 = Number(feat.ema50);
+        const ema200 = Number(feat.ema200);
+
+        if (!Number.isFinite(close) || close <= 0) continue;
+        total++;
+
+        if (Number.isFinite(ema50) && ema50 > 0 && close > ema50) aboveEma50++;
+        if (Number.isFinite(ema200) && ema200 > 0 && close > ema200) aboveEma200++;
+
+        // Check if close is a 20-day high or low using trendState hints
+        const high20 = Number(feat.high20 || 0);
+        const low20 = Number(feat.low20 || Infinity);
+        
+        if (high20 > 0 && close >= high20) newHighs++;
+        if (low20 < Infinity && close <= low20) newLows++;
+      }
+    }
+
+    if (total < 10) return defaults; // Not enough data
+
+    return {
+      pctAboveEMA50: Math.round((aboveEma50 / total) * 100),
+      pctAboveEMA200: Math.round((aboveEma200 / total) * 100),
+      newHighs20: Math.round((newHighs / total) * 100),
+      newLows20: Math.round((newLows / total) * 100),
+    };
+  } catch (err: any) {
+    console.warn(`[Regime] Breadth computation failed, using defaults: ${err.message}`);
+    return defaults;
+  }
+}
+
+/**
  * HTTP Trigger to compute the Market Regime for the universe.
  */
-export async function doComputeRegime(date: string, jobId?: string, providedIndexSymbol?: string) {
+export async function doComputeRegime(date: string, jobId?: string, providedIndexSymbol?: string, universeId: string = 'nifty500') {
   const db = getDb();
   const dateId = toDateId(date);
 
@@ -114,6 +185,8 @@ export async function doComputeRegime(date: string, jobId?: string, providedInde
   let marketState: Regime['marketState'] = 'TRANSITION';
   let riskMultiplier = 0.0;
   let notes = `Computing regime for ${indexSymbol} on ${date} (using ${effectiveDateId})`;
+  let breadth: { pctAboveEMA50: number; pctAboveEMA200: number; newHighs20: number; newLows20: number; universeMedianRet20d?: number; universeMedianRet60d?: number } = { pctAboveEMA50: 0, pctAboveEMA200: 0, newHighs20: 0, newLows20: 0 };
+  let persistenceDays = 0;
 
   if (indexFeatSnap && latestIndexBar) {
     const feat = indexFeatSnap.data() as AnyRecord;
@@ -140,6 +213,9 @@ export async function doComputeRegime(date: string, jobId?: string, providedInde
     const ema200SlopeNeg = await getEma200SlopeNeg(db, indexSymbol, effectiveDateId, 20);
 
     // Determine regime with deterministic precedence.
+    // V3.0: Compute breadth first for confirmation
+    breadth = await computeUniverseBreadth(db, effectiveDateId, universeId);
+    
     if (isEma200Bear && (ema200SlopeNeg ?? true)) {
       marketState = 'BEAR';
       riskMultiplier = 0.5;
@@ -149,21 +225,65 @@ export async function doComputeRegime(date: string, jobId?: string, providedInde
           : 'Index below EMA200 with negative EMA200 slope. Long-term bearish bias active.';
     } else if (isEmaTrendBear) {
       marketState = 'BEAR';
-      riskMultiplier = 0.75; // More lenient for short-term bear
+      riskMultiplier = 0.75;
       notes = 'Index EMA20 < EMA50. Short-term bearish trend active.';
     } else if (hasVol && atrp > 1.5 * atrpMa100) {
       marketState = 'HIGH_VOL';
       riskMultiplier = 0.5;
       notes = 'Volatility spike detected on Index.';
     } else if (trendState === 'UP') {
-      marketState = 'TREND';
-      riskMultiplier = 1.0;
-      notes = 'Index in confirmed uptrend.';
+      // V3.0: Breadth confirmation — TREND requires majority above EMA50
+      const { REGIME_HARDENING } = await import('../config/runtime');
+      if (breadth.pctAboveEMA50 >= REGIME_HARDENING.TREND_BREADTH_MIN * 100) {
+        marketState = 'TREND';
+        riskMultiplier = 1.0;
+        notes = `Index uptrend confirmed by breadth (${breadth.pctAboveEMA50.toFixed(0)}% > EMA50).`;
+      } else {
+        marketState = 'RANGE';
+        riskMultiplier = 0.85;
+        notes = `Index UP but weak breadth (${breadth.pctAboveEMA50.toFixed(0)}% > EMA50 < ${REGIME_HARDENING.TREND_BREADTH_MIN*100}%). Downgraded to RANGE.`;
+      }
     } else {
       marketState = 'RANGE';
       riskMultiplier = 1.0;
       notes = 'Default range regime.';
     }
+
+    // V3.0: Breadth confirmation for BEAR — must have weak breadth
+    if (marketState === 'BEAR') {
+      const { REGIME_HARDENING } = await import('../config/runtime');
+      if (breadth.pctAboveEMA50 > REGIME_HARDENING.BEAR_BREADTH_MAX * 100 * 1.5) {
+        // Breadth doesn't confirm bear — could be index-specific weakness
+        marketState = 'RANGE';
+        riskMultiplier = 0.85;
+        notes += ` [Breadth override: ${breadth.pctAboveEMA50.toFixed(0)}% above EMA50 doesn't confirm BEAR]`;
+      }
+    }
+
+    // V3.0: Regime hysteresis — check previous regime for stability
+    const { REGIME_HARDENING: RH } = await import('../config/runtime');
+    const prevRegimeSnap = await db.collection('regime').orderBy(admin.firestore.FieldPath.documentId(), 'desc').limit(RH.HYSTERESIS_BARS + 1).get();
+    let consecutiveSameRegime = 0;
+    let prevRegimeState = '';
+    for (const doc of prevRegimeSnap.docs) {
+      if (doc.id >= effectiveDateId) continue;
+      const prev = doc.data();
+      if (!prevRegimeState) prevRegimeState = prev.marketState;
+      if (prev.marketState === marketState) {
+        consecutiveSameRegime++;
+      } else break;
+    }
+    
+    // If new regime doesn't have enough confirmation bars, use TRANSITION
+    if (prevRegimeState && prevRegimeState !== marketState && consecutiveSameRegime < RH.HYSTERESIS_BARS - 1) {
+      const originalState = marketState;
+      marketState = 'TRANSITION';
+      riskMultiplier = 0.5;
+      notes = `Regime change ${prevRegimeState}→${originalState} pending (${consecutiveSameRegime+1}/${RH.HYSTERESIS_BARS} bars confirmed). Using TRANSITION.`;
+    }
+    
+    // V3.0: Persistence score
+    persistenceDays = prevRegimeState === marketState ? consecutiveSameRegime + 1 : 1;
   } else {
     const errorParts = [];
     if (!indexFeatSnap) {
@@ -191,31 +311,24 @@ export async function doComputeRegime(date: string, jobId?: string, providedInde
 
   const regimeDoc: Regime = {
     marketState,
-    tradeAllowed: true, // Data exists, so trading is theoretically allowed (subject to regime details)
+    tradeAllowed: marketState !== 'TRANSITION',
     riskMultiplier,
-
-    // Tighter max positions during stress
     maxNewPositions:
-      marketState === 'BEAR' || marketState === 'HIGH_VOL' ? 2 : 5,
-
-    // Keep constant for now; you can later adjust per regime/strategy
+      marketState === 'BEAR' || marketState === 'HIGH_VOL' ? 2 :
+      marketState === 'TRANSITION' ? 0 : 5,
     minSignalScore: 60,
-
     notes,
-    reason: notes, // Consistent with reporting.ts
+    reason: notes,
     metrics: {
       close: Number((latestIndexBar as any).close),
       ema200: indexFeatSnap.data()?.ema200,
-      ema200Slope: await getEma200SlopeNeg(db, indexSymbol, effectiveDateId, 20) === true ? -0.01 : 0.01, // Mock slope value for display
+      ema200Slope: await getEma200SlopeNeg(db, indexSymbol, effectiveDateId, 20) === true ? -0.01 : 0.01,
       ema20: indexFeatSnap.data()?.ema20,
     },
-    // Placeholder breadth – recommend making these null/derived later
-    breadth: {
-      pctAboveEMA50: 65,
-      pctAboveEMA200: 70,
-      newHighs20: 45,
-      newLows20: 5
-    }
+    breadth,
+    // V3.0: Persistence and hysteresis tracking
+    persistenceDays,
+    regimeConfirmed: marketState !== 'TRANSITION',
   };
 
   await db.collection('regime').doc(dateId).set(regimeDoc);

@@ -31,16 +31,19 @@ class TaskClient {
         }
     }
     /**
-     * Enqueue a task to a specific Cloud Function (Task Queue)
+     * Enqueue a task to the Unified Gateway
      */
-    async enqueue(functionName, payload) {
-        const parent = this.client.queuePath(this.project, this.location, functionName);
+    async enqueue(functionName, payload, queueName) {
+        const targetQueue = queueName || 'taskDispatcher';
+        const parent = this.client.queuePath(this.project, this.location, targetQueue);
+        // Wrap payload for the gateway
+        const wrappedPayload = Object.assign(Object.assign({}, payload), { taskType: functionName });
         // Construct the task
         const task = {
             httpRequest: {
                 httpMethod: 'POST',
-                url: `https://${this.location}-${this.project}.cloudfunctions.net/${functionName}`,
-                body: Buffer.from(JSON.stringify(payload)).toString('base64'),
+                url: `https://${this.location}-${this.project}.cloudfunctions.net/gateway`,
+                body: Buffer.from(JSON.stringify(wrappedPayload)).toString('base64'),
                 headers: {
                     'Content-Type': 'application/json',
                 },
@@ -52,16 +55,18 @@ class TaskClient {
         return this.createTaskWithRetry({ parent, task });
     }
     /**
-     * Enqueue a dispatch-style task (for onTaskDispatched functions)
+     * Enqueue a dispatch-style task to the Unified Gateway
      */
     async enqueueDispatch(queueName, payload) {
         const parent = this.client.queuePath(this.project, this.location, queueName);
+        // Wrap payload for the gateway
+        const wrappedPayload = Object.assign(Object.assign({}, payload), { taskType: queueName });
         const task = {
             dispatchDeadline: { seconds: 60 * 10 }, // 10 mins
             httpRequest: {
                 httpMethod: 'POST',
-                url: `https://${this.location}-${this.project}.cloudfunctions.net/${queueName}`,
-                body: Buffer.from(JSON.stringify(payload)).toString('base64'),
+                url: `https://${this.location}-${this.project}.cloudfunctions.net/gateway`,
+                body: Buffer.from(JSON.stringify(wrappedPayload)).toString('base64'),
                 headers: {
                     'Content-Type': 'application/json',
                 },

@@ -33,7 +33,7 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.purgeJobs = exports.auditJobs = exports.cleanupData = void 0;
+exports.seedConfig = exports.purgeJobs = exports.auditJobs = exports.cleanupData = void 0;
 const https_1 = require("firebase-functions/v2/https");
 const admin = __importStar(require("firebase-admin"));
 const getDb = () => {
@@ -155,6 +155,35 @@ exports.purgeJobs = (0, https_1.onRequest)({ cors: true }, async (req, res) => {
     catch (err) {
         console.error('Purge failed:', err);
         res.status(500).send({ error: 'Purge failed', details: String(err) });
+    }
+});
+/**
+ * Seed the missing config/account document that strategy.ts requires
+ */
+exports.seedConfig = (0, https_1.onRequest)({ cors: true }, async (req, res) => {
+    const db = getDb();
+    const accountConfig = {
+        equity: 1000000, // ₹10 Lakh starting capital
+        baseRiskPct: 0.005, // 0.5% risk per trade
+        maxOpenRiskR: 6, // Max 6R open portfolio heat
+        maxPositions: 10, // Max 10 concurrent open trades
+        strategyRiskWeights: {
+            PullbackEOD: 1.0,
+            BreakoutCloseEOD: 1.2,
+            MeanReversionEOD: 0.8,
+            ShortBounceEOD: 0.8
+        }
+    };
+    try {
+        await db.collection('config').doc('account').set(accountConfig, { merge: true });
+        res.status(200).send({
+            message: 'config/account seeded successfully',
+            config: accountConfig
+        });
+    }
+    catch (error) {
+        console.error('Failed to seed config:', error);
+        res.status(500).send({ error: 'Failed to seed config', details: String(error) });
     }
 });
 //# sourceMappingURL=maintenance.js.map

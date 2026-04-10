@@ -33,19 +33,27 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.sweepStuckJobs = sweepStuckJobs;
 exports.doStartEodRun = doStartEodRun;
+exports.orchestrateEodTask = orchestrateEodTask;
+exports.doStartDeepSync = doStartDeepSync;
+exports.orchestrateDeepSyncTask = orchestrateDeepSyncTask;
 exports.doStartMorningExecution = doStartMorningExecution;
 exports.doSyncUniverse = doSyncUniverse;
 exports.terminateJob = terminateJob;
-exports.processStageTask = processStageTask;
 exports.runEodLogic = runEodLogic;
 exports.runMorningLogic = runMorningLogic;
 exports.processSymbolTask = processSymbolTask;
 exports.processMorningSymbolTask = processMorningSymbolTask;
+exports.doSyncCalendar = doSyncCalendar;
 const admin = __importStar(require("firebase-admin"));
 const firestore_1 = require("firebase-admin/firestore");
-const logger_1 = require("./logger");
 const tasks_1 = require("./tasks");
+const calendar_1 = require("./calendar");
+const logger_1 = require("./logger");
+const runtime_1 = require("../config/runtime");
+const marketdata_1 = require("./marketdata");
+const alerting_1 = require("./alerting");
 const getDb = () => {
     if (admin.apps.length === 0) {
         admin.initializeApp();
@@ -57,212 +65,273 @@ const getDb = () => {
 };
 const toDateId = (date) => date.replace(/-/g, '');
 /**
- * Task Queue Trigger to get instrument map (optimized)
+ * V3.0: Audit trail — logs stage transitions per symbol/job.
+ */
+async function auditLog(db, jobId, event, details = {}) {
+    try {
+        await db.collection('jobs').doc(jobId).collection('audit').add(Object.assign(Object.assign({ event }, details), { timestamp: admin.firestore.Timestamp.now() }));
+    }
+    catch ( /* non-blocking */_a) { /* non-blocking */ }
+}
+/**
+ * V3.0: Check idempotency — returns true if this stage was already completed.
+ */
+async function isStageCompleted(db, jobId, symbol, stage) {
+    const key = `${jobId}_${symbol}_${stage}`;
+    const sentinel = await db.collection('idempotency').doc(key).get();
+    return sentinel.exists;
+}
+async function markStageCompleted(db, jobId, symbol, stage) {
+    const key = `${jobId}_${symbol}_${stage}`;
+    await db.collection('idempotency').doc(key).set({ completedAt: admin.firestore.Timestamp.now() });
+}
+/**
+ * V3.0: Stuck job sweeper — call periodically to clean up orphaned jobs.
+ */
+async function sweepStuckJobs() {
+    const db = getDb();
+    const cutoff = new Date(Date.now() - runtime_1.ORCH_CONFIG.JOB_TIMEOUT_MINUTES * 60000);
+    const stuckJobs = await db.collection('jobs')
+        .where('status', 'in', ['RUNNING', 'FINALIZING'])
+        .where('startedAt', '<', firestore_1.Timestamp.fromDate(cutoff))
+        .get();
+    for (const doc of stuckJobs.docs) {
+        await doc.ref.update({
+            status: 'FAILED',
+            errorMessage: `Auto-failed: exceeded ${runtime_1.ORCH_CONFIG.JOB_TIMEOUT_MINUTES}min timeout`,
+            updatedAt: firestore_1.Timestamp.now()
+        });
+        await logger_1.logger.warn(`[Orchestrator] Swept stuck job ${doc.id}`, 'Orchestrator');
+    }
+    return stuckJobs.size;
+}
+/**
+ * Task Queue Trigger to get instrument map
  */
 async function getInstrumentTokenMap(apiKey, accessToken) {
-    const { getNSEInstruments } = await Promise.resolve().then(() => __importStar(require('./marketdata')));
-    const instruments = await getNSEInstruments(apiKey, accessToken);
+    const { getNSEInstrumentsMap } = await Promise.resolve().then(() => __importStar(require('./marketdata')));
+    const instrumentsMap = await getNSEInstrumentsMap(apiKey, accessToken);
     const map = {};
-    instruments.forEach((i) => {
-        map[i.tradingsymbol] = i.instrument_token;
-        map[i.tradingsymbol + '.NS'] = i.instrument_token;
+    instrumentsMap.forEach((token, symbol) => {
+        map[symbol] = token;
+        map[symbol + '.NS'] = token;
     });
     return map;
 }
 /**
  * HTTP Triggers for Dashboard/Scheduler
  */
-/**
- * Logic to start an EOD run.
- */
 async function doStartEodRun(req, res) {
-    const { date, universe = 'nifty50' } = req.query;
+    const { date, universe = 'nifty50', forceRegime, force } = Object.assign(Object.assign({}, req.query), req.body);
     if (!date) {
         res.status(400).send({ error: 'Missing "date" query parameter (YYYY-MM-DD)' });
         return;
     }
+    // V3.0: Kill switch check
+    if (runtime_1.RUNTIME_CONFIG.KILL_SWITCH) {
+        res.status(503).send({ error: 'Kill switch is active — all trading halted' });
+        return;
+    }
+    // V3.0: Market hours guard — reject if market still open (skip with force=true for paper testing)
+    if (!force && runtime_1.RUNTIME_CONFIG.MODE !== 'BACKFILL' && runtime_1.RUNTIME_CONFIG.MODE !== 'REPLAY') {
+        if (!(0, marketdata_1.isMarketClosed)()) {
+            res.status(400).send({ error: `Market still open. EOD can only run after ${runtime_1.MARKET_HOURS.EOD_SAFE_HOUR}:${String(runtime_1.MARKET_HOURS.EOD_SAFE_MINUTE).padStart(2, '0')} IST` });
+            return;
+        }
+    }
     const jobId = `eod_${date}_${universe}_${Date.now()}`;
     const db = getDb();
-    // Concurrency Guard: Don't start if another job is already RUNNING
-    const runningJobs = await db.collection('jobs').where('status', '==', 'RUNNING').limit(1).get();
-    if (!runningJobs.empty) {
-        res.status(409).send({
-            error: 'Job in progress',
-            message: 'Another job is currently RUNNING. Please wait or terminate it before starting a new one.',
-            runningJobId: runningJobs.docs[0].id
-        });
-        return;
-    }
-    // Initialize job in Firestore IMMEDIATELY so it's visible to probeJobs
-    await db.collection('jobs').doc(jobId).set({
-        id: jobId,
-        runDate: date,
-        universeId: universe,
-        type: 'EOD_RUN',
-        stage: 'STARTING',
-        status: 'RUNNING',
-        counts: { total: 0, done: 0, failed: 0 },
-        startedAt: admin.firestore.Timestamp.now(),
-        updatedAt: admin.firestore.Timestamp.now(),
-        dataSource: 'KITE',
-        versionHash: 'v3.7Atomic',
-    });
-    // Run the logic asynchronously to prevent dashboard timeouts.
-    // The job status is tracked in Firestore.
-    (async () => {
-        try {
-            await runEodLogic(date, jobId, universe);
-            console.log(`[Job ${jobId}] EOD run completed successfully`);
-        }
-        catch (err) {
-            console.error(`[Job ${jobId}] Critical execution error:`, err);
-            // Status update is handled inside runEodLogic for catch block
-        }
-    })();
-    res.status(202).send({
-        message: 'EOD run triggered successfully',
-        jobId,
-        trackingUrl: `/jobs/${jobId}`
-    });
-}
-/**
- * Logic to start morning execution.
- */
-async function doStartMorningExecution(req, res) {
-    const { date, universe = 'nifty50' } = req.query;
-    if (!date) {
-        res.status(400).send({ error: 'Missing "date" query parameter' });
-        return;
-    }
-    const jobId = `morning_${date}_${universe}_${Date.now()}`;
-    // Initialize job
-    const db = getDb();
-    // Concurrency Guard
-    const runningJobs = await db.collection('jobs').where('status', '==', 'RUNNING').limit(1).get();
-    if (!runningJobs.empty) {
-        res.status(409).send({
-            error: 'Job in progress',
-            message: 'Cannot start morning execution while another job is RUNNING.',
-            runningJobId: runningJobs.docs[0].id
-        });
-        return;
-    }
-    await db.collection('jobs').doc(jobId).set({
-        id: jobId,
-        runDate: date,
-        universeId: universe,
-        type: 'OPEN_SIM_RUN',
-        stage: 'STARTING',
-        status: 'RUNNING',
-        counts: { total: 0, done: 0, failed: 0 },
-        startedAt: admin.firestore.Timestamp.now(),
-        updatedAt: admin.firestore.Timestamp.now(),
-        dataSource: 'KITE',
-        versionHash: 'v3.7Atomic',
-    });
-    // Start asynchronously to prevent dashboard timeouts
-    (async () => {
-        try {
-            await runMorningLogic(date, jobId, universe);
-            console.log(`[Job ${jobId}] Morning execution completed successfully`);
-        }
-        catch (err) {
-            console.error(`[Job ${jobId}] Morning execution failed:`, err);
-        }
-    })();
-    res.status(202).send({
-        message: 'Morning execution triggered successfully',
-        jobId
-    });
-}
-/**
- * Logic to sync universe members and instrument tokens.
- */
-async function doSyncUniverse(req, res) {
-    const db = getDb();
-    const date = new Date().toISOString().split('T')[0];
-    const jobId = `sync_${date}_${Date.now()}`;
-    // Check running
     const runningJobs = await db.collection('jobs').where('status', '==', 'RUNNING').limit(1).get();
     if (!runningJobs.empty) {
         res.status(409).send({ error: 'Job in progress', runningJobId: runningJobs.docs[0].id });
         return;
     }
     await db.collection('jobs').doc(jobId).set({
+        id: jobId, runDate: date, universeId: universe, type: 'EOD_RUN', stage: 'STARTING', status: 'RUNNING',
+        counts: { total: 0, done: 0, failed: 0 },
+        startedAt: admin.firestore.Timestamp.now(), updatedAt: admin.firestore.Timestamp.now(),
+        dataSource: 'KITE', versionHash: 'v1.1Delta',
+        forceRegime: forceRegime || null
+    });
+    // Enqueue the main orchestration loop as a task (Gap B12 Fixed)
+    // Using processSymbolTask queue as it's guaranteed to exist
+    await tasks_1.taskClient.enqueue('orchestrateEodTask', { jobId, date, universe, forceRegime }, 'processSymbolTask');
+    res.status(202).send({ message: 'EOD run triggered', jobId });
+}
+/**
+ * Task Handler: Main EOD Orchestration Loop
+ */
+async function orchestrateEodTask(req) {
+    const { jobId, date, universe = 'nifty50', forceRegime } = req.body;
+    if (!jobId || !date) {
+        console.error('[Orchestrator] Missing jobId or date in task body');
+        return;
+    }
+    try {
+        await logger_1.logger.info(`[Orchestrator] Starting orchestration task for Job ${jobId}`, 'Orchestrator');
+        await runEodLogic(date, jobId, universe, forceRegime);
+    }
+    catch (err) {
+        await logger_1.logger.error(`[Orchestrator] Orchestration task failed: ${err.message}`, 'Orchestrator', { jobId });
+        const db = getDb();
+        await db.collection('jobs').doc(jobId).update({
+            status: 'FAILED',
+            errorMessage: `Orchestration error: ${err.message}`,
+            updatedAt: admin.firestore.Timestamp.now()
+        });
+    }
+}
+/**
+ * Deep Sync: Force-fetches historical data (e.g. 90 days) for all symbols in a universe.
+ */
+async function doStartDeepSync(req, res) {
+    const { days = 90, universe = 'nifty500' } = Object.assign(Object.assign({}, req.query), req.body);
+    const jobId = `deepsync_${new Date().toISOString().split('T')[0]}_${universe}_${Date.now()}`;
+    const db = getDb();
+    const runningJobs = await db.collection('jobs').where('status', '==', 'RUNNING').limit(1).get();
+    if (!runningJobs.empty) {
+        res.status(409).send({ error: 'Another job is currently in progress', runningJobId: runningJobs.docs[0].id });
+        return;
+    }
+    const forceDays = parseInt(days);
+    await db.collection('jobs').doc(jobId).set({
         id: jobId,
-        runDate: date,
-        type: 'SYNC_UNIVERSE',
-        stage: 'STARTING',
+        runDate: new Date().toISOString().split('T')[0],
+        universeId: universe,
+        type: 'DEEP_SYNC',
+        stage: 'FETCH',
         status: 'RUNNING',
+        counts: { total: 0, done: 0, failed: 0 },
         startedAt: admin.firestore.Timestamp.now(),
         updatedAt: admin.firestore.Timestamp.now(),
-        versionHash: 'v3.7Atomic'
+        dataSource: 'KITE',
+        versionHash: 'v1.1Deep',
     });
-    res.status(200).send({ message: 'Universe sync started', jobId });
-    // Background sync logic
+    await db.collection('jobs').doc(jobId).update({ 'counts.total': 0, updatedAt: firestore_1.Timestamp.now() });
+    // Enqueue the deep sync orchestration loop as a task (Gap B13 Fixed)
+    await tasks_1.taskClient.enqueue('orchestrateDeepSyncTask', { jobId, universe, days: forceDays });
+    res.status(202).send({ message: 'Deep sync triggered', jobId, forceDays });
+}
+/**
+ * Task Handler: Deep Sync Orchestration Loop
+ */
+async function orchestrateDeepSyncTask(req) {
+    const { jobId, universe = 'nifty500', days } = req.body;
+    if (!jobId || !universe) {
+        console.error('[Orchestrator] Missing jobId or universe in Deep Sync task body');
+        return;
+    }
+    try {
+        await logger_1.logger.info(`[Orchestrator] Starting Deep Sync task for Job ${jobId}`, 'Orchestrator');
+        await runDeepSyncLogic(jobId, universe, parseInt(days));
+    }
+    catch (err) {
+        await logger_1.logger.error(`[Orchestrator] Deep Sync task failed: ${err.message}`, 'Orchestrator', { jobId });
+        const db = getDb();
+        await db.collection('jobs').doc(jobId).update({
+            status: 'FAILED',
+            errorMessage: `Deep Sync error: ${err.message}`,
+            updatedAt: firestore_1.Timestamp.now()
+        });
+    }
+}
+async function runDeepSyncLogic(jobId, universeId, forceDays) {
+    const db = getDb();
+    const dateId = new Date().toISOString().split('T')[0].replace(/-/g, '');
+    const date = new Date().toISOString().split('T')[0];
+    // 1. Get symbols
+    const symbolsSnap = await db.collection('universes').doc(universeId).collection('members').get();
+    const symbols = symbolsSnap.docs.map(d => d.id);
+    await db.collection('jobs').doc(jobId).update({ 'counts.total': symbols.length, updatedAt: firestore_1.Timestamp.now() });
+    // 2. Dispatch tasks
+    for (const symbol of symbols) {
+        await tasks_1.taskClient.enqueueDispatch('processSymbolTask', {
+            jobId,
+            dateId,
+            date,
+            symbol,
+            forceDays
+        });
+        // Delay to prevent enqueuing too fast
+        await new Promise(resolve => setTimeout(resolve, 350));
+    }
+}
+async function doStartMorningExecution(req, res) {
+    const { date, universe = 'nifty50' } = req.query;
+    if (!date) {
+        res.status(400).send({ error: 'Missing "date"' });
+        return;
+    }
+    const jobId = `morning_${date}_${universe}_${Date.now()}`;
+    const db = getDb();
+    const runningJobs = await db.collection('jobs').where('status', '==', 'RUNNING').limit(1).get();
+    if (!runningJobs.empty) {
+        res.status(409).send({ error: 'Job in progress', runningJobId: runningJobs.docs[0].id });
+        return;
+    }
+    await db.collection('jobs').doc(jobId).set({
+        id: jobId, runDate: date, universeId: universe, type: 'OPEN_SIM_RUN', stage: 'STARTING', status: 'RUNNING',
+        counts: { total: 0, done: 0, failed: 0 },
+        startedAt: admin.firestore.Timestamp.now(), updatedAt: admin.firestore.Timestamp.now(),
+        dataSource: 'KITE', versionHash: 'v1.1Delta',
+    });
     (async () => {
         try {
-            const settingsSnap = await db.collection('settings').doc('kite').get();
-            const settings = settingsSnap.data();
-            if (!(settings === null || settings === void 0 ? void 0 : settings.apiKey) || !(settings === null || settings === void 0 ? void 0 : settings.accessToken))
-                throw new Error('Missing Kite credentials');
-            await db.collection('jobs').doc(jobId).update({ stage: 'INSTRUMENTS' });
-            const { getNSEInstruments } = await Promise.resolve().then(() => __importStar(require('./marketdata')));
-            await getNSEInstruments(settings.apiKey, settings.accessToken); // This caches internally but we might want to persist it
-            // Update completion
-            await db.collection('jobs').doc(jobId).update({
-                status: 'DONE',
-                stage: 'DONE',
-                updatedAt: admin.firestore.Timestamp.now()
-            });
+            await logger_1.logger.info(`[Orchestrator] Triggering Morning Execution for ${date}`, 'Orchestrator', { jobId, date, universe });
+            await runMorningLogic(date, jobId, universe);
         }
         catch (err) {
-            console.error(`[Job ${jobId}] Sync failed:`, err);
-            await db.collection('jobs').doc(jobId).update({
-                status: 'FAILED',
-                errorMessage: err.message || String(err),
-                updatedAt: admin.firestore.Timestamp.now()
-            });
+            await logger_1.logger.error(`[Orchestrator] Morning execution failed: ${err.message}`, 'Orchestrator', { jobId, error: err.message });
+            console.error(`[Job ${jobId}] Morning execution failed:`, err);
+        }
+    })();
+    res.status(202).send({ message: 'Morning execution triggered', jobId });
+}
+/**
+ * Logic to sync universe members and instrument tokens. (Restored for Rule Compliance)
+ */
+async function doSyncUniverse(req, res) {
+    const db = getDb();
+    const date = new Date().toISOString().split('T')[0];
+    const jobId = `sync_${date}_${Date.now()}`;
+    const runningJobs = await db.collection('jobs').where('status', '==', 'RUNNING').limit(1).get();
+    if (!runningJobs.empty) {
+        res.status(409).send({ error: 'Job in progress', runningJobId: runningJobs.docs[0].id });
+        return;
+    }
+    await db.collection('jobs').doc(jobId).set({ id: jobId, runDate: date, type: 'SYNC_UNIVERSE', stage: 'STARTING', status: 'RUNNING', startedAt: admin.firestore.Timestamp.now(), updatedAt: admin.firestore.Timestamp.now(), versionHash: 'v1.1Delta' });
+    res.status(200).send({ message: 'Universe sync started', jobId });
+    (async () => {
+        try {
+            const { getNSEInstrumentsMap } = await Promise.resolve().then(() => __importStar(require('./marketdata')));
+            const settingsSnap = await db.collection('settings').doc('kite').get();
+            const settings = settingsSnap.data();
+            if ((settings === null || settings === void 0 ? void 0 : settings.apiKey) && (settings === null || settings === void 0 ? void 0 : settings.accessToken))
+                await getNSEInstrumentsMap(settings.apiKey, settings.accessToken);
+            await db.collection('jobs').doc(jobId).update({ status: 'DONE', stage: 'DONE', updatedAt: admin.firestore.Timestamp.now() });
+        }
+        catch (err) {
+            await db.collection('jobs').doc(jobId).update({ status: 'FAILED', errorMessage: err.message, updatedAt: admin.firestore.Timestamp.now() });
         }
     })();
 }
 async function terminateJob(req, res) {
-    var _a, _b, _c, _d;
-    console.log('[Terminate] Triggered', {
-        method: req.method,
-        body: req.body,
-        query: req.query
-    });
-    const jobId = ((_a = req.body) === null || _a === void 0 ? void 0 : _a.jobId) || ((_b = req.query) === null || _b === void 0 ? void 0 : _b.jobId) || ((_c = req.body) === null || _c === void 0 ? void 0 : _c.job_id) || ((_d = req.query) === null || _d === void 0 ? void 0 : _d.job_id);
-    if (!jobId || typeof jobId !== 'string') {
-        res.status(400).send({ error: 'Missing or invalid jobId' });
+    var _a, _b;
+    const jobId = ((_a = req.body) === null || _a === void 0 ? void 0 : _a.jobId) || ((_b = req.query) === null || _b === void 0 ? void 0 : _b.jobId);
+    if (!jobId) {
+        res.status(400).send({ error: 'Missing jobId' });
         return;
     }
     const db = getDb();
-    const docRef = db.collection('jobs').doc(jobId);
-    const snap = await docRef.get();
-    if (!snap.exists) {
-        res.status(404).send({ error: `Job ${jobId} not found` });
-        return;
-    }
-    await docRef.update({
-        status: 'FAILED',
-        errorMessage: 'Terminated by user',
-        updatedAt: firestore_1.Timestamp.now()
-    });
-    res.status(200).send({ message: 'Job termination signal sent', jobId });
-}
-async function processStageTask(req, res) {
-    res.status(200).send({ message: 'Stage tasks are now handled internally by orchestrator loop' });
+    await db.collection('jobs').doc(jobId).update({ status: 'FAILED', errorMessage: 'Terminated by user', updatedAt: firestore_1.Timestamp.now() });
+    res.status(200).send({ message: 'Terminated', jobId });
 }
 /**
- * Core Logic: EOD Run
+ * Core Logic: EOD Run (Refactored Gap B4)
  */
-async function runEodLogic(targetDate, targetJobId, targetUniverse = 'nifty50') {
-    var _a;
-    await logger_1.logger.info(`>>> [V13] runEodLogic ENTER`, 'Orchestrator', { targetDate, targetJobId, targetUniverse });
-    console.log(`>>> [CRITICAL LOG] runEodLogic: Date=${targetDate}, JobID=${targetJobId}, Universe=${targetUniverse}`);
+async function runEodLogic(targetDate, targetJobId, targetUniverse = 'nifty50', forceRegime) {
     const db = getDb();
+    const dateId = toDateId(targetDate);
     const settingsSnap = await db.collection('settings').doc('kite').get();
     const settingsData = settingsSnap.data();
     let tokenMap = {};
@@ -274,246 +343,316 @@ async function runEodLogic(targetDate, targetJobId, targetUniverse = 'nifty50') 
             console.error(`[Job ${targetJobId}] Instrument cache fail: ${err}`);
         }
     }
+    // 1. Trading Day Correctness (Gap B4.2)
+    const isTrading = await calendar_1.CalendarService.isTradingDay(dateId);
+    if (!isTrading) {
+        const msg = `[Job ${targetJobId}] Aborting: ${targetDate} is not a trading day according to calendar.`;
+        console.warn(msg);
+        await db.collection('jobs').doc(targetJobId).update({ stage: 'COMPLETED', status: 'SKIPPED', error: msg, updatedAt: admin.firestore.Timestamp.now() });
+        return;
+    }
     const universeSnap = await db.collection('universes').doc(targetUniverse).collection('members').get();
-    const indexSymbol = '^NSEI';
-    const symbols = universeSnap.docs.map((d) => d.id).filter((s) => s !== indexSymbol);
-    const dateId = targetDate.replace(/-/g, '');
-    // Update job with total count and stage
-    await db.collection('jobs').doc(targetJobId).update({
-        'counts.total': symbols.length,
-        stage: 'FETCH'
-    });
+    const symbols = universeSnap.docs.map((d) => d.id).filter((s) => s !== '^NSEI');
+    await db.collection('jobs').doc(targetJobId).update({ 'counts.total': symbols.length, stage: 'FETCH' });
     try {
-        // 0. Trade Management (Risk-First: Process exits before new entries)
+        // 2. Risk-First: Manage Trades (Gap B3)
         const { doManageTrades } = await Promise.resolve().then(() => __importStar(require('./tradeManager')));
-        try {
-            await doManageTrades(dateId);
-        }
-        catch (err) {
-            console.error(`[Job ${targetJobId}] Trade management failed: ${err}. Continuing...`);
-        }
-        // 1. Index Processing
+        await doManageTrades(dateId, targetJobId);
+        // 3. Index Processing (Regime)
         const { doFetchCandles } = await Promise.resolve().then(() => __importStar(require('./marketdata')));
         const { doComputeFeatures } = await Promise.resolve().then(() => __importStar(require('./features')));
         const { doComputeRegime } = await Promise.resolve().then(() => __importStar(require('./regime')));
-        const indexSymbol = '^NSEI';
-        const kiteIndexSymbol = 'NIFTY 50';
-        const targetIndex = (settingsData === null || settingsData === void 0 ? void 0 : settingsData.accessToken) ? kiteIndexSymbol : indexSymbol;
-        // Index stage (non-fatal for progress visibility)
-        try {
-            await doFetchCandles(targetJobId, targetIndex, targetDate, tokenMap[targetIndex]);
-            await doComputeFeatures(targetJobId, targetIndex, targetDate);
-            await db.collection('jobs').doc(targetJobId).update({ stage: 'REGIME' });
-            await doComputeRegime(targetDate, targetJobId, targetIndex);
+        const indexSymbol = (settingsData === null || settingsData === void 0 ? void 0 : settingsData.accessToken) ? 'NIFTY 50' : '^NSEI';
+        await doFetchCandles(targetJobId, indexSymbol, targetDate, tokenMap[indexSymbol]);
+        await doComputeFeatures(targetJobId, indexSymbol, targetDate);
+        await db.collection('jobs').doc(targetJobId).update({ stage: 'REGIME' });
+        if (forceRegime) {
+            await logger_1.logger.info(`[Orchestrator] Forcing regime to ${forceRegime} for Job ${targetJobId}`, 'Orchestrator');
+            await db.collection('jobs').doc(targetJobId).update({ marketState: forceRegime });
         }
-        catch (err) {
-            console.error(`Index stage failed for ${targetIndex}: ${err}. Continuing to symbol loop.`);
+        else {
+            await doComputeRegime(targetDate, targetJobId, indexSymbol, targetUniverse);
         }
-        // Holiday Check: Only abort if NO recent index data exists at all (last 5 days).
-        // We query backwards because weekends/holidays may mean today's bar doesn't exist,
-        // but yesterday's (or Friday's) bar proves the market was open recently.
-        // Holiday Check: Only abort if NO recent index data exists at all (last 5 days).
-        // We query backwards because weekends/holidays may mean today's bar doesn't exist,
-        // but yesterday's (or Friday's) bar proves the market was open recently.
-        const recentIndexSnap = await db.collection('barsD').doc(targetIndex).collection('days')
-            .where(admin.firestore.FieldPath.documentId(), '<=', dateId)
-            .orderBy(admin.firestore.FieldPath.documentId(), 'desc')
-            .limit(1)
-            .get();
-        const mostRecentBar = recentIndexSnap.docs[0];
-        const isHoliday = (() => {
-            if (!mostRecentBar)
-                return true; // No data at all
-            const mostRecentDateId = mostRecentBar.id; // e.g. "20260320"
-            // If the most recent bar is older than 5 days, likely a holiday/weekend with no data
-            const fiveDaysAgo = new Date(targetDate);
-            fiveDaysAgo.setDate(fiveDaysAgo.getDate() - 5);
-            const fiveDaysAgoId = fiveDaysAgo.toISOString().split('T')[0].replace(/-/g, '');
-            return mostRecentDateId < fiveDaysAgoId;
-        })();
-        if (isHoliday) {
-            const msg = `[Job ${targetJobId}] Aborting run: ${targetDate} appears to be a holiday or has no index data (most recent: ${(_a = mostRecentBar === null || mostRecentBar === void 0 ? void 0 : mostRecentBar.id) !== null && _a !== void 0 ? _a : 'none'}).`;
-            console.warn(msg);
-            await db.collection('jobs').doc(targetJobId).update({
-                stage: 'COMPLETED',
-                status: 'SKIPPED',
-                error: msg,
-                updatedAt: admin.firestore.Timestamp.now()
-            });
-            return;
-        }
-        console.log(`[Job ${targetJobId}] Index check passed. Most recent bar: ${mostRecentBar === null || mostRecentBar === void 0 ? void 0 : mostRecentBar.id}. Proceeding with symbol dispatch.`);
-        // 3. Main Loop: Dispatch tasks for each symbol (Fixed-rate to honor Kite limits)
+        // 4. Dispatch tasks (Gap B4.1)
         await db.collection('jobs').doc(targetJobId).update({ stage: 'SIGNALS' });
-        console.log(`[Job ${targetJobId}] Dispatching ${symbols.length} tasks at 350ms intervals...`);
+        await logger_1.logger.info(`[Orchestrator] Dispatching tasks for ${symbols.length} symbols`, 'Orchestrator', { jobId: targetJobId });
         for (const symbol of symbols) {
             await tasks_1.taskClient.enqueueDispatch('processSymbolTask', {
-                jobId: targetJobId,
-                symbol,
-                date: targetDate,
-                token: tokenMap[symbol],
-                universe: targetUniverse
+                jobId: targetJobId, symbol, date: targetDate,
+                dateId, // Pass dateId to symbol task (Gap B11 Fixed)
+                token: tokenMap[symbol], universe: targetUniverse,
+                forceRegime
             });
-            // Delay to maintain ~2.85 requests per second system-wide
             await new Promise(resolve => setTimeout(resolve, 350));
         }
-        console.log(`[Job ${targetJobId}] All ${symbols.length} tasks dispatched successfully.`);
-        // Note: We don't wait for them to finish here. 
-        // The "DONE" logic will be triggered by an audit job or the last task.
-        // For now, let's keep it simple: the dashboard tracks progress via Firestore updates from individual tasks.
-        // 4. Wrap up
-        const { doAggregateStats } = await Promise.resolve().then(() => __importStar(require('./aggregateStats')));
-        const { doDailyAnalytics } = await Promise.resolve().then(() => __importStar(require('./journal')));
-        await db.collection('jobs').doc(targetJobId).update({ stage: 'DONE' });
-        try {
-            await doAggregateStats(dateId);
-            await doDailyAnalytics(targetJobId, targetDate);
-            const { generateJobReport } = await Promise.resolve().then(() => __importStar(require('./reporting')));
-            await generateJobReport(targetJobId, targetDate);
-        }
-        catch (err) {
-            console.error(`Post-run analysis fail: ${err}`);
-        }
-        await db.collection('jobs').doc(targetJobId).update({ status: 'DONE', updatedAt: firestore_1.Timestamp.now() });
     }
     catch (err) {
-        const errMsg = err instanceof Error ? err.message : String(err);
-        console.error(`[Job ${targetJobId}] CRITICAL FAIL: ${errMsg}`);
-        await db.collection('jobs').doc(targetJobId).update({
-            status: 'FAILED',
-            errorMessage: errMsg,
-            updatedAt: firestore_1.Timestamp.now()
-        });
+        await db.collection('jobs').doc(targetJobId).update({ status: 'FAILED', errorMessage: err.message, updatedAt: firestore_1.Timestamp.now() });
         throw err;
     }
 }
 /**
- * Core Logic: Morning Execution
+ * Morning Execution logic
  */
 async function runMorningLogic(targetDate, targetJobId, targetUniverse = 'nifty50') {
     const db = getDb();
-    const newJob = {
-        runDate: targetDate,
-        universeId: targetUniverse,
-        type: 'OPEN_SIM_RUN',
-        stage: 'FETCH',
-        status: 'RUNNING',
-        counts: { total: 0, done: 0, failed: 0 },
-        startedAt: firestore_1.Timestamp.now(),
-        updatedAt: firestore_1.Timestamp.now(),
-        dataSource: 'KITE',
-        versionHash: 'v3.7Atomic',
-    };
     const universeSnap = await db.collection('universes').doc(targetUniverse).collection('members').get();
     const symbols = universeSnap.docs.map(d => d.id);
-    newJob.counts.total = symbols.length;
-    await db.collection('jobs').doc(targetJobId).set(newJob);
+    await db.collection('jobs').doc(targetJobId).update({ 'counts.total': symbols.length, stage: 'ORDERS' });
     try {
-        await db.collection('jobs').doc(targetJobId).update({ stage: 'ORDERS' });
-        // Dispatch tasks for each symbol (Sequential to prevent gRPC/Memory congestion)
-        console.log(`[Morning Job ${targetJobId}] Dispatching ${symbols.length} tasks at 350ms intervals...`);
         for (const symbol of symbols) {
-            await tasks_1.taskClient.enqueueDispatch('processMorningSymbolTask', {
-                jobId: targetJobId,
-                date: targetDate,
-                symbol
-            });
-            // 350ms delay is mandatory to respect Kite API limits and system stability
+            await tasks_1.taskClient.enqueueDispatch('processMorningSymbolTask', { jobId: targetJobId, date: targetDate, symbol });
             await new Promise(resolve => setTimeout(resolve, 350));
-        }
-        console.log(`[Morning Job ${targetJobId}] All ${symbols.length} symbol tasks dispatched.`);
-        await db.collection('jobs').doc(targetJobId).update({ stage: 'DONE', status: 'DONE', updatedAt: firestore_1.Timestamp.now() });
-        try {
-            const { generateJobReport } = await Promise.resolve().then(() => __importStar(require('./reporting')));
-            await generateJobReport(targetJobId, targetDate);
-        }
-        catch (repErr) {
-            console.error(`[Morning] Report generation failed for ${targetJobId}: ${repErr}`);
         }
     }
     catch (err) {
-        const errMsg = err instanceof Error ? err.message : String(err);
-        console.error(`[Morning Job ${targetJobId}] CRITICAL FAIL: ${errMsg}`);
-        await db.collection('jobs').doc(targetJobId).update({
-            status: 'FAILED',
-            errorMessage: errMsg,
-            updatedAt: firestore_1.Timestamp.now()
-        });
+        await db.collection('jobs').doc(targetJobId).update({ status: 'FAILED', errorMessage: err.message, updatedAt: firestore_1.Timestamp.now() });
         throw err;
     }
 }
 /**
- * Task Handler: Process a single symbol
+ * Task Handler: Process a single symbol (Redundancy Removed Gap B1)
  */
 async function processSymbolTask(req) {
-    console.log('>>> [V2-PUB] processSymbolTask ENTER', req.body);
-    const { jobId, symbol, date, token } = req.body;
+    var _a, _b, _c, _d;
+    const { jobId, symbol, date, forceRegime, forceDays, universe } = req.body;
+    let { dateId } = req.body;
     if (!jobId || !symbol || !date) {
-        console.error('[processSymbolTask] Missing required parameters', req.body);
+        console.error('[Orchestrator] Missing jobId, symbol, or date in processSymbolTask body');
         return;
     }
     const db = getDb();
-    const dateId = toDateId(date);
+    if (!dateId)
+        dateId = date.replace(/-/g, '');
+    const jobRef = db.collection('jobs').doc(jobId);
+    // V3.0: Check if job is still RUNNING (don't process if FAILED/DONE)
+    const jobCheck = await jobRef.get();
+    if (!jobCheck.exists || !['RUNNING', 'FINALIZING'].includes((_a = jobCheck.data()) === null || _a === void 0 ? void 0 : _a.status)) {
+        console.warn(`[Orchestrator] Skipping ${symbol}: job ${jobId} is ${(_b = jobCheck.data()) === null || _b === void 0 ? void 0 : _b.status}`);
+        return;
+    }
     try {
-        const { doFetchCandles } = await Promise.resolve().then(() => __importStar(require('./marketdata')));
-        const { doComputeFeatures } = await Promise.resolve().then(() => __importStar(require('./features')));
-        const { doEvaluateSignals } = await Promise.resolve().then(() => __importStar(require('./strategy')));
-        const { doRiskApproval } = await Promise.resolve().then(() => __importStar(require('./risk')));
-        // 1. Fetch
-        await doFetchCandles(jobId, symbol, date, token);
-        // 2. Compute Features
-        await doComputeFeatures(jobId, symbol, date);
-        // 3. Evaluate Signals
-        await doEvaluateSignals(jobId, symbol, date);
-        // 4. Risk Approval for new signals
-        const sigSnap = await db.collection('signals').doc(dateId).collection('items').where('symbol', '==', symbol).get();
-        for (const sigDoc of sigSnap.docs) {
-            if (sigDoc.data().status === 'NEW') {
-                await doRiskApproval(jobId, symbol, date, sigDoc.id);
-            }
+        // 1. Fetch (with idempotency)
+        if (!await isStageCompleted(db, jobId, symbol, 'FETCH')) {
+            const { doFetchCandles } = await Promise.resolve().then(() => __importStar(require('./marketdata')));
+            await doFetchCandles(jobId, symbol, date, undefined, forceDays);
+            await markStageCompleted(db, jobId, symbol, 'FETCH');
         }
-        // 5. Atomic Update
-        const jobRef = db.collection('jobs').doc(jobId);
+        // 2. Features (with idempotency)
+        if (!await isStageCompleted(db, jobId, symbol, 'FEATURES')) {
+            const { doComputeFeatures } = await Promise.resolve().then(() => __importStar(require('./features')));
+            await doComputeFeatures(jobId, symbol, date);
+            await markStageCompleted(db, jobId, symbol, 'FEATURES');
+        }
+        // 3. Signals (Only for EOD_RUN, with idempotency)
+        const jobSnapForType = await jobRef.get();
+        const jobData = jobSnapForType.data();
+        if ((jobData === null || jobData === void 0 ? void 0 : jobData.type) === 'EOD_RUN' && !await isStageCompleted(db, jobId, symbol, 'SIGNALS')) {
+            const { doEvaluateSignals } = await Promise.resolve().then(() => __importStar(require('./strategy')));
+            await doEvaluateSignals(jobId, symbol, date, forceRegime, universe || (jobData === null || jobData === void 0 ? void 0 : jobData.universeId) || 'nifty500');
+            await markStageCompleted(db, jobId, symbol, 'SIGNALS');
+        }
+        // Atomic update and wrap-up check
         const updatedJob = await db.runTransaction(async (t) => {
             var _a;
             const doc = await t.get(jobRef);
             if (!doc.exists)
                 return null;
             const data = doc.data();
+            if (data.status !== 'RUNNING')
+                return null;
             const newDone = (((_a = data.counts) === null || _a === void 0 ? void 0 : _a.done) || 0) + 1;
-            t.update(jobRef, {
-                'counts.done': newDone,
-                updatedAt: firestore_1.Timestamp.now()
-            });
+            t.update(jobRef, { 'counts.done': newDone, updatedAt: firestore_1.Timestamp.now() });
             return Object.assign(Object.assign({}, data), { counts: Object.assign(Object.assign({}, data.counts), { done: newDone }) });
         });
-        // 6. Check for completion
-        if (updatedJob && updatedJob.counts.done + (updatedJob.counts.failed || 0) >= updatedJob.counts.total) {
-            console.log(`[Job ${jobId}] Final symbol processed. Triggering wrap-up.`);
-            // Run wrap-up logic
-            const { doAggregateStats } = await Promise.resolve().then(() => __importStar(require('./aggregateStats')));
-            const { doDailyAnalytics } = await Promise.resolve().then(() => __importStar(require('./journal')));
-            const { generateJobReport } = await Promise.resolve().then(() => __importStar(require('./reporting')));
-            await jobRef.update({ stage: 'DONE' });
-            await doAggregateStats(dateId);
-            await doDailyAnalytics(jobId, date);
-            await generateJobReport(jobId, date);
-            await jobRef.update({ status: 'DONE', updatedAt: firestore_1.Timestamp.now() });
-        }
+        await auditLog(db, jobId, 'SYMBOL_COMPLETE', { symbol, dateId });
+        await checkAndFinalizeJob(db, jobRef, jobId, dateId, date, updatedJob);
     }
     catch (err) {
-        console.error(`[Job ${jobId}] Failed for ${symbol}:`, err);
-        await db.collection('jobs').doc(jobId).update({
-            'counts.failed': admin.firestore.FieldValue.increment(1),
-            updatedAt: firestore_1.Timestamp.now()
-        });
+        await auditLog(db, jobId, 'SYMBOL_FAILED', { symbol, dateId, error: err.message });
+        await logger_1.logger.error(`[Orchestrator] Symbol ${symbol} failed: ${err.message}`, 'Orchestrator', { jobId, symbol });
+        const jobRef = db.collection('jobs').doc(jobId);
+        await jobRef.update({ 'counts.failed': admin.firestore.FieldValue.increment(1), updatedAt: firestore_1.Timestamp.now() });
+        // V3.0: Check failure threshold — abort if too many symbols fail
+        const jobSnap = await jobRef.get();
+        const jobData = jobSnap.data();
+        if (jobData && jobData.status === 'RUNNING') {
+            const failPct = (((_c = jobData.counts) === null || _c === void 0 ? void 0 : _c.failed) || 0) / (((_d = jobData.counts) === null || _d === void 0 ? void 0 : _d.total) || 1);
+            if (failPct > runtime_1.ORCH_CONFIG.MAX_FAILURE_PCT) {
+                await logger_1.logger.error(`[Orchestrator] ABORTING job ${jobId}: ${(failPct * 100).toFixed(0)}% symbols failed (threshold: ${runtime_1.ORCH_CONFIG.MAX_FAILURE_PCT * 100}%)`, 'Orchestrator', { jobId });
+                await (0, alerting_1.raiseAlert)(alerting_1.AlertType.JOB_FAILED, 'CRITICAL', `Job ${jobId} aborted: ${(failPct * 100).toFixed(0)}% symbol failure rate`, { jobId, failPct });
+                await jobRef.update({ status: 'FAILED', errorMessage: `Aborted: ${(failPct * 100).toFixed(0)}% symbol failure rate exceeded threshold`, updatedAt: firestore_1.Timestamp.now() });
+                return;
+            }
+            await checkAndFinalizeJob(db, jobRef, jobId, dateId, date, Object.assign({}, jobData));
+        }
     }
 }
 /**
- * Task Handler: Process a single symbol for morning execution
+ * Shared helper: runs wrap-up when all tasks (done + failed) >= total.
  */
+async function checkAndFinalizeJob(db, jobRef, jobId, dateId, date, jobData) {
+    var _a, _b, _c;
+    if (!jobData || !jobId || !dateId) {
+        console.warn(`[Orchestrator] checkAndFinalizeJob aborted: Missing jobId(${jobId}) or dateId(${dateId})`);
+        return;
+    }
+    const done = ((_a = jobData.counts) === null || _a === void 0 ? void 0 : _a.done) || 0;
+    const failed = ((_b = jobData.counts) === null || _b === void 0 ? void 0 : _b.failed) || 0;
+    const total = ((_c = jobData.counts) === null || _c === void 0 ? void 0 : _c.total) || 0;
+    if (done + failed < total)
+        return; // Not finished yet
+    // V3.0: Data completeness check before finalization
+    const completionPct = total > 0 ? done / total : 0;
+    if (runtime_1.ORCH_CONFIG.STAGE_BARRIER_ENABLED && completionPct < runtime_1.ORCH_CONFIG.MIN_DATA_COMPLETENESS_PCT) {
+        await logger_1.logger.error(`[Orchestrator] Job ${jobId}: Only ${(completionPct * 100).toFixed(0)}% symbols succeeded (need ${runtime_1.ORCH_CONFIG.MIN_DATA_COMPLETENESS_PCT * 100}%). Aborting.`, 'Orchestrator', { jobId });
+        await (0, alerting_1.raiseAlert)(alerting_1.AlertType.DATA_STALE, 'WARN', `Job ${jobId}: data completeness ${(completionPct * 100).toFixed(0)}% below threshold`, { jobId, completionPct });
+        await jobRef.update({ status: 'FAILED', errorMessage: `Data completeness ${(completionPct * 100).toFixed(0)}% below threshold`, updatedAt: firestore_1.Timestamp.now() });
+        return;
+    }
+    // V3.0: Index bar check — ensure regime data exists
+    if (runtime_1.ORCH_CONFIG.INDEX_BAR_REQUIRED && jobData.type === 'EOD_RUN') {
+        const regimeSnap = await db.collection('regime').doc(dateId).get();
+        if (!regimeSnap.exists) {
+            await logger_1.logger.error(`[Orchestrator] Job ${jobId}: No regime data for ${dateId}. Cannot finalize.`, 'Orchestrator', { jobId });
+            await jobRef.update({ status: 'FAILED', errorMessage: 'Regime data missing — index processing may have failed', updatedAt: firestore_1.Timestamp.now() });
+            return;
+        }
+    }
+    // Guard: only one task should run wrap-up (with retry counter)
+    let retryCount = 0;
+    try {
+        await db.runTransaction(async (t) => {
+            const snap = await t.get(jobRef);
+            if (!snap.exists || snap.data().status !== 'RUNNING')
+                throw new Error('ALREADY_FINALIZED');
+            retryCount = snap.data().finalizationRetries || 0;
+            if (retryCount >= runtime_1.ORCH_CONFIG.FINALIZATION_MAX_RETRIES)
+                throw new Error('MAX_RETRIES_EXCEEDED');
+            t.update(jobRef, { status: 'FINALIZING', finalizationRetries: retryCount + 1, updatedAt: firestore_1.Timestamp.now() });
+        });
+    }
+    catch (e) {
+        if (e.message === 'ALREADY_FINALIZED')
+            return;
+        if (e.message === 'MAX_RETRIES_EXCEEDED') {
+            await jobRef.update({ status: 'FAILED', errorMessage: `Finalization failed after ${runtime_1.ORCH_CONFIG.FINALIZATION_MAX_RETRIES} retries`, updatedAt: firestore_1.Timestamp.now() });
+            await (0, alerting_1.raiseAlert)(alerting_1.AlertType.JOB_FAILED, 'CRITICAL', `Job ${jobId} finalization exceeded max retries`, { jobId, retries: runtime_1.ORCH_CONFIG.FINALIZATION_MAX_RETRIES });
+            await logger_1.logger.error(`[Orchestrator] Job ${jobId} finalization exceeded max retries`, 'Orchestrator', { jobId });
+            return;
+        }
+        throw e;
+    }
+    try {
+        const { doAggregateStats } = await Promise.resolve().then(() => __importStar(require('./aggregateStats')));
+        const { doDailyAnalytics } = await Promise.resolve().then(() => __importStar(require('./journal')));
+        const { generateJobReport } = await Promise.resolve().then(() => __importStar(require('./reporting')));
+        const { doPlaceOrders } = await Promise.resolve().then(() => __importStar(require('./paperBroker')));
+        // RS Rankings
+        const universeId = jobData.universeId || 'nifty500';
+        try {
+            await jobRef.update({ stage: 'RS_RANK' });
+            const { doComputeRsRanking } = await Promise.resolve().then(() => __importStar(require('./rsRanking')));
+            await doComputeRsRanking(dateId, jobId, universeId);
+            await auditLog(db, jobId, 'STAGE_COMPLETE', { stage: 'RS_RANK' });
+        }
+        catch (rsErr) {
+            await logger_1.logger.warn(`[Orchestrator] RS ranking failed (non-blocking): ${rsErr.message}`, 'Orchestrator', { jobId });
+            await auditLog(db, jobId, 'STAGE_FAILED', { stage: 'RS_RANK', error: rsErr.message });
+        }
+        // Correlation
+        try {
+            await jobRef.update({ stage: 'CORR' });
+            const { doComputeCorrTopN } = await Promise.resolve().then(() => __importStar(require('./corrTopN')));
+            await doComputeCorrTopN(dateId, jobId, universeId);
+            await auditLog(db, jobId, 'STAGE_COMPLETE', { stage: 'CORR' });
+        }
+        catch (corrErr) {
+            await logger_1.logger.warn(`[Orchestrator] CorrTopN failed (non-blocking): ${corrErr.message}`, 'Orchestrator', { jobId });
+            await auditLog(db, jobId, 'STAGE_FAILED', { stage: 'CORR', error: corrErr.message });
+        }
+        // Orders
+        await jobRef.update({ stage: 'ORDERS' });
+        try {
+            // V3.0: Kill switch check before placing orders
+            if (!runtime_1.RUNTIME_CONFIG.KILL_SWITCH) {
+                await doPlaceOrders(dateId, jobId);
+                await auditLog(db, jobId, 'STAGE_COMPLETE', { stage: 'ORDERS' });
+            }
+            else {
+                await logger_1.logger.warn(`[Orchestrator] Kill switch active — skipping order placement`, 'Orchestrator', { jobId });
+                await auditLog(db, jobId, 'STAGE_SKIPPED', { stage: 'ORDERS', reason: 'KILL_SWITCH' });
+            }
+        }
+        catch (err) {
+            await logger_1.logger.warn(`[Orchestrator] Order placement failed: ${err.message}`, 'Orchestrator', { jobId });
+            await auditLog(db, jobId, 'STAGE_FAILED', { stage: 'ORDERS', error: err.message });
+        }
+        await jobRef.update({ stage: 'DONE' });
+        // Optional wrap-up tasks
+        try {
+            await calendar_1.CalendarService.upsertToday(dateId);
+            await doAggregateStats(dateId);
+            await doDailyAnalytics(jobId, date);
+            await generateJobReport(jobId, date);
+        }
+        catch (wrapSubErr) {
+            await logger_1.logger.error(`[Orchestrator] Non-critical wrap-up task failed: ${wrapSubErr.message}`, 'Orchestrator', { jobId });
+        }
+        await logger_1.logger.info(`[Orchestrator] Job ${jobId} Completed. Done: ${done}, Failed: ${failed}, Total: ${total}`, 'Orchestrator', { jobId, date, done, failed, total });
+        await auditLog(db, jobId, 'JOB_COMPLETE', { done, failed, total });
+        await jobRef.update({ status: 'DONE', updatedAt: firestore_1.Timestamp.now() });
+    }
+    catch (wrapErr) {
+        await logger_1.logger.error(`[Orchestrator] Critical wrap-up error for ${jobId}: ${wrapErr.message}`, 'Orchestrator', { jobId });
+        await auditLog(db, jobId, 'FINALIZATION_ERROR', { error: wrapErr.message, retryCount });
+        await jobRef.update({ status: 'FAILED', errorMessage: `Wrap-up error: ${wrapErr.message}`, updatedAt: firestore_1.Timestamp.now() });
+    }
+}
+/**
+ * Shared helper: runs wrap-up for morning jobs when all tasks >= total.
+ */
+async function checkAndFinalizeMorningJob(db, jobRef, jobId, date, jobData) {
+    var _a, _b, _c;
+    if (!jobData)
+        return;
+    const done = ((_a = jobData.counts) === null || _a === void 0 ? void 0 : _a.done) || 0;
+    const failed = ((_b = jobData.counts) === null || _b === void 0 ? void 0 : _b.failed) || 0;
+    const total = ((_c = jobData.counts) === null || _c === void 0 ? void 0 : _c.total) || 0;
+    if (done + failed < total)
+        return; // Not finished yet
+    // Guard: only one task should run wrap-up
+    try {
+        await db.runTransaction(async (t) => {
+            const snap = await t.get(jobRef);
+            if (!snap.exists || snap.data().status !== 'RUNNING')
+                throw new Error('ALREADY_FINALIZED');
+            t.update(jobRef, { status: 'FINALIZING', updatedAt: firestore_1.Timestamp.now() });
+        });
+    }
+    catch (e) {
+        if (e.message === 'ALREADY_FINALIZED')
+            return;
+        throw e;
+    }
+    try {
+        await jobRef.update({ stage: 'DONE' });
+        try {
+            const { generateJobReport } = await Promise.resolve().then(() => __importStar(require('./reporting')));
+            await generateJobReport(jobId, date);
+        }
+        catch (err) {
+            await logger_1.logger.warn(`[Orchestrator] Morning report error: ${err.message}`, 'Orchestrator', { jobId });
+        }
+        await jobRef.update({ status: 'DONE', updatedAt: firestore_1.Timestamp.now() });
+        await logger_1.logger.info(`[Orchestrator] Morning Job ${jobId} Completed successfully.`, 'Orchestrator', { jobId, date });
+    }
+    catch (wrapErr) {
+        await logger_1.logger.error(`[Orchestrator] Critical morning wrap-up error: ${wrapErr.message}`, 'Orchestrator', { jobId });
+        await jobRef.update({ status: 'FAILED', errorMessage: `Morning wrap-up error: ${wrapErr.message}`, updatedAt: firestore_1.Timestamp.now() });
+    }
+}
 async function processMorningSymbolTask(req) {
-    console.log('>>> [V2-PUB] processMorningSymbolTask ENTER', req.body);
     const { jobId, date, symbol } = req.body;
     if (!jobId || !symbol || !date)
         return;
@@ -528,31 +667,35 @@ async function processMorningSymbolTask(req) {
             if (!doc.exists)
                 return null;
             const data = doc.data();
+            if (data.status !== 'RUNNING')
+                return null;
             const newDone = (((_a = data.counts) === null || _a === void 0 ? void 0 : _a.done) || 0) + 1;
-            t.update(jobRef, {
-                'counts.done': newDone,
-                updatedAt: firestore_1.Timestamp.now()
-            });
+            t.update(jobRef, { 'counts.done': newDone, updatedAt: firestore_1.Timestamp.now() });
             return Object.assign(Object.assign({}, data), { counts: Object.assign(Object.assign({}, data.counts), { done: newDone }) });
         });
-        if (updatedJob && updatedJob.counts.done + (updatedJob.counts.failed || 0) >= updatedJob.counts.total) {
-            console.log(`[Morning Job ${jobId}] All symbols processed. Wrapping up.`);
-            await jobRef.update({ stage: 'DONE', status: 'DONE', updatedAt: firestore_1.Timestamp.now() });
-            try {
-                const { generateJobReport } = await Promise.resolve().then(() => __importStar(require('./reporting')));
-                await generateJobReport(jobId, date);
-            }
-            catch (repErr) {
-                console.error(`[Morning] Report generation failed: ${repErr}`);
-            }
-        }
+        await checkAndFinalizeMorningJob(db, jobRef, jobId, date, updatedJob);
     }
     catch (err) {
-        console.error(`[Morning Job ${jobId}] Failed for ${symbol}:`, err);
-        await jobRef.update({
-            'counts.failed': admin.firestore.FieldValue.increment(1),
-            updatedAt: firestore_1.Timestamp.now()
-        });
+        const jobRef = db.collection('jobs').doc(jobId);
+        await jobRef.update({ 'counts.failed': admin.firestore.FieldValue.increment(1), updatedAt: firestore_1.Timestamp.now() });
+        const jobSnap = await jobRef.get();
+        const jobData = jobSnap.data();
+        if (jobData && jobData.status === 'RUNNING') {
+            await checkAndFinalizeMorningJob(db, jobRef, jobId, date, Object.assign({}, jobData));
+        }
+    }
+}
+/**
+ * Migration Utility: One-off historical sync
+ */
+async function doSyncCalendar(req, res) {
+    const { symbol = '^NSEI' } = req.query || {};
+    try {
+        await calendar_1.CalendarService.syncFromIndexData(String(symbol));
+        res.status(200).send({ message: 'Calendar historical sync complete' });
+    }
+    catch (e) {
+        res.status(500).send(e.message);
     }
 }
 //# sourceMappingURL=orchestrator.js.map

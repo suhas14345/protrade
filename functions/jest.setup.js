@@ -13,6 +13,7 @@ const mockFirestore = {
     data: () => ({})
   }),
   set: jest.fn().mockResolvedValue(true),
+  create: jest.fn().mockResolvedValue(true),
   update: jest.fn().mockResolvedValue(true),
   batch: jest.fn(() => ({
     set: jest.fn(),

@@ -14,6 +14,14 @@ jest.mock('../universe', () => ({
   getUniverseMembers: jest.fn().mockResolvedValue(['RELIANCE.NS', 'TCS.NS'])
 }));
 
+// Mock Cloud Tasks — prevents real GCP credential lookup
+jest.mock('../tasks', () => ({
+  taskClient: {
+    enqueue: jest.fn().mockResolvedValue(undefined),
+    enqueueDispatch: jest.fn().mockResolvedValue(undefined),
+  }
+}));
+
 describe('Orchestrator Service', () => {
   let res: any;
 
@@ -36,7 +44,7 @@ describe('Orchestrator Service', () => {
     expect(mockFirestore.collection).toHaveBeenCalledWith('jobs');
     expect(res.status).toHaveBeenCalledWith(202);
     expect(res.send).toHaveBeenCalledWith(expect.objectContaining({
-      message: 'EOD run triggered successfully',
+      message: 'EOD run triggered',
       jobId: expect.any(String)
     }));
   });

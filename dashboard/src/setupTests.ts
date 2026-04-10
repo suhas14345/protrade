@@ -117,6 +117,15 @@ jest.mock('firebase/app', () => ({
 // Global fetch mock
 global.fetch = jest.fn().mockResolvedValue({
   json: () => Promise.resolve({
-    groupings: [{ bars: 40, symbols: 100 }]
+    groupings: [{ bars: 40, symbols: 100 }],
+    signalStats: {
+      total: 1,
+      byStrategy: [{ name: 'PullbackEOD', count: 1 }]
+    },
+    totalSymbolsTracked: 500,
+    symbolsWithSufficientData: 400,
+    symbolsInsufficient: 100,
+    universes: [],
+    timestamp: new Date().toISOString()
   })
 });

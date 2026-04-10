@@ -90,7 +90,7 @@ export async function cleanupUniverse(req: any, res: any) {
     const { universe = 'nifty500' } = req.query as any;
     
     // 1. Fetch live NSE instrument list from Kite
-    const { getNSEInstruments } = await import('./marketdata');
+    const { getNSEInstrumentsMap } = await import('./marketdata');
     const settingsSnap = await db.collection('settings').doc('kite').get();
     const settings = settingsSnap.data();
     
@@ -99,8 +99,8 @@ export async function cleanupUniverse(req: any, res: any) {
       return;
     }
 
-    const instruments = await getNSEInstruments(settings.apiKey, settings.accessToken);
-    const kiteSymbols = new Set(instruments.map((i: any) => i.tradingsymbol));
+    const instrumentsMap = await getNSEInstrumentsMap(settings.apiKey, settings.accessToken);
+    const kiteSymbols = new Set(Array.from(instrumentsMap.keys()));
     
     // 2. Fetch all members of the universe
     const snap = await db.collection('universes').doc(universe).collection('members').get();
@@ -156,7 +156,7 @@ export async function validateUniverseCsv(req: any, res: any) {
     }
 
     // 1. Fetch live NSE instruments from Kite
-    const { getNSEInstruments } = await import('./marketdata');
+    const { getNSEInstrumentsMap } = await import('./marketdata');
     const settingsSnap = await db.collection('settings').doc('kite').get();
     const settings = settingsSnap.data();
     
@@ -165,8 +165,8 @@ export async function validateUniverseCsv(req: any, res: any) {
       return;
     }
 
-    const instruments = await getNSEInstruments(settings.apiKey, settings.accessToken);
-    const kiteSymbols = new Set(instruments.map((i: any) => i.tradingsymbol));
+    const instrumentsMap = await getNSEInstrumentsMap(settings.apiKey, settings.accessToken);
+    const kiteSymbols = new Set(Array.from(instrumentsMap.keys()));
 
     // 2. Parse CSV (Company Name,Industry,Symbol,Series,ISIN Code)
     const lines = csvContent.split('\n');

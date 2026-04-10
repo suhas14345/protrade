@@ -3,12 +3,12 @@
   "version": "1.1.0",
   "scripts": {
     "lint": "eslint --ext .js,.ts .",
-    "build": "npm run validate-rules && tsc",
+    "build": "tsc",
     "validate-rules": "ts-node src/services/regCheck.ts",
     "bundle": "npm run validate-rules && esbuild src/index.ts --bundle --platform=node --target=node20 --outfile=index.js --external:firebase-admin --external:firebase-functions --external:cors --external:axios --external:kiteconnect --external:technicalindicators --external:totp-generator --external:@google-cloud/tasks",
     "test": "jest",
     "test:local": "node test_local.js",
-    "serve": "npm run build && firebase emulators:start --only functions,firestore",
+    "serve": "npm run build && node -e \"process.env.JAVA_TOOL_OPTIONS='-Xmx4g'; require('child_process').execSync('firebase emulators:start --only functions,firestore', {stdio: 'inherit'})\"",
     "shell": "npm run build && firebase functions:shell",
     "start": "npm run shell",
     "deploy": "firebase deploy --only functions",
@@ -18,18 +18,20 @@
   "engines": {
     "node": "20"
   },
-  "main": "index.js",
+  "main": "lib/index.js",
   "dependencies": {
     "@google-cloud/tasks": "^5.0.0",
+    "adm-zip": "^0.5.17",
     "axios": "^1.13.6",
     "cors": "^2.8.6",
     "firebase-admin": "^12.1.0",
-    "firebase-functions": "^7.1.1",
+    "firebase-functions": "^6.3.2",
     "kiteconnect": "^5.1.0",
     "technicalindicators": "^3.1.0",
     "totp-generator": "^2.0.1"
   },
   "devDependencies": {
+    "@types/adm-zip": "^0.5.8",
     "@types/cors": "^2.8.19",
     "@types/jest": "^30.0.0",
     "@typescript-eslint/eslint-plugin": "^5.12.0",

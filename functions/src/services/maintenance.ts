@@ -131,3 +131,32 @@ export const purgeJobs = onRequest({ cors: true }, async (req, res) => {
     res.status(500).send({ error: 'Purge failed', details: String(err) });
   }
 });
+/**
+ * Seed the missing config/account document that strategy.ts requires
+ */
+export const seedConfig = onRequest({ cors: true }, async (req, res) => {
+  const db = getDb();
+  const accountConfig = {
+    equity: 1000000,           // ₹10 Lakh starting capital
+    baseRiskPct: 0.005,        // 0.5% risk per trade
+    maxOpenRiskR: 6,           // Max 6R open portfolio heat
+    maxPositions: 10,          // Max 10 concurrent open trades
+    strategyRiskWeights: {
+      PullbackEOD: 1.0,
+      BreakoutCloseEOD: 1.2,
+      MeanReversionEOD: 0.8,
+      ShortBounceEOD: 0.8
+    }
+  };
+
+  try {
+    await db.collection('config').doc('account').set(accountConfig, { merge: true });
+    res.status(200).send({
+      message: 'config/account seeded successfully',
+      config: accountConfig
+    });
+  } catch (error) {
+    console.error('Failed to seed config:', error);
+    res.status(500).send({ error: 'Failed to seed config', details: String(error) });
+  }
+});

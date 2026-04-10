@@ -93,6 +93,7 @@ async function generateHeadlessRequestToken(userId, password, totpSecret, apiKey
     return requestToken;
 }
 async function autoRenewKiteSessionHandler(event) {
+    var _a;
     const db = await getDb();
     const snap = await db.collection('settings').doc('kite').get();
     const data = snap.data();
@@ -114,10 +115,13 @@ async function autoRenewKiteSessionHandler(event) {
         console.log('[KiteAuto] Successfully auto-renewed Kite session');
     }
     catch (err) {
-        console.error('[KiteAuto] Auto-renewal failed:', err);
+        const errMsg = err instanceof Error ? err.message : 'Auto-renewal failed';
+        const axiosData = (_a = err === null || err === void 0 ? void 0 : err.response) === null || _a === void 0 ? void 0 : _a.data;
+        const detail = axiosData ? JSON.stringify(axiosData) : errMsg;
+        console.error('[KiteAuto] Auto-renewal failed:', detail);
         await db.collection('settings').doc('kite').set({
             status: 'ERROR',
-            lastError: err instanceof Error ? err.message : 'Auto-renewal failed'
+            lastError: detail.substring(0, 500)
         }, { merge: true });
     }
 }

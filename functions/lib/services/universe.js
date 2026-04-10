@@ -118,15 +118,15 @@ async function cleanupUniverse(req, res) {
         const db = getDb();
         const { universe = 'nifty500' } = req.query;
         // 1. Fetch live NSE instrument list from Kite
-        const { getNSEInstruments } = await Promise.resolve().then(() => __importStar(require('./marketdata')));
+        const { getNSEInstrumentsMap } = await Promise.resolve().then(() => __importStar(require('./marketdata')));
         const settingsSnap = await db.collection('settings').doc('kite').get();
         const settings = settingsSnap.data();
         if (!(settings === null || settings === void 0 ? void 0 : settings.apiKey) || !(settings === null || settings === void 0 ? void 0 : settings.accessToken)) {
             res.status(401).send({ error: 'Kite credentials missing or inactive' });
             return;
         }
-        const instruments = await getNSEInstruments(settings.apiKey, settings.accessToken);
-        const kiteSymbols = new Set(instruments.map((i) => i.tradingsymbol));
+        const instrumentsMap = await getNSEInstrumentsMap(settings.apiKey, settings.accessToken);
+        const kiteSymbols = new Set(Array.from(instrumentsMap.keys()));
         // 2. Fetch all members of the universe
         const snap = await db.collection('universes').doc(universe).collection('members').get();
         const members = snap.docs.map(d => (Object.assign({ id: d.id }, d.data())));
@@ -175,15 +175,15 @@ async function validateUniverseCsv(req, res) {
             return;
         }
         // 1. Fetch live NSE instruments from Kite
-        const { getNSEInstruments } = await Promise.resolve().then(() => __importStar(require('./marketdata')));
+        const { getNSEInstrumentsMap } = await Promise.resolve().then(() => __importStar(require('./marketdata')));
         const settingsSnap = await db.collection('settings').doc('kite').get();
         const settings = settingsSnap.data();
         if (!(settings === null || settings === void 0 ? void 0 : settings.apiKey) || !(settings === null || settings === void 0 ? void 0 : settings.accessToken)) {
             res.status(401).send({ error: 'Kite credentials missing or inactive' });
             return;
         }
-        const instruments = await getNSEInstruments(settings.apiKey, settings.accessToken);
-        const kiteSymbols = new Set(instruments.map((i) => i.tradingsymbol));
+        const instrumentsMap = await getNSEInstrumentsMap(settings.apiKey, settings.accessToken);
+        const kiteSymbols = new Set(Array.from(instrumentsMap.keys()));
         // 2. Parse CSV (Company Name,Industry,Symbol,Series,ISIN Code)
         const lines = csvContent.split('\n');
         const symbolsWithMeta = [];

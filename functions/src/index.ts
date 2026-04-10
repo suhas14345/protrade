@@ -1,101 +1,323 @@
-import { onRequest } from 'firebase-functions/v2/https';
+import * as functions from 'firebase-functions/v1';
+import * as admin from 'firebase-admin';
 
-// Import services
-import * as orchestrator from './services/orchestrator';
-import * as maintenance from './services/maintenance';
-import * as marketdata from './services/marketdata';
-import * as universe from './services/universe';
-import * as diag from './services/diag';
-import * as features from './services/features';
-import * as strategy from './services/strategy';
-import * as risk from './services/risk';
-import * as tradeManager from './services/tradeManager';
-
-// Options for orchestrator functions (need more time for sequential enqueuing)
-const orchestratorOptions = {
-  memory: '1GiB' as const,
-  timeoutSeconds: 3600,
-  cors: true,
-  invoker: 'public' as const,
+// --- Shared Execution Options ---
+const v1Options = {
+  timeoutSeconds: 540, // Max for Cloud Functions v1
 };
 
-// Options for normal task handlers
-const publicOptions = {
-  memory: '512MiB' as const,
-  timeoutSeconds: 900,
-  cors: true,
-  invoker: 'public' as const,
-};
+// V3.0: Runtime kill switch check (reads from Firestore, not just config)
+async function checkRuntimeKillSwitch(): Promise<boolean> {
+  try {
+    const db = admin.apps.length ? admin.firestore() : admin.initializeApp() && admin.firestore();
+    const doc = await db.doc('config/runtime').get();
+    return doc.exists && doc.data()?.killSwitch === true;
+  } catch { return false; }
+}
 
-// --- Orchestrator / Job Control ---
-export const startEodRun = onRequest(orchestratorOptions, (req, res) => orchestrator.doStartEodRun(req, res));
-export const startMorningExecution = onRequest(orchestratorOptions, (req, res) => orchestrator.doStartMorningExecution(req, res));
-export const terminateJob = onRequest({ cors: true, invoker: 'public' }, (req, res) => orchestrator.terminateJob(req, res));
-export const probeLogs = onRequest({ cors: true, invoker: 'public' }, (req, res) => {
-    res.status(200).send({ message: "probeLogs placeholder - check Firestore for real-time status" });
+/**
+ * Unified Gateway (v1): The single entry point for all system operations
+ * V3.0: Wired middleware — validation, auth, rate limiting, kill switch
+ */
+export const gateway = functions.runWith(v1Options).https.onRequest(async (req, res) => {
+    // CORS: allow dashboard origin
+    res.set('Access-Control-Allow-Origin', '*');
+    res.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    res.set('Access-Control-Allow-Headers', 'Content-Type, x-api-key');
+    if (req.method === 'OPTIONS') { res.status(204).send(''); return; }
+
+    const { validateRequest, validateApiKey, checkRateLimit } = await import('./middleware');
+
+    // V3.0: Rate limiting
+    const clientIp = req.ip || req.headers['x-forwarded-for'] as string || 'unknown';
+    const rateCheck = checkRateLimit(req.body?.action || '', clientIp);
+    if (!rateCheck.allowed) {
+      res.status(429).send({ error: 'Rate limit exceeded', retryAfterMs: rateCheck.retryAfterMs });
+      return;
+    }
+
+    // V3.0: API key auth
+    const authCheck = await validateApiKey(req);
+    if (!authCheck.authenticated) {
+      res.status(401).send({ error: authCheck.error || 'Unauthorized' });
+      return;
+    }
+
+    const { action, taskType } = { ...req.query, ...req.body } as any;
+    // Normalize: strip "Task" suffix from taskType to match gateway cases
+    const normalizedTaskType = taskType?.replace(/Task$/, '') || undefined;
+    const type = action || normalizedTaskType || taskType;
+
+    // V3.0: Request validation
+    if (type && !taskType) {
+      const validation = validateRequest(req.body || {});
+      if (!validation.valid) {
+        res.status(400).send({ error: validation.error });
+        return;
+      }
+    }
+
+    if (!type) {
+        res.status(400).send({ error: 'Missing action or taskType' });
+        return;
+    }
+
+    // V3.0: Runtime kill switch — block trade-mutating actions
+    const tradeMutatingActions = ['startEod', 'orchestrateEod', 'evaluateSignals', 'manageTrades'];
+    if (tradeMutatingActions.includes(type)) {
+      const killed = await checkRuntimeKillSwitch();
+      if (killed) {
+        const { raiseAlert, AlertType } = await import('./services/alerting');
+        await raiseAlert(AlertType.KILL_SWITCH, 'CRITICAL', `Kill switch blocked action: ${type}`, { action: type });
+        res.status(503).send({ error: 'System kill switch active — all trading halted' });
+        return;
+      }
+    }
+
+    // V3.0: PAPER_ONLY enforcement — block live broker actions
+    const { RUNTIME_CONFIG } = await import('./config/runtime');
+    if (RUNTIME_CONFIG.PAPER_ONLY && type === 'manageTrades') {
+      // Ensure paper broker is always used (tradeManager already respects this, but belt-and-suspenders)
+      req.body = { ...req.body, paperOnly: true };
+    }
+
+    try {
+        switch (type) {
+            // Orchestration
+            case 'startEod': {
+                const { doStartEodRun } = await import('./services/orchestrator');
+                await doStartEodRun(req, res);
+                break;
+            }
+            case 'startDeepSync': {
+                const { doStartDeepSync } = await import('./services/orchestrator');
+                await doStartDeepSync(req, res);
+                break;
+            }
+            case 'terminate': {
+                const { terminateJob } = await import('./services/orchestrator');
+                await terminateJob(req, res);
+                break;
+            }
+
+            // Tasks
+            case 'fetchCandles': {
+                const { fetchCandlesTask } = await import('./services/marketdata');
+                await fetchCandlesTask(req, res);
+                break;
+            }
+            case 'computeFeatures': {
+                const { computeFeaturesTask } = await import('./services/features');
+                await computeFeaturesTask(req, res);
+                break;
+            }
+            case 'evaluateSignals': {
+                const { evaluateSignalsTask } = await import('./services/strategy');
+                await evaluateSignalsTask(req, res);
+                break;
+            }
+            case 'computeRsRanking': {
+                const { computeRsRankingTask } = await import('./services/rsRanking');
+                await computeRsRankingTask(req, res);
+                break;
+            }
+            case 'computeCorrTopN': {
+                const { computeCorrTopNTask } = await import('./services/corrTopN');
+                await computeCorrTopNTask(req, res);
+                break;
+            }
+            case 'manageTrades': {
+                const { manageTradesTask } = await import('./services/tradeManager');
+                await manageTradesTask(req, res);
+                break;
+            }
+            case 'processSymbol': {
+                const { processSymbolTask } = await import('./services/orchestrator');
+                await processSymbolTask(req);
+                res.status(200).send({ success: true });
+                break;
+            }
+            case 'orchestrateEod': {
+                const { orchestrateEodTask } = await import('./services/orchestrator');
+                await orchestrateEodTask(req);
+                res.status(200).send({ success: true });
+                break;
+            }
+            case 'orchestrateDeepSync': {
+                const { orchestrateDeepSyncTask } = await import('./services/orchestrator');
+                await orchestrateDeepSyncTask(req);
+                res.status(200).send({ success: true });
+                break;
+            }
+
+            // Diagnostics & Health
+            case 'diagnostics': {
+                const { diagnosticsHandler } = await import('./services/diag');
+                // Forward POST body params to query for diagnosticsHandler compatibility
+                const bodyParams = req.body || {};
+                for (const key of ['type', 'jobId', 'date', 'level', 'limit', 'symbol', 'universe', 'status', 'colType', 'includeBar']) {
+                  if (bodyParams[key] !== undefined && !req.query[key]) req.query[key] = bodyParams[key];
+                }
+                await diagnosticsHandler(req, res);
+                break;
+            }
+            case 'checkHealth': {
+                const { checkKiteHealth } = await import('./services/marketdata');
+                await checkKiteHealth(req, res);
+                break;
+            }
+            case 'updateToken': {
+                const { updateKiteToken } = await import('./services/marketdata');
+                await updateKiteToken(req, res);
+                break;
+            }
+            case 'updateCredentials': {
+                const { updateKiteCredentials } = await import('./services/marketdata');
+                await updateKiteCredentials(req, res);
+                break;
+            }
+            case 'probeInventory': {
+                const { probeInventory } = await import('./services/diag');
+                await probeInventory(req, res);
+                break;
+            }
+            case 'auditJobs': {
+                const { auditJobs } = await import('./services/maintenance');
+                await auditJobs(req, res);
+                break;
+            }
+            case 'downloadReport': {
+                const { downloadReport } = await import('./services/diag');
+                await downloadReport(req, res);
+                break;
+            }
+
+            // V3.0: System health & scheduler
+            case 'getKiteSettings': {
+                const kdb = admin.apps.length ? admin.firestore() : admin.initializeApp() && admin.firestore();
+                const ksnap = await kdb.collection('settings').doc('kite').get();
+                const kdata = ksnap.data() || {};
+                const mask = (v: string | undefined) => v ? v.substring(0, 3) + '***' + v.substring(v.length - 2) : '(not set)';
+                res.status(200).send({
+                  apiKey: mask(kdata.apiKey),
+                  apiSecret: mask(kdata.apiSecret),
+                  userId: kdata.userId || '(not set)',
+                  password: kdata.password ? '***set***' : '(not set)',
+                  totpSecret: kdata.totpSecret ? '***set***' : '(not set)',
+                  status: kdata.status || 'UNKNOWN',
+                  lastError: kdata.lastError || null,
+                  lastAutoRenew: kdata.lastAutoRenew || null,
+                  updatedAt: kdata.updatedAt || null,
+                  hasAllFields: !!(kdata.apiKey && kdata.apiSecret && kdata.userId && kdata.password && kdata.totpSecret),
+                });
+                break;
+            }
+            case 'systemHealth': {
+                const { getSystemHealth } = await import('./services/scheduler');
+                const db = admin.apps.length ? admin.firestore() : admin.initializeApp() && admin.firestore();
+                const health = await getSystemHealth(db);
+                res.status(200).send(health);
+                break;
+            }
+            case 'sweepStuckJobs': {
+                const { sweepStuckJobs } = await import('./services/scheduler');
+                const db = admin.apps.length ? admin.firestore() : admin.initializeApp() && admin.firestore();
+                const swept = await sweepStuckJobs(db);
+                res.status(200).send({ swept });
+                break;
+            }
+            case 'getAlerts': {
+                const { getUnacknowledgedAlerts } = await import('./services/alerting');
+                const alerts = await getUnacknowledgedAlerts();
+                res.status(200).send({ alerts });
+                break;
+            }
+
+            // V3.1: Scheduled actions — called by Cloud Scheduler
+            case 'scheduledKiteRenew': {
+                console.log('[Scheduler] Auto-renewing Kite session...');
+                const { autoRenewKiteSessionHandler } = await import('./services/kite_automation');
+                await autoRenewKiteSessionHandler({});
+                // Check if renewal succeeded
+                const renewDb = admin.apps.length ? admin.firestore() : admin.initializeApp() && admin.firestore();
+                const renewSnap = await renewDb.collection('settings').doc('kite').get();
+                const renewData = renewSnap.data();
+                if (renewData?.status === 'ERROR') {
+                    res.status(500).send({ error: 'Auto-renewal failed', details: renewData.lastError });
+                } else {
+                    res.status(200).send({ message: 'Kite session auto-renewed', status: renewData?.status });
+                }
+                break;
+            }
+            case 'scheduledEod': {
+                const db = admin.apps.length ? admin.firestore() : admin.initializeApp() && admin.firestore();
+                const kiteSnap = await db.collection('settings').doc('kite').get();
+                const kiteData = kiteSnap.data();
+                if (!kiteData?.accessToken || kiteData?.status !== 'ACTIVE') {
+                    const { raiseAlert, AlertType } = await import('./services/alerting');
+                    await raiseAlert(AlertType.SESSION_EXPIRED, 'CRITICAL', 'Scheduled EOD skipped: Kite session not active');
+                    res.status(503).send({ error: 'Kite session not active' });
+                    break;
+                }
+                const today = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+                console.log(`[Scheduler] Starting scheduled EOD for ${today}`);
+                const { doStartEodRun } = await import('./services/orchestrator');
+                await doStartEodRun({ body: { date: today, universe: 'nifty50', force: true }, query: {} }, res);
+                break;
+            }
+
+            default: res.status(400).send({ error: `Unknown op: ${type}` });
+        }
+    } catch (err: any) {
+        console.error(`[Gateway] Op ${type} failed:`, err);
+        res.status(500).send({ error: err.message });
+    }
 });
 
-// --- Maintenance & Jobs ---
-export const auditJobs = onRequest({ cors: true, invoker: 'public' }, (req, res) => maintenance.auditJobs(req, res));
-export const cleanupData = onRequest({ timeoutSeconds: 540, memory: '512MiB', cors: true, invoker: 'public' }, (req, res) => maintenance.cleanupData(req, res));
-export const purgeJobs = onRequest({ cors: true, invoker: 'public' }, (req, res) => maintenance.purgeJobs(req, res));
-
-// --- Universe Management ---
-export const seedUniverse = onRequest({ memory: '512MiB', timeoutSeconds: 300, cors: true, invoker: 'public' }, (req, res) => universe.seedUniverse(req, res));
-export const cleanupUniverse = onRequest({ cors: true, invoker: 'public' }, (req, res) => universe.cleanupUniverse(req, res));
-export const validateUniverseCsv = onRequest({ cors: true, invoker: 'public' }, (req, res) => universe.validateUniverseCsv(req, res));
-export const updateUniverseFromCsv = onRequest({ cors: true, invoker: 'public' }, (req, res) => universe.updateUniverseFromCsv(req, res));
-
-// --- Market Data & Kite ---
-export const checkKiteHealth = onRequest({ cors: true, invoker: 'public' }, (req, res) => marketdata.checkKiteHealth(req, res));
-export const updateKitetoken = onRequest({ cors: true, invoker: 'public' }, (req, res) => marketdata.updateKiteToken(req, res));
-export const updateKiteCredentials = onRequest({ cors: true, invoker: 'public' }, (req, res) => marketdata.updateKiteCredentials(req, res));
-
-// --- Diagnostics & Reporting ---
-export const diagnostics = diag.diagnostics; 
-export const probeInventory = diag.probeInventory;
-export const downloadReport = onRequest({ cors: true, invoker: 'public' }, (req, res) => diag.downloadReport(req, res));
-
-// --- Task Queue Handlers (V2) ---
-// We use public onRequest here to resolve 401 Unauthorized errors from Cloud Tasks.
-// Each wrapper ensures a 200 OK response is sent back to Cloud Tasks to prevent retries.
-
-export const fetchCandlesTask = onRequest(publicOptions, async (req, res) => {
-    await marketdata.fetchCandlesTask(req as any, {} as any);
-    res.status(200).send({ success: true });
+// Queue Placeholders for v1
+export const taskDispatcher = functions.runWith(v1Options).tasks.taskQueue().onDispatch(async (data) => {
+    await gatewayHandler({ body: { ...data, taskType: 'taskDispatcher' }, query: {} } as any);
 });
 
-export const computeFeaturesTask = onRequest(publicOptions, async (req, res) => {
-    await features.computeFeaturesTask(req as any, {} as any);
-    res.status(200).send({ success: true });
+export const processSymbolTask = functions.runWith(v1Options).tasks.taskQueue().onDispatch(async (data) => {
+    await gatewayHandler({ body: { ...data, taskType: 'processSymbol' }, query: {} } as any);
 });
 
-export const evaluateSignalsTask = onRequest(publicOptions, async (req, res) => {
-    await strategy.evaluateSignalsTask(req as any, {} as any);
-    res.status(200).send({ success: true });
+export const orchestrateEodTask = functions.runWith(v1Options).tasks.taskQueue().onDispatch(async (data) => {
+    await gatewayHandler({ body: { ...data, taskType: 'orchestrateEod' }, query: {} } as any);
 });
 
-export const riskApproveTask = onRequest(publicOptions, async (req, res) => {
-    await risk.riskApproveTask(req as any, {} as any);
-    res.status(200).send({ success: true });
+export const orchestrateDeepSyncTask = functions.runWith(v1Options).tasks.taskQueue().onDispatch(async (data) => {
+    await gatewayHandler({ body: { ...data, taskType: 'orchestrateDeepSync' }, query: {} } as any);
 });
 
-export const manageTradesTask = onRequest(publicOptions, async (req, res) => {
-    await tradeManager.manageTradesTask(req as any, {} as any);
-    res.status(200).send({ success: true });
-});
+// Private helper to resolve types inside onDispatch
+async function gatewayHandler(req: any) {
+    const { taskType } = req.body;
+    try {
+        switch (taskType) {
+            case 'processSymbol': {
+                const { processSymbolTask: task } = await import('./services/orchestrator');
+                return await task(req);
+            }
+            case 'orchestrateEod': {
+                const { orchestrateEodTask: task } = await import('./services/orchestrator');
+                return await task(req);
+            }
+            case 'orchestrateDeepSync': {
+                const { orchestrateDeepSyncTask: task } = await import('./services/orchestrator');
+                return await task(req);
+            }
+            default: console.warn(`[TaskBridge] Unknown taskType: ${taskType}`);
+        }
+    } catch (err) {
+        console.error(`[TaskBridge] Failed: ${err}`);
+    }
+}
 
-export const processSymbolTask = onRequest(publicOptions, async (req, res) => {
-    await orchestrator.processSymbolTask(req);
-    res.status(200).send({ success: true });
-});
-
-export const processMorningSymbolTask = onRequest(publicOptions, async (req, res) => {
-    await orchestrator.processMorningSymbolTask(req);
-    res.status(200).send({ success: true });
-});
-
-export const processStageTask = onRequest(publicOptions, (req, res) => {
-    console.log('processStageTask called (legacy). No action taken.');
-    res.status(200).send({ message: 'OK' });
-});
+// V3.1: Scheduled actions — called by Google Cloud Scheduler via HTTP POST to gateway
+// Setup: Create 2 Cloud Scheduler jobs in GCP Console:
+//   1. kite-auto-renew: POST https://us-central1-suhas-ag.cloudfunctions.net/gateway
+//      Body: {"action":"scheduledKiteRenew"}  Cron: 30 8 * * 1-5  TZ: Asia/Kolkata
+//   2. daily-eod: POST https://us-central1-suhas-ag.cloudfunctions.net/gateway
+//      Body: {"action":"scheduledEod"}  Cron: 45 15 * * 1-5  TZ: Asia/Kolkata

@@ -1,75 +1,103 @@
-# Troubleshooting Guide
-This document tracks common issues encountered during development and solutions for future runtime stability.
+# Troubleshooting Guide — ProTrade Alpha V3.1
 
-> [!IMPORTANT]
-> **Mandatory Update Rule**: AI Agents must append all new issues, symptoms, and fixes to this document as soon as they are resolved. This is a primary requirement for maintainability.
+Common issues and their solutions.
 
-## 🔸 Firebase Emulator Issues
+---
 
-### 1. "Firestore does not support descending key scans"
-- **Symptom**: Query error when using `orderBy('__name__', 'desc')` in the emulator.
-- **Solution**: The emulator has stricter limits than production Firestore for name-based scans. 
-- **Fix**: Fetch all documents for the symbol and sort/limit in-memory in the service layer. (Already implemented in `features.ts` and `strategy.ts`).
+## Deployment
 
-### 2. Networking / 404 Errors
-- **Symptom**: Calling emulator functions via HTTP triggers fails with connection refused or 404.
-- **Solution**: Networking in the local emulator environment can be flaky on some OSs.
-- **Fix**: Use `run_simulation_direct.js` to invoke the core `do*` logic functions directly while setting `FIRESTORE_EMULATOR_HOST`. This bypasses unreliable HTTP routing.
+### "Must build before deploy"
+- **Symptom**: Deployed functions behave stale or show old bugs.
+- **Cause**: `firebase.json` has no `predeploy` hook. TypeScript isn't compiled automatically.
+- **Fix**: Always run `cd functions && npm run build && cd .. && firebase deploy --only functions`
 
-## 🔸 Market Data Issues
+### "Function matches no filter"
+- **Symptom**: `firebase deploy --only functions:gateway` fails.
+- **Cause**: `package.json` main must match tsc output directory.
+- **Fix**: Ensure `"main": "lib/index.js"` in `functions/package.json`.
 
-### 1. "Yahoo removes API" / 404s
-- **Symptom**: `yahoo-finance2` library fails to fetch historical data.
-- **Solution**: Yahoo occasionally changes endpoints. 
-- **Fix**: Ensure the library is updated. The project uses `yahooFinance.historical` which sometimes maps to `chart()`. If data fails for a specific date, try shifting the simulation date to a weekday.
+### Firebase Scheduled Functions Not Discovered
+- **Symptom**: `functions.pubsub.schedule()` or v2 `onSchedule` compiles but isn't deployed.
+- **Cause**: firebase-functions v6.3.2 with gen1 imports; CLI only discovers https/taskQueue triggers.
+- **Fix**: Use gateway HTTP actions + Cloud Scheduler. Don't use native scheduled functions.
 
-### 2. "Bar not found"
-- **Symptom**: Simulation fails during Morning phase because it can't find the bar for `runDate`.
-- **Solution**: Likely a weekend (Sat/Sun) or a market holiday where data wasn't generated.
-- **Fix**: Only run simulations on valid trading dates (e.g., Mar 12, 13, 2026).
+---
 
-## 🔸 Tooling & PATH Issues
+## Market Data
 
-### 1. "Command not recognized" (node, npm, firebase)
-- **Symptom**: Terminal returns `The term 'npm' is not recognized` or similar.
-- **Solution**: The binaries are installed in a non-standard tools directory and may not be in the system's `PATH`.
-- **Fix**: Use the absolute paths documented in `CONTEXT.md` or manually add `C:\tools\node-v20.11.1-win-x64` to the environment variables.
+### Kite Session Expired
+- **Symptom**: EOD run fails with "Kite session not active" or fetches return auth errors.
+- **Cause**: Kite access tokens expire daily.
+- **Fix**: 
+  1. Manual: Dashboard → Settings → paste new token, or use OAuth redirect
+  2. Automated: `scheduledKiteRenew` gateway action (requires correct TOTP secret)
 
-## 🔸 Logic & Data Stability
+### Kite Auto-Renewal Fails ("Invalid App Code")
+- **Symptom**: TOTP verification fails, "Invalid App Code", attempts decrement.
+- **Cause**: TOTP secret must be the **base32 seed string** from Kite's 2FA setup page (not the 6-digit code).
+- **Fix**: In Kite settings, when setting up TOTP, copy the secret key (e.g., `JBSWY3DPEHPK3PXP`), not the generated code. Update via Settings tab.
+- **Warning**: Zerodha locks account after ~5 failed TOTP attempts. Wait for lockout reset.
 
-### 1. Indicators returning `undefined`
-- **Symptom**: Firestore error "Cannot use undefined as a Firestore value".
-- **Solution**: Occurs when technical indicators (EMA, RSI) are given too few bars (e.g., calculating EMA20 with only 10 bars).
-- **Fix**: `features.ts` implements **Adaptive Indicators** that reduce the period to match available data or use safe defaults. Also, `ignoreUndefinedProperties` is enabled in Firestore settings.
+### "Universe is empty" Warning
+- **Symptom**: Logs show "universe is empty" or 0 symbols evaluated.
+- **Cause**: Universe collection `universes/nifty500/members` not seeded, or path mismatch.
+- **Fix**: Run `{"action":"seedUniverse","universe":"nifty500"}` via gateway.
 
-### 2. Date ID Mismatches
-- **Symptom**: Data exists but lookups fail.
-- **Solution**: Inconsistent formatting between `YYYY-MM-DD` and `YYYYMMDD`.
-- **Fix**: Standardize all lookup IDs using `.replace(/-/g, '')` consistently across all services.
+### "DATA_STALE" Error
+- **Symptom**: Signal evaluation throws "Last bar date does not match run date".
+- **Cause**: Bar data is from a different date than the run date. Common in backfill or when market data fetch failed.
+- **Fix**: Verify bars exist for the run date. In PAPER_LIVE mode, staleness is strictly enforced.
 
-## 🔸 Deployment & Production Stability
+---
 
-### 1. Deployment Timeouts (Cloud Functions)
-- **Symptom**: `firebase deploy` fails with "Function update operation timed out" or cold starts are very slow.
-- **Solution**: Heavy top-level imports like `technicalindicators` and `yahoo-finance2` increase the bundle analysis time and cold start latency.
-- **Fix**: Use **Dynamic/Lazy Imports** within the function handlers (e.g., `const { ... } = await import(...)`) to only load large libraries when actually needed.
+## Pipeline
 
-### 2. Dashboard Progress "Stuck at 0%"
-- **Symptom**: On-demand scans show 0% progress for a long time even if they are running.
-- **Solution**: Batch updates were too infrequent (every 10 symbols) or missing entirely in some stages (Morning logic).
-- **Fix**: Update the `jobs` document in Firestore for **Every Symbol** processed (success or failure) to provide immediate, smooth visual feedback in the UI.
+### Job Stuck at RUNNING
+- **Symptom**: Job shows RUNNING for >30 minutes, progress frozen.
+- **Cause**: Orchestrator stage barrier waiting for failed symbols; or Cloud Tasks not firing.
+- **Fix**: 
+  1. `{"action":"sweepStuckJobs"}` — auto-detects and fails stuck jobs
+  2. `{"action":"auditJobs"}` — diagnoses job state
+  3. Manual: `{"action":"terminate","jobId":"..."}` to force-fail
 
-### 3. "Fetch Failed" / CORS Errors on New Triggers
-- **Symptom**: Calling new HTTP triggers (like `cleanupData`) from the dashboard console fails with CORS/preflight errors.
-- **Solution**: New triggers in `index.ts` must explicitly enable CORS in their configuration.
-- **Fix**: Set `{ cors: true }` in the `onRequest` options for all public-facing HTTP triggers.
+### "Correlation check failed (fail-closed)"
+- **Symptom**: All signals rejected with correlation error.
+- **Cause**: `corrTopN` data not computed for previous trading date. Correlation is fail-closed.
+- **Fix**: Run `{"action":"computeCorrTopN","dateId":"YYYYMMDD"}` for the previous trading day.
 
-### 4. "Function matches no filter" during Deployment
-- **Symptom**: `firebase deploy --only functions:name` fails despite the code existing in `index.ts`.
-- **Solution**: The `package.json` main entry point was pointing to `index.js` while the TypeScript compiler (`tsc`) was outputting to a `lib/` directory.
-- **Fix**: Ensure `package.json` "main" is set to `"lib/index.js"` so the Firebase CLI can find the compiled entry point.
+### No Signals Generated (0 of N)
+- **Symptom**: EOD run completes but 0 signals.
+- **Cause**: Legitimate in bear markets if no strategy gates are met. Check:
+  1. Regime state (TRANSITION blocks all entries)
+  2. RSI fail-closed (missing RSI → all rejected)
+  3. VDU gate (PullbackEOD requires VDU active)
+  4. Kill switch active
+- **Fix**: Check logs for rejection reasons. Each gate failure is logged.
 
-### 5. Intermittent "Fetch Failed" or Null Values (Yahoo Finance)
-- **Symptom**: Logs show `TypeError: fetch failed` or `Historical returned a result with SOME (but not all) null values` for specific symbols.
-- **Solution**: These are typically transient network issues or temporary data gaps on Yahoo's side, often occurring during high-concurrency scans.
-- **Fix**: The orchestrator handles these by logging the failure and marking the symbol as 'failed' in the job's `counts`. If a scan has many failures, re-triggering it usually resolves the issue as the data becomes available or the network flakiness passes.
+---
+
+## Dashboard
+
+### Can't See Settings Tab
+- **Symptom**: Settings tab missing from navigation.
+- **Cause**: Stale dashboard build deployed.
+- **Fix**: `cd dashboard && npm run build && cd .. && firebase deploy --only hosting`
+
+### CORS Errors Calling Gateway
+- **Symptom**: Browser console shows CORS/preflight errors.
+- **Cause**: Gateway CORS headers not matching origin.
+- **Fix**: Gateway allows all origins (`*`). If still failing, check the request includes `Content-Type: application/json`.
+
+---
+
+## Testing
+
+### Strategy Test Fails on Timestamp
+- **Symptom**: `checkSafety` throws DATA_STALE in tests.
+- **Cause**: Mock bar timestamp uses `Date.now()` but runDate is in the future.
+- **Fix**: Mock timestamp must match the test's runDate. See `strategy.test.ts` for pattern.
+
+### Mock Get Sequence Issues
+- **Symptom**: Test assertions fail because wrong data returned from Firestore mocks.
+- **Cause**: Shared chainable mock (`jest.setup.js`) returns `mockResolvedValueOnce` in order. Adding strategies or event checks changes the consumption order.
+- **Fix**: Only mock the critical first 6 gets (features, regime, account, positions, signals, bars). Let remaining calls fall through to default mock.

@@ -1,4 +1,4 @@
-process.env.FIRESTORE_EMULATOR_HOST = '127.0.0.1:8080';
+process.env.FIRESTORE_EMULATOR_HOST = '127.0.0.1:8081';
 process.env.GCLOUD_PROJECT = 'demo-protrade';
 const { runEodLogic } = require('./lib/services/orchestrator');
 

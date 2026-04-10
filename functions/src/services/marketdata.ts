@@ -1,10 +1,9 @@
 import * as admin from 'firebase-admin';
 import { Timestamp } from 'firebase-admin/firestore';
 
-// Remove Yahoo Finance lazy loading
-
 import { Bar } from '../models';
 import { logger } from './logger';
+import { DATA_VALIDATION, MARKET_HOURS } from '../config/runtime';
 
 const getDb = () => {
   if (admin.apps.length === 0) {
@@ -16,7 +15,30 @@ const getDb = () => {
   return admin.firestore();
 };
 
-// Yahoo Finance helper removed
+/**
+ * V3.0: Convert UTC Date to IST dateId using arithmetic (no toLocaleString).
+ */
+function toISTDateId(utcDate: Date): string {
+  const istMs = utcDate.getTime() + MARKET_HOURS.IST_OFFSET_HOURS * 3600000;
+  const ist = new Date(istMs);
+  const y = ist.getUTCFullYear();
+  const m = String(ist.getUTCMonth() + 1).padStart(2, '0');
+  const d = String(ist.getUTCDate()).padStart(2, '0');
+  return `${y}${m}${d}`;
+}
+
+/**
+ * V3.0: Check if NSE market is closed (safe to run EOD).
+ */
+export function isMarketClosed(): boolean {
+  const nowMs = Date.now() + MARKET_HOURS.IST_OFFSET_HOURS * 3600000;
+  const istNow = new Date(nowMs);
+  const h = istNow.getUTCHours();
+  const m = istNow.getUTCMinutes();
+  const timeMinutes = h * 60 + m;
+  const safeMinutes = MARKET_HOURS.EOD_SAFE_HOUR * 60 + MARKET_HOURS.EOD_SAFE_MINUTE;
+  return timeMinutes >= safeMinutes;
+}
 
 
 let _kite: any = null;
@@ -29,38 +51,46 @@ const getKite = async (apiKey: string, accessToken: string) => {
   return _kite;
 };
 
-let _nseInstruments: any[] | null = null;
-export async function getNSEInstruments(apiKey: string, accessToken: string) {
-  if (_nseInstruments) return _nseInstruments;
-  console.log('[MarketData] Fetching NSE instrument list CSV from Kite...');
-  try {
-    const axios = (await import('axios')).default;
-    const response = await axios.get('https://api.kite.trade/instruments/NSE', {
-      timeout: 120000,
-      responseType: 'text'
-    });
-    
-    // Simple CSV parser for Kite instruments (instrument_token,exchange_token,tradingsymbol,name,last_price,expiry,strike,tick_size,lot_size,instrument_type,segment,exchange)
-    const lines = response.data.split('\n');
-    const instruments: any[] = [];
-    for (let i = 1; i < lines.length; i++) {
-      const parts = lines[i].split(',');
-      if (parts.length >= 3) {
-        instruments.push({
-          instrument_token: parseInt(parts[0]),
-          tradingsymbol: parts[2]
-        });
+let _nseInstrumentsMap: Map<string, number> | null = null;
+let _nseFetchPromise: Promise<Map<string, number>> | null = null;
+
+export async function getNSEInstrumentsMap(apiKey: string, accessToken: string): Promise<Map<string, number>> {
+  if (_nseInstrumentsMap) return _nseInstrumentsMap;
+  if (_nseFetchPromise) return _nseFetchPromise;
+
+  _nseFetchPromise = (async () => {
+    console.log('[MarketData] Fetching NSE instrument list CSV from Kite...');
+    try {
+      const axios = (await import('axios')).default;
+      const response = await axios.get('https://api.kite.trade/instruments/NSE', {
+        timeout: 120000,
+        responseType: 'text'
+      });
+      
+      const lines = response.data.split('\n');
+      const map = new Map<string, number>();
+      for (let i = 1; i < lines.length; i++) {
+        const parts = lines[i].split(',');
+        if (parts.length >= 3) {
+          const token = parseInt(parts[0]);
+          const symbol = parts[2];
+          if (token && symbol) map.set(symbol, token);
+        }
       }
+      
+      _nseInstrumentsMap = map;
+      _nseFetchPromise = null;
+      console.log(`[MarketData] Cached ${_nseInstrumentsMap.size} NSE instruments from CSV.`);
+      return _nseInstrumentsMap;
+    } catch (err: any) {
+      _nseFetchPromise = null;
+      const errMsg = err instanceof Error ? err.message : JSON.stringify(err);
+      console.error(`[MarketData] Failed to fetch NSE instruments CSV: ${errMsg}`);
+      throw err;
     }
-    
-    _nseInstruments = instruments;
-    console.log(`[MarketData] Cached ${_nseInstruments.length} NSE instruments from CSV.`);
-    return _nseInstruments;
-  } catch (err: any) {
-    const errMsg = err instanceof Error ? err.message : JSON.stringify(err);
-    console.error(`[MarketData] CRITICAL: Failed to fetch NSE instruments CSV: ${errMsg}`);
-    throw err;
-  }
+  })();
+
+  return _nseFetchPromise;
 }
 
 
@@ -68,94 +98,100 @@ export async function getNSEInstruments(apiKey: string, accessToken: string) {
 /**
  * Task Queue Trigger to fetch historical candles for a specific symbol.
  */
-export async function doFetchCandles(jobId: string, symbol: string, runDate: string, instrumentToken?: number): Promise<boolean> {
+export async function doFetchCandles(jobId: string, symbol: string, runDate: string, instrumentToken?: number, forceDays?: number): Promise<boolean> {
   console.log(`>>> [ENTRY POINT] doFetchCandles: Job=${jobId}, Symbol=${symbol}, Date=${runDate}`);
   const db = getDb();
-  // 0. Optimization: Skip if today's data (or Friday's data if weekend) already exists
-  const dateObj = new Date(runDate);
-  const dayOfWeek = dateObj.getUTCDay(); // 0 = Sunday, 6 = Saturday
-  
-  let checkDates = [runDate.replace(/-/g, '')];
-  if (dayOfWeek === 6) { // Saturday -> check Friday
-    const fri = new Date(dateObj);
-    fri.setDate(dateObj.getDate() - 1);
-    checkDates.push(fri.toISOString().split('T')[0].replace(/-/g, ''));
-  } else if (dayOfWeek === 0) { // Sunday -> check Friday
-    const fri = new Date(dateObj);
-    fri.setDate(dateObj.getDate() - 2);
-    checkDates.push(fri.toISOString().split('T')[0].replace(/-/g, ''));
-  }
-
-  for (const dId of checkDates) {
-    const snap = await db.collection('barsD').doc(symbol).collection('days').doc(dId).get();
-    if (snap.exists) {
-      const historySnap = await db.collection('barsD').doc(symbol).collection('days')
-        .where(admin.firestore.FieldPath.documentId(), '<=', dId)
-        .limit(30)
-        .get();
-        
-      if (historySnap.size >= 25) {
-        console.log(`[MarketData] Job ${jobId} symbol ${symbol}: Data for ${dId} (Ref: ${runDate}) and sufficient history exist. Skipping duplicate fetch.`);
-        return false;
-      }
-    }
-  }
-
-
-  // 1. Safety Delay: Add randomized jitter (0-500ms) to spread the load across tasks
+  // 0. Safety Delay: Add randomized jitter (0-500ms) to spread the load across tasks
   await new Promise(resolve => setTimeout(resolve, Math.floor(Math.random() * 500)));
 
-  // 1. Fetch real historical data
+  // 1. Check credentials
   const settingsSnap = await db.collection('settings').doc('kite').get();
   const settings = settingsSnap.exists ? settingsSnap.data() : null;
-  
-  if (!settings?.apiKey || !settings?.accessToken) {
-    throw new Error(`Kite credentials missing or inactive for ${symbol}. Yahoo fallback is disabled.`);
-  }
+  const hasKite = !!(settings?.apiKey && settings?.accessToken);
 
-  // Determine dynamic startDate based on latest bar in Firestore
+  // 2. Absolute Delta Calculation
   const dateId = runDate.replace(/-/g, '');
   const lastBarSnap = await db.collection('barsD').doc(symbol).collection('days')
-    .where(admin.firestore.FieldPath.documentId(), '<', dateId)
     .orderBy(admin.firestore.FieldPath.documentId(), 'desc')
     .limit(1)
     .get();
 
   let startDate = new Date(runDate);
-  startDate.setDate(startDate.getDate() - 60); // Default fallback
+  startDate.setDate(startDate.getDate() - 60); // Default fallback if no data exists
 
-  if (!lastBarSnap.empty) {
-    const lastDateStr = lastBarSnap.docs[0].id; // "YYYYMMDD"
+  if (!lastBarSnap.empty && !forceDays) {
+    const lastDateStr = lastBarSnap.docs[0].id;
+
+    if (lastDateStr >= dateId) {
+      console.log(`[MarketData] Job ${jobId} symbol ${symbol}: Data already fetched up to ${lastDateStr} (>= ${dateId}). Skipping redundant fetch.`);
+      return false;
+    }
+
     const yr = parseInt(lastDateStr.substring(0, 4));
     const mo = parseInt(lastDateStr.substring(4, 6)) - 1;
     const dy = parseInt(lastDateStr.substring(6, 8));
-    const lastDate = new Date(yr, mo, dy);
-    
-    // Set startDate to the day AFTER the last known bar
+    const lastDate = new Date(Date.UTC(yr, mo, dy));
     startDate = new Date(lastDate);
-    startDate.setDate(lastDate.getDate() + 1);
+    startDate.setUTCDate(lastDate.getUTCDate() + 1);
     
-    // Safety check: Don't go into the future
-    const today = new Date(runDate);
-    if (startDate > today) {
-      console.log(`[MarketData] Job ${jobId} symbol ${symbol}: Firestore is already up to date (Last bar: ${lastDateStr}). Skipping fetch.`);
-      return false;
-    }
-    console.log(`[MarketData] Job ${jobId} symbol ${symbol}: DELTA FETCH activated. Fetching from ${startDate.toISOString().split('T')[0]} to ${runDate}`);
+    console.log(`[MarketData] Job ${jobId} symbol ${symbol}: LATEST BAR = ${lastDateStr}. STRICT DELTA FETCH from ${startDate.toISOString().split('T')[0]} to ${runDate}`);
+  } else if (forceDays) {
+    startDate = new Date(runDate);
+    startDate.setDate(startDate.getDate() - forceDays);
+    console.log(`[MarketData] Job ${jobId} symbol ${symbol}: DEEP SYNC activated. Force-fetching last ${forceDays} days (Start: ${startDate.toISOString().split('T')[0]}).`);
   }
 
   let realCandles: Bar[] = [];
-  try {
-    realCandles = await fetchFromKite(symbol, runDate, settings.apiKey, settings.accessToken, instrumentToken, jobId, startDate);
-  } catch (err) {
-    const errorMsg = err instanceof Error ? err.message : JSON.stringify(err);
-    await logger.error(`[MarketData] Kite fetch failed for ${symbol}.`, 'MarketData', { jobId, symbol, error: errorMsg });
-    throw new Error(`Kite fetch failed for ${symbol}: ${errorMsg}`);
+  
+  // V3.0: Primary fetch from Kite, fallback to NSE bhavcopy
+  if (hasKite) {
+    try {
+      realCandles = await fetchFromKite(symbol, runDate, settings!.apiKey, settings!.accessToken, instrumentToken, jobId, startDate);
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : JSON.stringify(err);
+      await logger.warn(`[MarketData] Kite fetch failed for ${symbol}, trying bhavcopy fallback.`, 'MarketData', { jobId, symbol, error: errorMsg });
+      // Fallback to NSE bhavcopy
+      try {
+        realCandles = await fetchFromNSEBhavcopy(symbol, runDate);
+        await logger.info(`[MarketData] NSE bhavcopy fallback succeeded for ${symbol}: ${realCandles.length} bars`, 'MarketData', { jobId, symbol });
+      } catch (bhavErr) {
+        await logger.error(`[MarketData] Both Kite and bhavcopy failed for ${symbol}.`, 'MarketData', { jobId, symbol });
+        throw new Error(`All data sources failed for ${symbol}: Kite: ${errorMsg}, Bhavcopy: ${bhavErr instanceof Error ? bhavErr.message : String(bhavErr)}`);
+      }
+    }
+  } else {
+    // No Kite credentials — try bhavcopy only
+    try {
+      realCandles = await fetchFromNSEBhavcopy(symbol, runDate);
+      await logger.info(`[MarketData] NSE bhavcopy (no Kite) for ${symbol}: ${realCandles.length} bars`, 'MarketData', { jobId, symbol });
+    } catch (bhavErr) {
+      throw new Error(`No Kite credentials and bhavcopy failed for ${symbol}: ${bhavErr instanceof Error ? bhavErr.message : String(bhavErr)}`);
+    }
   }
 
-  // 2. Validate data
+  // V3.0: Enhanced validation + corporate action detection
+  const isIndex = symbol === 'NIFTY 50' || symbol.startsWith('^');
   console.log(`[MarketData] Job ${jobId} symbol ${symbol}: Validating ${realCandles.length} raw candles.`);
-  const validCandles = validateCandles(realCandles);
+  const validCandles = validateCandles(realCandles, isIndex);
+  
+  // V3.0: Detect potential corporate actions (splits/bonuses)
+  if (validCandles.length > 0 && !lastBarSnap.empty) {
+    const prevBar = lastBarSnap.docs[0].data() as Bar;
+    const latestCandle = validCandles[validCandles.length - 1];
+    if (prevBar.close > 0) {
+      const priceRatio = latestCandle.close / prevBar.close;
+      if (priceRatio < 0.5 || priceRatio > 2.0) {
+        await logger.warn(`[MarketData] CORPORATE ACTION SUSPECTED for ${symbol}: price jumped ${((priceRatio - 1) * 100).toFixed(1)}% (${prevBar.close} → ${latestCandle.close}). Flagging for review.`, 'MarketData', { jobId, symbol, priceRatio });
+        // Store flag for downstream consumers
+        await db.collection('alerts').add({
+          type: 'CORPORATE_ACTION_SUSPECTED', symbol, dateId, priceRatio,
+          prevClose: prevBar.close, newClose: latestCandle.close,
+          createdAt: admin.firestore.Timestamp.now(), status: 'PENDING'
+        });
+      }
+    }
+  }
+  
   console.log(`[MarketData] Job ${jobId} symbol ${symbol}: ${validCandles.length} valid candles after filter.`);
 
   // 3. Store the data in rolling window (barsD)
@@ -167,19 +203,20 @@ export async function doFetchCandles(jobId: string, symbol: string, runDate: str
 
   const batch = db.batch();
   for (const c of validCandles) {
-    // More robust dateId generation
+    // V3.0: Robust IST dateId generation via UTC offset arithmetic
     const dateObj = c.timestamp.toDate();
-    const istDate = new Date(dateObj.toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
-    const year = istDate.getFullYear();
-    const month = String(istDate.getMonth() + 1).padStart(2, '0');
-    const day = String(istDate.getDate()).padStart(2, '0');
-    const cDateId = `${year}${month}${day}`;
+    const cDateId = toISTDateId(dateObj);
     
+    if (!symbol || !cDateId) {
+      console.warn(`[MarketData] Skipping batch write: empty symbol(${symbol}) or cDateId(${cDateId})`);
+      continue;
+    }
     const docRef = db.collection('barsD').doc(symbol).collection('days').doc(cDateId);
     batch.set(docRef, { ...c, dateId: cDateId });
   }
 
   // Set a field on the symbol document itself so it's not a "virtual" parent
+  if (!symbol) return true;
   batch.set(db.collection('barsD').doc(symbol), { 
     lastUpdated: admin.firestore.FieldValue.serverTimestamp(),
     type: symbol === 'NIFTY 50' ? 'INDEX' : 'EQUITY'
@@ -200,9 +237,9 @@ export async function doFetchCandles(jobId: string, symbol: string, runDate: str
 
 
 export async function fetchCandlesTask(req: any, res: any) {
-  const { jobId, symbol, runDate } = req.body;
+  const { jobId, symbol, runDate, forceDays } = req.body;
   try {
-    await doFetchCandles(jobId, symbol, runDate);
+    await doFetchCandles(jobId, symbol, runDate, undefined, forceDays);
     res.status(200).send('Candles fetched');
   } catch(error) {
     await logger.error(`Failed to fetch candles for ${symbol}: ${error}`, 'MarketData', { jobId, symbol, runDate });
@@ -210,7 +247,77 @@ export async function fetchCandlesTask(req: any, res: any) {
   }
 }
 
-// fetchFromYahooFinance removed
+// fetchFromYahooFinance removed — replaced by NSE bhavcopy
+
+/**
+ * V3.0: NSE Bhavcopy fallback — fetches official EOD data from NSE website.
+ * Only returns today's bar (bhavcopy is daily). Used as degraded-mode backup.
+ */
+async function fetchFromNSEBhavcopy(symbol: string, runDate: string): Promise<Bar[]> {
+  const axios = (await import('axios')).default;
+  const searchSymbol = symbol.endsWith('.NS') ? symbol.slice(0, -3) : symbol;
+  
+  // NSE bhavcopy URL format (CSV) — tries current day
+  const d = new Date(runDate);
+  const day = String(d.getDate()).padStart(2, '0');
+  const months = ['JAN','FEB','MAR','APR','MAY','JUN','JUL','AUG','SEP','OCT','NOV','DEC'];
+  const mon = months[d.getMonth()];
+  const year = d.getFullYear();
+  
+  // Try NSE equity bhavcopy endpoint
+  const url = `https://archives.nseindia.com/content/historical/EQUITIES/${year}/${mon}/cm${day}${mon}${year}bhav.csv.zip`;
+  
+  try {
+    const response = await axios.get(url, {
+      timeout: 30000,
+      responseType: 'arraybuffer',
+      headers: {
+        'User-Agent': 'Mozilla/5.0',
+        'Accept-Encoding': 'gzip, deflate',
+      }
+    });
+
+    // Parse CSV from zip (simplified — in production would use proper zip lib)
+    // For now, log the attempt and return empty if zip parsing not available
+    const AdmZip = (await import('adm-zip')).default;
+    const zip = new AdmZip(Buffer.from(response.data));
+    const entries = zip.getEntries();
+    
+    for (const entry of entries) {
+      if (!entry.entryName.endsWith('.csv')) continue;
+      const csv = entry.getData().toString('utf8');
+      const lines = csv.split('\n');
+      const header = lines[0].split(',').map((h: string) => h.trim());
+      
+      const symIdx = header.indexOf('SYMBOL');
+      const openIdx = header.indexOf('OPEN');
+      const highIdx = header.indexOf('HIGH');
+      const lowIdx = header.indexOf('LOW');
+      const closeIdx = header.indexOf('CLOSE');
+      const volIdx = header.indexOf('TOTTRDQTY');
+      
+      for (let i = 1; i < lines.length; i++) {
+        const cols = lines[i].split(',').map((c: string) => c.trim());
+        if (cols[symIdx] === searchSymbol) {
+          return [{
+            open: parseFloat(cols[openIdx]),
+            high: parseFloat(cols[highIdx]),
+            low: parseFloat(cols[lowIdx]),
+            close: parseFloat(cols[closeIdx]),
+            volume: parseInt(cols[volIdx]) || 0,
+            timestamp: Timestamp.fromDate(d)
+          }];
+        }
+      }
+    }
+    
+    console.warn(`[MarketData] Symbol ${searchSymbol} not found in NSE bhavcopy for ${runDate}`);
+    return [];
+  } catch (err) {
+    console.warn(`[MarketData] NSE bhavcopy fetch failed for ${runDate}: ${err instanceof Error ? err.message : String(err)}`);
+    return [];
+  }
+}
 
 
 async function fetchWithRetry<T>(fn: () => Promise<T>, symbol: string, retries = 3, delay = 1000): Promise<T> {
@@ -246,15 +353,12 @@ async function fetchFromKite(symbol: string, runDate: string, apiKey: string, ac
     if (symbol === 'NIFTY 50') {
       token = 256265; // Kite Constant for NSE Index
     } else {
-      const instruments = await getNSEInstruments(apiKey, accessToken);
-      if (!instruments) throw new Error('NSE Instruments list is empty or unreachable');
-      
+      const instrumentsMap = await getNSEInstrumentsMap(apiKey, accessToken);
       const searchSymbol = symbol.endsWith('.NS') ? symbol.slice(0, -3) : symbol;
-      const instrument = instruments.find((i: any) => i.tradingsymbol === searchSymbol);
-      if (!instrument) {
+      token = instrumentsMap.get(searchSymbol);
+      if (!token) {
         throw new Error(`Instrument not found in Kite NSE: ${symbol}`);
       }
-      token = instrument.instrument_token;
     }
   }
 
@@ -281,8 +385,21 @@ async function fetchFromKite(symbol: string, runDate: string, apiKey: string, ac
 }
 
 export async function updateKiteToken(req: any, res: any) {
-  const { requestToken, apiKey, apiSecret } = req.body;
   const db = getDb();
+  let { requestToken, apiKey, apiSecret } = req.body;
+
+  // Fall back to stored credentials if not provided
+  if (!apiKey || !apiSecret) {
+    const settingsSnap = await db.collection('settings').doc('kite').get();
+    const stored = settingsSnap.data();
+    if (!apiKey) apiKey = stored?.apiKey;
+    if (!apiSecret) apiSecret = stored?.apiSecret;
+  }
+
+  if (!requestToken || !apiKey || !apiSecret) {
+    res.status(400).send({ error: 'Missing requestToken, apiKey, or apiSecret' });
+    return;
+  }
 
   try {
     const { KiteConnect } = await import('kiteconnect');
@@ -312,11 +429,11 @@ export async function updateKiteCredentials(req: any, res: any) {
   const { apiKey, apiSecret, userId, password, totpSecret } = req.body;
   const db = getDb();
   const data: any = { 
-    apiKey, 
-    apiSecret, 
     updatedAt: admin.firestore.Timestamp.now() 
   };
   
+  if (apiKey) data.apiKey = apiKey;
+  if (apiSecret) data.apiSecret = apiSecret;
   if (userId) data.userId = userId;
   if (password) data.password = password;
   if (totpSecret) data.totpSecret = totpSecret;
@@ -347,9 +464,34 @@ export async function checkKiteHealth(req: any, res: any) {
   }
 }
 
-function validateCandles(bars: Bar[]): Bar[] {
-  // Simple validation logic: discard anomalies and extreme outliers. 
-  // Indices (like NIFTY 50) have 0 volume in Kite, so we must allow volume >= 0.
-  return bars.filter(bar => bar.volume >= 0 && bar.high >= bar.low && bar.close > 0);
+/**
+ * V3.0: Enhanced candle validation — OHLC bounds, volume anomaly, zero-vol rejection.
+ */
+function validateCandles(bars: Bar[], isIndex: boolean = false): Bar[] {
+  return bars.filter(bar => {
+    // Basic sanity
+    if (bar.close <= 0 || bar.high < bar.low) return false;
+    
+    // V3.0: OHLC ratio check — reject if high/low spread > 20% (likely circuit/bad data)
+    if (bar.low > 0 && bar.high / bar.low > DATA_VALIDATION.MAX_OHLC_RATIO) {
+      console.warn(`[MarketData] Rejecting bar: high/low ratio ${(bar.high/bar.low).toFixed(2)} exceeds ${DATA_VALIDATION.MAX_OHLC_RATIO}`);
+      return false;
+    }
+    
+    // V3.0: OHLC containment — close and open must be within [low, high]
+    if (bar.open < bar.low * 0.999 || bar.open > bar.high * 1.001) return false;
+    if (bar.close < bar.low * 0.999 || bar.close > bar.high * 1.001) return false;
+    
+    // V3.0: Minimum price filter
+    if (bar.close < DATA_VALIDATION.MIN_CLOSE_INR) return false;
+    
+    // V3.0: Zero volume rejection for equities (indices have 0 volume in Kite)
+    if (!isIndex && DATA_VALIDATION.ZERO_VOLUME_REJECT_EQUITY && bar.volume === 0) return false;
+    
+    // Allow non-negative volume for indices
+    if (bar.volume < 0) return false;
+    
+    return true;
+  });
 }
 

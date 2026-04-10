@@ -50,6 +50,10 @@ const getDb = () => {
  */
 async function log(level, message, context, metadata) {
     const db = getDb();
+    // Use metadata.dateId for partition if provided (Backfill support)
+    // Otherwise default to current UTC date. Sanitize to YYYYMMDD.
+    const rawDateId = (metadata === null || metadata === void 0 ? void 0 : metadata.partitionDateId) || (metadata === null || metadata === void 0 ? void 0 : metadata.dateId) || new Date().toISOString().split('T')[0];
+    const dateId = rawDateId.replace(/-/g, '');
     const entry = {
         level,
         message,
@@ -59,8 +63,6 @@ async function log(level, message, context, metadata) {
     };
     try {
         // Write to a persistent logs collection
-        // Use UTC date for partitioning (consistent with Dashboard)
-        const dateId = new Date().toISOString().split('T')[0].replace(/-/g, '');
         await db.collection('logs').doc(dateId).collection('entries').add(entry);
         // Also log to standard Firebase logger for Google Cloud Logs Explorer
         if (level === 'ERROR') {

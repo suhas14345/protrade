@@ -33,187 +33,220 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.simulateFillsTask = exports.placeOrdersTask = void 0;
 exports.doPlaceOrders = doPlaceOrders;
 exports.doOpenFillSimulation = doOpenFillSimulation;
-exports.doSimulateFills = doSimulateFills;
-const functionsV1 = __importStar(require("firebase-functions"));
 const admin = __importStar(require("firebase-admin"));
 const safety_1 = require("./safety");
+const runtime_1 = require("../config/runtime");
 const firestore_1 = require("firebase-admin/firestore");
+const calendar_1 = require("./calendar");
+const logger_1 = require("./logger");
 const getDb = () => {
     if (admin.apps.length === 0)
         admin.initializeApp();
     return admin.firestore();
 };
 /**
+ * V2.4: Dynamic slippage model — f(liquidityBucket, regimeState, orderSize, medVol20).
+ * Includes order-size impact: larger orders as % of ADV get proportionally worse fills.
+ * Returns slippage in basis points.
+ */
+function computeSlippageBps(liquidityBucket, regimeState, orderQty, medVol20) {
+    var _a, _b;
+    const bucket = liquidityBucket !== null && liquidityBucket !== void 0 ? liquidityBucket : 'A';
+    const bucketConfig = (_a = runtime_1.SLIPPAGE_CONFIG.BUCKETS[bucket]) !== null && _a !== void 0 ? _a : runtime_1.SLIPPAGE_CONFIG.BUCKETS['A'];
+    const regimeMult = (_b = runtime_1.SLIPPAGE_CONFIG.REGIME_MULT[regimeState !== null && regimeState !== void 0 ? regimeState : 'TREND']) !== null && _b !== void 0 ? _b : 1.0;
+    // Base slippage from bucket range
+    const rawBps = bucketConfig.minBps + Math.random() * (bucketConfig.maxBps - bucketConfig.minBps);
+    // V2.4: Order-size impact — participation rate scaling
+    // If order is >1% of daily volume, slippage increases non-linearly
+    let sizeImpactMult = 1.0;
+    if (orderQty && medVol20 && medVol20 > 0) {
+        const participationRate = orderQty / medVol20;
+        if (participationRate > 0.01) {
+            // Square-root market impact model: impact ∝ sqrt(participation rate)
+            // At 2% participation: ~1.4x slippage; at 5%: ~2.2x; at 10%: ~3.2x
+            sizeImpactMult = 1.0 + Math.sqrt(participationRate / 0.01) - 1.0;
+        }
+    }
+    return Math.round(rawBps * regimeMult * sizeImpactMult);
+}
+/**
+ * V3.0: Full Indian equity fee breakdown.
+ * STT (sell), stamp duty, exchange txn, SEBI turnover, GST, brokerage.
+ */
+function computeFeeEstimate(fillPrice, fillQty, side) {
+    const tradeValue = fillPrice * fillQty;
+    const brokerage = Math.min(runtime_1.INDIAN_FEE_CONFIG.BROKERAGE_FLAT_INR, tradeValue * runtime_1.INDIAN_FEE_CONFIG.BROKERAGE_PCT / 100);
+    const exchangeTxn = tradeValue * runtime_1.INDIAN_FEE_CONFIG.EXCHANGE_TXN_PCT / 100;
+    const sebiTurnover = tradeValue * runtime_1.INDIAN_FEE_CONFIG.SEBI_TURNOVER_PCT / 100;
+    const stampDuty = side === 'BUY' ? tradeValue * runtime_1.INDIAN_FEE_CONFIG.STAMP_DUTY_PCT / 100 : 0; // Stamp duty only on buy
+    const stt = side === 'SELL' ? tradeValue * runtime_1.INDIAN_FEE_CONFIG.STT_SELL_PCT / 100 : 0; // STT on sell (delivery)
+    const gst = (brokerage + exchangeTxn + sebiTurnover) * runtime_1.INDIAN_FEE_CONFIG.GST_PCT / 100;
+    return Math.round((brokerage + exchangeTxn + sebiTurnover + stampDuty + stt + gst) * 100) / 100;
+}
+/**
  * Paper Broker: Places orders for APPROVED signals.
  */
 async function doPlaceOrders(dateId, jobId) {
-    var _a, _b, _c;
+    var _a, _b, _c, _d;
     const db = getDb();
-    console.log(`[PaperBroker] Placing orders for ${dateId}`);
+    await logger_1.logger.info(`[PaperBroker] Placing orders for ${dateId}`, 'PaperBroker', { dateId, jobId });
     (0, safety_1.checkSafety)();
-    const signalsSnap = await db.collection('signals')
-        .doc(dateId)
-        .collection('items')
-        .where('riskApproval.status', '==', 'APPROVED')
-        .get();
+    if (!dateId) {
+        console.error('[PaperBroker] Missing dateId for order placement');
+        return;
+    }
+    const signalsSnap = await db.collection('signals').doc(dateId).collection('items')
+        .where('status', '==', 'APPROVED').get();
     for (const doc of signalsSnap.docs) {
         const signal = doc.data();
-        const signalId = doc.id;
         if ((_a = signal.execution) === null || _a === void 0 ? void 0 : _a.status)
             continue;
-        const orderId = signalId;
+        const atrRef = signal.atrRef || ((_b = signal.features) === null || _b === void 0 ? void 0 : _b.atr14) || 0;
+        const stopMult = signal.stopAtrMult || 2.0;
+        const orderId = doc.id;
         const order = {
             symbol: signal.symbol,
             side: signal.direction,
-            orderType: 'NEXT_OPEN',
-            intendedQty: ((_b = signal.riskApproval) === null || _b === void 0 ? void 0 : _b.sizedQty) || 0,
+            orderType: 'ENTRY',
+            intendedQty: ((_c = signal.riskApproval) === null || _c === void 0 ? void 0 : _c.sizedQty) || 0,
             intendedEntryRef: 'OPEN',
-            createdFromSignalId: signalId,
-            risk: {
-                plannedR: 1.0,
-                riskAmount: ((_c = signal.riskApproval) === null || _c === void 0 ? void 0 : _c.riskAmount) || 0,
-                stopDistance: Math.abs((signal.reasons.close || 0) - signal.indicativeStopPrice)
-            },
+            createdFromSignalId: doc.id,
+            risk: { plannedR: 1.0, riskAmount: ((_d = signal.riskApproval) === null || _d === void 0 ? void 0 : _d.riskAmount) || 0, stopDistance: atrRef * stopMult },
             status: 'ACCEPTED'
         };
         await db.collection('paperOrders').doc(dateId).collection('items').doc(orderId).set(order);
-        await db.collection('signals').doc(dateId).collection('items').doc(signalId).update({
-            status: 'ORDERED',
-            execution: {
-                status: 'ORDERED',
-                orderId
-            }
-        });
-        console.log(`[PaperBroker] Order placed for ${signal.symbol}: ${orderId} (${signal.direction})`);
+        await doc.ref.update({ status: 'ORDERED', execution: { status: 'ORDERED', orderId } });
+        await logger_1.logger.info(`[PaperBroker] ENTRY Order: ${orderId} (${signal.direction})`, 'PaperBroker', { symbol: signal.symbol, orderId, jobId });
     }
-    if (jobId) {
-        await db.collection('jobs').doc(jobId).update({
-            stage: 'ORDERS',
-            updatedAt: admin.firestore.Timestamp.now()
-        });
-    }
+    if (jobId)
+        await db.collection('jobs').doc(jobId).update({ stage: 'ORDERS', updatedAt: admin.firestore.Timestamp.now() });
 }
 /**
- * Open Fill Simulation for Orchestrator loop (One symbol at a time)
+ * Morning Fill Simulation (NEXT_OPEN for both Entry and Exit)
  */
 async function doOpenFillSimulation(jobId, runDate, symbol) {
+    var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k;
     const db = getDb();
-    console.log(`[Job ${jobId}] Simulating open fills for ${symbol} on ${runDate}`);
     const dateId = runDate.replace(/-/g, '');
-    const prevDate = new Date(runDate);
-    prevDate.setDate(prevDate.getDate() - 1);
-    const prevDateId = prevDate.toISOString().split('T')[0].replace(/-/g, '');
-    const ordersSnap = await db.collection('paperOrders')
-        .doc(prevDateId)
-        .collection('items')
-        .where('symbol', '==', symbol)
-        .where('status', '==', 'ACCEPTED')
-        .get();
+    const prevDateId = await calendar_1.CalendarService.getPrevTradingDateId(dateId);
+    if (!prevDateId)
+        return;
+    if (!dateId || !prevDateId) {
+        console.warn(`[PaperBroker] Skipping fill simulation: missing dateId(${dateId}) or prevDateId(${prevDateId})`);
+        return;
+    }
+    const ordersSnap = await db.collection('paperOrders').doc(prevDateId).collection('items')
+        .where('symbol', '==', symbol).where('status', '==', 'ACCEPTED').get();
+    if (ordersSnap.empty)
+        return;
+    const barSnap = await db.collection('barsD').doc(symbol).collection('days').doc(dateId).get();
+    if (!barSnap.exists)
+        return;
+    const bar = barSnap.data();
     const batch = db.batch();
     for (const doc of ordersSnap.docs) {
         const order = doc.data();
-        const barSnap = await db.collection('barsD').doc(symbol).collection('days').doc(dateId).get();
-        if (!barSnap.exists)
+        // V2.2: Fetch regime and liquidity bucket for dynamic slippage
+        const [regimeSnap, signalSnap] = await Promise.all([
+            db.collection('regime').doc(prevDateId).get(),
+            order.createdFromSignalId
+                ? db.collection('signals').doc(prevDateId).collection('items').doc(order.createdFromSignalId).get()
+                : Promise.resolve(null),
+        ]);
+        const regimeState = regimeSnap.exists ? (_b = (_a = regimeSnap.data()) === null || _a === void 0 ? void 0 : _a.marketState) !== null && _b !== void 0 ? _b : 'TREND' : 'TREND';
+        const liquidityBucket = (_f = ((signalSnap === null || signalSnap === void 0 ? void 0 : signalSnap.exists) ? (_e = (_d = (_c = signalSnap.data()) === null || _c === void 0 ? void 0 : _c.features) === null || _d === void 0 ? void 0 : _d.liquidity) === null || _e === void 0 ? void 0 : _e.bucket : undefined)) !== null && _f !== void 0 ? _f : 'A';
+        const medVol20 = (_k = ((signalSnap === null || signalSnap === void 0 ? void 0 : signalSnap.exists) ? (_j = (_h = (_g = signalSnap.data()) === null || _g === void 0 ? void 0 : _g.features) === null || _h === void 0 ? void 0 : _h.liquidity) === null || _j === void 0 ? void 0 : _j.medVol20 : undefined)) !== null && _k !== void 0 ? _k : 0;
+        const slippageBps = computeSlippageBps(liquidityBucket, regimeState, order.intendedQty, medVol20);
+        const slippageMult = order.side === 'BUY' ? (1 + slippageBps / 10000) : (1 - slippageBps / 10000);
+        let fillPrice = bar.open * slippageMult;
+        // V3.0: Fill price bounds — clamp to [bar.low, bar.high]
+        fillPrice = Math.max(bar.low, Math.min(bar.high, fillPrice));
+        // V3.0: Gap-through-stop simulation — if open gaps past stop, fill at open (not stop)
+        if (order.orderType === 'EXIT' || order.exitType) {
+            const posRef = db.collection('portfolio').doc('default').collection('positions').doc(symbol);
+            const posCheck = await posRef.get();
+            if (posCheck.exists) {
+                const pos = posCheck.data();
+                if (pos.direction === 'BUY' && bar.open < pos.stopPrice) {
+                    fillPrice = bar.open; // Gap down through stop — fill at open, not stop
+                    await logger_1.logger.warn(`[PaperBroker] GAP THROUGH STOP: ${symbol} opened at ${bar.open} below stop ${pos.stopPrice}`, 'PaperBroker', { symbol, jobId });
+                }
+                else if (pos.direction === 'SELL' && bar.open > pos.stopPrice) {
+                    fillPrice = bar.open; // Gap up through stop for shorts
+                    await logger_1.logger.warn(`[PaperBroker] GAP THROUGH STOP: ${symbol} opened at ${bar.open} above stop ${pos.stopPrice}`, 'PaperBroker', { symbol, jobId });
+                }
+            }
+        }
+        // V3.0: Reject illiquid orders (bucket C with > 5% ADV)
+        if (liquidityBucket === 'C' && medVol20 > 0 && order.intendedQty > medVol20 * runtime_1.ADV_LIMITS.MAX_ADV_PCT * 2.5) {
+            await logger_1.logger.warn(`[PaperBroker] REJECTING illiquid order: ${symbol} qty ${order.intendedQty} > ${(runtime_1.ADV_LIMITS.MAX_ADV_PCT * 250).toFixed(0)}% of ADV`, 'PaperBroker', { symbol, jobId });
+            batch.update(doc.ref, { status: 'REJECTED', rejectReason: 'ILLIQUID_ORDER' });
             continue;
-        const bar = barSnap.data();
-        const sigSnap = await db.collection('signals').doc(prevDateId).collection('items').doc(order.createdFromSignalId).get();
-        if (!sigSnap.exists)
-            continue;
-        const signal = sigSnap.data();
-        const fillPrice = order.side === 'BUY' ? bar.open * 1.0005 : bar.open * 0.9995;
-        const fillId = `fill_${doc.id}`;
-        // Gap 4: Definitive price anchoring at fill (V1.1 precision)
-        const atrRef = signal.atrRef || signal.reasons.atr14 || 0;
-        const stopMult = signal.stopAtrMult || 2.0;
-        const targetMult = signal.targetAtrMult || 3.0;
-        const finalStop = order.side === 'BUY'
-            ? fillPrice - (atrRef * stopMult)
-            : fillPrice + (atrRef * stopMult);
-        const finalTarget = order.side === 'BUY'
-            ? fillPrice + (atrRef * targetMult)
-            : fillPrice - (atrRef * targetMult);
+        }
+        const feeEstimate = computeFeeEstimate(fillPrice, order.intendedQty, order.side);
+        const fillId = `fill_${doc.id}_${dateId}`;
         const fill = {
-            orderId: doc.id,
-            symbol,
-            fillPrice,
-            fillQty: order.intendedQty,
-            slippageBps: 5,
-            feeEstimate: 20,
-            fillType: 'ENTRY',
-            timestamp: firestore_1.Timestamp.now()
-        };
-        const position = {
-            symbol,
-            avgEntryPrice: fillPrice,
-            qty: order.intendedQty,
-            stopPrice: finalStop,
-            targets: [finalTarget],
-            status: 'OPEN',
-            unrealizedPnl: 0,
-            realizedPnl: 0,
-            openedAt: firestore_1.Timestamp.now(),
-            lastUpdatedAt: firestore_1.Timestamp.now(),
-            entryFillId: fillId,
-            // V1.1 Fields
-            atrAtEntry: atrRef,
-            partialTaken: false,
-            mfeAtr: 0,
-            entryDateId: dateId
+            orderId: doc.id, symbol, fillPrice, fillQty: order.intendedQty,
+            slippageBps, feeEstimate, fillType: order.exitType || 'ENTRY', timestamp: firestore_1.Timestamp.now()
         };
         batch.set(db.collection('paperFills').doc(dateId).collection('items').doc(fillId), fill);
-        batch.set(db.collection('portfolio').doc('default').collection('positions').doc(symbol), position);
-        batch.update(doc.ref, { status: 'FILLED' });
-        batch.update(sigSnap.ref, {
-            status: 'IN_TRADE',
-            stopPrice: finalStop, // Final anchored value
-            targets: [finalTarget], // Final anchored value
-            rr: targetMult / stopMult, // Final R:R
-            execution: {
-                status: 'FILLED',
-                orderId: doc.id,
-                fillId,
-                entryPrice: fillPrice,
-                entryDateId: dateId
+        if (order.orderType === 'ENTRY') {
+            const signalPath = `signals/${prevDateId}/items/${order.createdFromSignalId}`;
+            const sigSnap = await db.doc(signalPath).get();
+            if (!sigSnap.exists)
+                continue;
+            const signal = sigSnap.data();
+            const atrRef = signal.atrRef || 0;
+            const finalStop = order.side === 'BUY' ? fillPrice - (atrRef * (signal.stopAtrMult || 2.0)) : fillPrice + (atrRef * (signal.stopAtrMult || 2.0));
+            const finalTarget = order.side === 'BUY' ? fillPrice + (atrRef * (signal.targetAtrMult || 3.0)) : fillPrice - (atrRef * (signal.targetAtrMult || 3.0));
+            const position = {
+                symbol: order.symbol,
+                direction: order.side === 'BUY' ? 'BUY' : 'SELL',
+                avgEntryPrice: fillPrice,
+                qty: order.intendedQty,
+                stopPrice: finalStop, targets: [finalTarget],
+                status: 'OPEN', unrealizedPnl: 0, realizedPnl: 0, openedAt: firestore_1.Timestamp.now(), lastUpdatedAt: firestore_1.Timestamp.now(),
+                entryFillId: fillId, atrAtEntry: atrRef, partialTaken: false, mfeAtr: 0, entryDateId: dateId,
+                riskAmount: order.risk.riskAmount, signalId: order.createdFromSignalId, signalPath,
+                // V2.4: Strategy field for per-strategy exit profiles
+                strategy: signal.strategy,
+            };
+            batch.set(db.collection('portfolio').doc('default').collection('positions').doc(symbol), position);
+            batch.update(sigSnap.ref, {
+                status: 'IN_TRADE', stopPrice: finalStop, targets: [finalTarget], rr: (signal.targetAtrMult || 3.0) / (signal.stopAtrMult || 2.0),
+                execution: { status: 'FILLED', orderId: doc.id, fillId, entryPrice: fillPrice, entryDateId: dateId }
+            });
+        }
+        else {
+            // EXIT Order Logic
+            const posRef = db.collection('portfolio').doc('default').collection('positions').doc(symbol);
+            const posSnap = await posRef.get();
+            if (!posSnap.exists)
+                continue;
+            const pos = posSnap.data();
+            if (order.exitType === 'PARTIAL_PROFIT') {
+                batch.update(posRef, {
+                    qty: admin.firestore.FieldValue.increment(-order.intendedQty),
+                    stopPrice: pos.avgEntryPrice, // Breakeven (Gap B3 Rules)
+                    partialTaken: true,
+                    lastUpdatedAt: firestore_1.Timestamp.now()
+                });
+                // Update signal doc also
+                if (pos.signalPath)
+                    batch.update(db.doc(pos.signalPath), { stopPrice: pos.avgEntryPrice });
             }
-        });
-        console.log(`[PaperBroker] ${symbol} ${order.side} FILLED at ${fillPrice.toFixed(2)}. Stop: ${finalStop.toFixed(2)}, Target: ${finalTarget.toFixed(2)}`);
+            else {
+                // Full Exit
+                batch.update(posRef, { status: 'CLOSED', exitReason: order.exitType, exitFillId: fillId, closedAt: firestore_1.Timestamp.now() });
+                if (pos.signalPath)
+                    batch.update(db.doc(pos.signalPath), { status: 'DONE' });
+            }
+        }
+        batch.update(doc.ref, { status: 'FILLED' });
+        await logger_1.logger.info(`[PaperBroker] ${order.orderType} FILLED for ${symbol} at ${fillPrice.toFixed(2)}`, 'PaperBroker', { symbol, jobId, orderType: order.orderType });
     }
     await batch.commit();
 }
-/**
- * Legacy Fill Simulation (Fallback)
- */
-async function doSimulateFills(dateId, nextDateId) {
-    const db = getDb();
-    const ordersSnap = await db.collection('paperOrders').doc(dateId).collection('items').where('status', '==', 'ACCEPTED').get();
-    for (const doc of ordersSnap.docs) {
-        const order = doc.data();
-        await doOpenFillSimulation('manual', nextDateId, order.symbol);
-    }
-}
-exports.placeOrdersTask = functionsV1.https.onRequest(async (req, res) => {
-    const { dateId, jobId } = req.body;
-    try {
-        await doPlaceOrders(dateId, jobId);
-        res.status(200).send('Orders placed');
-    }
-    catch (error) {
-        console.error('Order placement failed:', error);
-        res.status(500).send('Internal Error');
-    }
-});
-exports.simulateFillsTask = functionsV1.https.onRequest(async (req, res) => {
-    const { dateId, nextDateId } = req.body;
-    try {
-        await doSimulateFills(dateId, nextDateId);
-        res.status(200).send('Fills simulated');
-    }
-    catch (error) {
-        console.error('Fill simulation failed:', error);
-        res.status(500).send('Internal Error');
-    }
-});
 //# sourceMappingURL=paperBroker.js.map

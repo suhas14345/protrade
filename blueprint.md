@@ -1,581 +1,554 @@
 ================================================================================
-TRADING SYSTEM SOFTWARE BLUEPRINT V2.1
-Long‑Only Equities • EOD Swing • 500+ Symbols • Paper‑First • Firestore • No Pub/Sub
+PROTRADE ALPHA — SYSTEM BLUEPRINT V3.1
+Long + Short Equities • EOD Swing • 500+ Symbols • Paper-First • Firestore
+6 Strategies • Bear Market Capable • Automated via Cloud Scheduler
 ================================================================================
 
-0) PURPOSE & PRINCIPLES
-----------------------
-Goal:
-Build a professional, rules-driven swing-trading platform that runs end-of-day (EOD),
-generates next-session (T+1) entry plans, enforces portfolio risk/correlation controls,
-models real execution (gaps/slippage) in paper trading, and is live-ready by swapping
-only the broker adapter.
+
+0) SYSTEM OVERVIEW
+------------------
+Autonomous Indian equities EOD swing-trading system.
+
+  - Firebase Cloud Functions gen1 (single "gateway" HTTPS function) + Firestore
+  - React/Vite dashboard on Firebase Hosting
+  - Kite Connect for market data and broker integration
+  - GCP project: suhas-ag
+  - Dashboard: https://suhas-ag.web.app
+  - Gateway:   https://us-central1-suhas-ag.cloudfunctions.net/gateway
 
 Core principles:
-1) Trade only when the market regime is favorable for long-only systems.
-2) Enforce portfolio-level risk (heat) and diversification (sector + correlation clusters).
-3) Make paper trading harsh and realistic (slippage, gap-through-stop).
-4) Maintain deterministic, reproducible runs (idempotency + audit trail).
-5) Keep architecture simple: Scheduler + Orchestrator + Cloud Tasks + Firestore (no Pub/Sub).
+  1) Trade long AND short depending on regime — 6 strategies cover all conditions.
+  2) Enforce portfolio-level risk (heat) and diversification (sector + correlation clusters).
+  3) Make paper trading harsh and realistic (slippage, gap-through-stop, Indian fees).
+  4) Maintain deterministic, reproducible runs (idempotency + audit trail).
+  5) Keep architecture simple: single gateway + Cloud Tasks + Firestore (no Pub/Sub).
+  6) Automated end-to-end: Cloud Scheduler triggers Kite renewal and daily EOD run.
 
 Scope:
-- Data cadence: daily bars (plus optional weekly aggregation for bias).
-- Execution style: EOD decisions, next session entries.
-- Universe: 500+ liquid equities (NSE/BSE).
-- Mode: fully automated, start with paper broker, later swap to Zerodha execution.
-
-Non-goals (avoid early):
-- High-frequency intraday trading
-- Dozens of indicators/ML models
-- Pub/Sub event architecture (explicitly excluded)
+  - Data cadence:     daily bars (EOD)
+  - Execution style:  EOD decisions, next-open (T+1) entries
+  - Universe:         500+ liquid NSE equities
+  - Mode:             paper-first, live-ready by swapping broker adapter
+  - Short selling:    supported via ShortBounceEOD strategy (BEAR/HIGH_VOL regimes)
 
 
-1) HIGH‑LEVEL SYSTEM FLOW
-------------------------
-Daily EOD pipeline (after market close):
-A) Fetch latest daily bars for universe (rolling window + archive).
-B) Compute features (EMA/RSI/ATR/structure/liquidity/returns).
-C) Compute market regime + breadth (long-only gating + risk multipliers).
-D) Generate candidate signals (EOD setups).
-E) Portfolio & risk approval (position sizing + caps + correlation clusters).
-F) Create paper orders for next day open (NEXT_OPEN plan).
-G) Write immutable journal records and run summary.
+1) HIGH-LEVEL SYSTEM FLOW
+-------------------------
+Daily EOD pipeline (after 15:45 IST market close):
+  A) Fetch latest daily bars for universe            (FETCH stage)
+  B) Compute features per symbol                     (FEATURES stage)
+  C) Compute RS ranking across all symbols            (RS_RANK stage)
+  D) Detect market regime + breadth                   (REGIME stage)
+  E) Evaluate signals — 6 strategies per symbol       (SIGNALS stage)
+  F) Risk approval — 13 gates per signal              (RISK stage)
+  G) Compute correlation top-N                        (CORR stage)
+  H) Create paper orders for next-open                (ORDERS stage)
 
 Next morning pipeline (after market open):
-H) Simulate fills for NEXT_OPEN orders (with slippage + gaps).
-I) Update positions and trades.
-J) Evaluate exits (stop/target/time/thesis-break) and simulate exit fills as needed.
+  I)  Simulate fills for NEXT_OPEN orders (slippage + gaps)
+  J)  Create positions from filled orders
+  K)  Trade manager: update stops, check exits, close positions
 
 Key concept:
-- Orchestrator drives stages in a strict order; each stage is idempotent and resumable.
+  - Orchestrator enforces strict stage barriers with fan-out/fan-in.
+  - Every stage is idempotent and resumable via sentinel docs.
 
 
-2) ARCHITECTURE (NO PUB/SUB)
+2) GATEWAY PATTERN (index.ts)
+-----------------------------
+Single HTTPS Cloud Function with 540s timeout.
+All operations via POST body: { "action": "...", ...params }
+
+Request flow:
+  CORS → Rate limit (60/min/IP) → API key auth → Action validation
+  → Kill switch check → Dispatch to handler
+
+Known actions (24+):
+  startEod              Start EOD pipeline run
+  startDeepSync         Historical data backfill
+  terminate             Kill a running job
+  fetchCandles          Fetch OHLCV bars for a symbol
+  computeFeatures       Compute indicators for a symbol
+  evaluateSignals       Run strategy evaluation for a symbol
+  computeRsRanking      RS ranking pass across universe
+  computeCorrTopN       Correlation top-N for a symbol
+  manageTrades          Daily trade management (exits, stops)
+  processSymbol         Per-symbol pipeline dispatch
+  orchestrateEod        Internal orchestration handler
+  orchestrateDeepSync   Internal deep sync handler
+  diagnostics           System diagnostics report
+  checkHealth           Health check
+  updateToken           Update Kite OAuth access token
+  updateCredentials     Store Kite API credentials
+  seedUniverse          Import universe members
+  systemHealth          Detailed system health report
+  sweepStuckJobs        Clean up stuck/stale jobs
+  getAlerts             Retrieve system alerts
+  probeInventory        Probe portfolio inventory
+  auditJobs             Audit job history
+  downloadReport        Download analytics report
+  scheduledKiteRenew    Automated Kite session renewal (scheduler)
+  scheduledEod          Automated daily EOD run (scheduler)
+  getKiteSettings       Retrieve Kite configuration
+
+Kill switch blocks these actions:
+  startEod, orchestrateEod, evaluateSignals, manageTrades
+
+PAPER_ONLY enforcement:
+  Forces paperOnly:true on all order-creating actions.
+
+
+3) MIDDLEWARE (middleware.ts)
 ----------------------------
-2.1 Components (Cloud Run/Functions)
-- orchestrator-service
-  Owns run state machine, creates tasks, monitors completion, advances stages.
-
-- universe-service
-  Maintains symbol list, metadata (sector, liquidity bucket), token mapping.
-
-- marketdata-service
-  Fetches daily candles, validates data quality, stores rolling window.
-
-- feature-engine
-  Computes indicators, structure, liquidity metrics, returns.
-
-- regime-breadth-engine (long-only critical)
-  Classifies market regime and breadth; outputs tradeAllowed + risk multipliers + limits.
-
-- strategy-engine
-  EOD setups (trend pullback, breakout close), produces signals with "why" and checklist.
-
-- portfolio-risk-engine
-  Portfolio heat, max positions, sector caps, correlation cluster caps, adaptive sizing.
-  Approves/rejects signals and creates orders.
-
-- paper-broker-service
-  Simulates orders/fills with harsh reality (gaps/slippage/fees), updates positions/trades.
-
-- journal-analytics-service
-  Immutable audit logging + daily/weekly analytics + adherence.
-
-2.2 Scheduling
-- Cloud Scheduler triggers orchestrator via HTTP:
-  POST /run/eod?date=YYYY-MM-DD
-  POST /run/open-sim?date=YYYY-MM-DD
-  POST /run/healthcheck?date=YYYY-MM-DD (optional)
-
-2.3 Parallelism without Pub/Sub
-- Use Cloud Tasks queues (fan-out) per stage:
-  fetch_candles_queue
-  compute_features_queue
-  compute_corrtopn_queue
-  evaluate_signals_queue
-  risk_approve_queue
-  open_fill_sim_queue
-  exit_sim_queue
-
-Fan-out/fan-in mechanism:
-- Orchestrator enqueues tasks in chunks (e.g., 25–50 symbols per task).
-- Each task writes status to Firestore: jobs/{jobId}/tasks/{taskId}.
-- Orchestrator periodically checks completion counts and advances stage when done.
-
-Idempotency:
-- Each task uses deterministic doc IDs or idempotency keys derived from:
-  (runDate + stage + chunkId + versionHash)
-- Re-running does not duplicate results.
-
-Rate limiting:
-- marketdata-service must throttle API calls (e.g., token bucket), as historical API calls
-  are rate-limited in practice; design for safe requests/sec. (Kite forum indicates 3 rps
-  guidance for historical data usage.)
-
-
-3) ZERODHA INTEGRATION NOTES (LATER LIVE)
------------------------------------------
-This system is paper-first. Live integration is by swapping broker adapter.
-
-Data:
-- Historical daily candles are fetched via Kite historical endpoint
-  GET /instruments/historical/:instrument_token/:interval with interval=day.
-
-Orders:
-- Kite supports order placement by variety including amo and regular.
-
-GTT:
-- Kite supports GTT triggers, including two-leg (OCO) behavior.
-  (Optional later if you want server-side triggers for swing.)
-
-Auth:
-- Kite auth uses login redirect to obtain request_token and exchange it at /session/token
-  for access_token; api_secret must not be exposed client-side.
-
-Plan dependency:
-- Zerodha support notes market data (live + historical) is included with paid Kite Connect,
-  and not included with Personal API.
-
-
-4) STORAGE DESIGN (FIRESTORE + CLOUD STORAGE)
-----------------------------------------------
-4.1 Storage strategy for 500+ symbols
-- Firestore stores:
-  universe metadata, rolling daily bars (last 300–800 days), features, regime, corrTopN,
-  signals, orders, fills, positions, trades, journals, and run/job metadata.
-
-- Cloud Storage stores:
-  bulk historical bars and backtest artifacts (compressed per symbol or per month).
-  Firestore keeps pointers/checksums to GCS objects.
-
-4.2 Firestore collections (recommended)
-A) Run tracking
-- jobs/{jobId}
-- jobs/{jobId}/tasks/{taskId}
-
-B) Universe
-- universes/{universeId}
-- universes/{universeId}/members/{symbol}
-
-C) Rolling bars
-- barsD/{symbol}/days/{yyyyMMdd}
-  (Keep last 300–800 daily docs; archive older to GCS)
-
-D) Features
-- features/{symbol}/days/{yyyyMMdd}
-
-E) Market regime + breadth
-- regime/{yyyyMMdd}
-
-F) Correlation Top-N (avoid NxN matrix explosion)
-- corrTopN/{yyyyMMdd}/symbols/{symbol}
-
-G) Signals
-- signals/{yyyyMMdd}/items/{signalId}
-
-H) Paper orders + fills
-- paperOrders/{yyyyMMdd}/items/{orderId}
-- paperFills/{yyyyMMdd}/items/{fillId}
-
-I) Portfolio
-- portfolio/{userId}
-- portfolio/{userId}/positions/{symbol}
-
-J) Trades + journal
-- trades/{userId}/items/{tradeId}
-- journals/{userId}/items/{entryId}
-
-4.3 Document shapes (key ones)
-
-jobs/{jobId}
-{
-  runDate, type (EOD_RUN|OPEN_SIM_RUN),
-  stage (FETCH|FEATURES|REGIME|CORR|SIGNALS|RISK|ORDERS|DONE),
-  status (RUNNING|FAILED|DONE),
-  counts {total, done, failed},
-  startedAt, updatedAt,
-  versionHash (for reproducibility)
-}
-
-features/{symbol}/days/{yyyyMMdd}
-{
-  ema20, ema50, rsi14, atr14, atrPct,
-  trendState (UP|DOWN|RANGE),
-  swing {lastSwingHigh, lastSwingLow},
-  srZones [{low, high, strength}],
-  returns {ret1d, ret5d, ret20d},
-  liquidity {medVol20, medTradedValue20, bucket},
-  computedAt
-}
-
-regime/{yyyyMMdd}
-{
-  marketState (TREND|RANGE|HIGH_VOL|TRANSITION),
-  tradeAllowed (bool),
-  riskMultiplier (0..1),
-  maxNewPositions (int),
-  minSignalScore (int),
-  notes,
-  breadth {
-    pctAboveEMA50, pctAboveEMA200,
-    newHighs20, newLows20
-  }
-}
-
-signals/{yyyyMMdd}/items/{signalId}
-{
-  symbol,
-  direction (BUY only in long-only),
-  strategy (PullbackEOD|BreakoutCloseEOD),
-  score (0..100),
-  entryPlan {type:NEXT_OPEN},
-  stopPrice,
-  targets [target1, target2...],
-  rr,
-  checklist { ... booleans ... },
-  reasons { ... key values ... },
-  status (NEW|APPROVED|REJECTED|ORDERED|IN_TRADE|DONE)
-}
-
-paperOrders/{yyyyMMdd}/items/{orderId}
-{
-  symbol, side (BUY), orderType (NEXT_OPEN),
-  intendedQty,
-  intendedEntryRef (OPEN),
-  createdFromSignalId,
-  risk {plannedR, riskAmount, stopDistance},
-  status (CREATED|ACCEPTED|FILLED|CANCELLED|REJECTED)
-}
-
-paperFills/{yyyyMMdd}/items/{fillId}
-{
-  orderId, symbol, fillPrice, fillQty,
-  slippageBps, feeEstimate,
-  fillType (ENTRY|EXIT_STOP|EXIT_TARGET|EXIT_TIME|EXIT_THESIS),
-  timestamp
-}
-
-
-5) MARKET DATA INGESTION (EOD, 500+ SYMBOLS)
---------------------------------------------
-5.1 Daily sync strategy
-- Fetch last 5–10 trading days per symbol daily to handle corrections.
-- Validate per symbol:
-  - missing dates
-  - zero volume anomalies (if unexpected)
-  - extreme candle ranges vs ATR (outliers)
-- Store:
-  - Firestore rolling window (barsD)
-  - Cloud Storage archive (optional but recommended)
-
-5.2 Initial backfill strategy
-- Download in chunks per symbol (e.g., 1 year blocks).
-- Write to GCS as compressed files.
-- Compute features incrementally (only keep rolling windows + latest snapshots in Firestore).
-
-5.3 Idempotency for ingestion
-- Use doc IDs like yyyyMMdd so re-writes overwrite safely.
-- Store a checksum (e.g., hash of OHLCV) to detect changes.
-
-
-6) FEATURE ENGINE (TECHNICAL + STRUCTURE)
------------------------------------------
-For each symbol and each new date:
-Compute:
-- EMA20, EMA50
-- RSI14
-- ATR14 and ATR%
-- Trend state (UP/DOWN/RANGE) using:
-  - price relative to EMA50
-  - EMA50 slope sign/magnitude
-- Market structure swings:
-  - swing highs/lows using fractal window (k=2..5)
-- Support/resistance zones:
-  - cluster recent swing points into zones (strength by touch count + recency)
-- Returns for correlation and risk:
-  - ret1d, ret5d, ret20d
-- Liquidity proxies:
-  - median volume 20d, median traded value 20d (= close*vol)
-  - liquidity bucket A/B/C based on traded value percentile
-
-
-7) REGIME + BREADTH ENGINE (LONG‑ONLY CRITICAL)
------------------------------------------------
-Purpose:
-Long-only systems require market gating to avoid broad drawdowns and correlation spikes.
-
-7.1 Inputs
-- Market index proxy derived from:
-  (a) actual index bars if available, or
-  (b) universe equal-weight aggregate (median/mean return series)
-- Volatility via ATR% percentile on index proxy
-- Breadth from universe:
-  - pctAboveEMA50
-  - pctAboveEMA200
-  - newHighs20 vs newLows20 (counts across universe)
-
-7.2 Classification (simple, robust)
-- TRANSITION:
-  if marketState changed in last N days OR volatility shock (ATR% jump > threshold)
-  => tradeAllowed = false for cooldown window (3–5 days)
-
-- HIGH_VOL:
-  if ATR% percentile > 80th (configurable)
-  => tradeAllowed true but riskMultiplier 0.25–0.5 and maxNewPositions reduced
-
-- RANGE/CHOP:
-  if EMA slopes flat and breadth weak/neutral
-  => tradeAllowed true but minSignalScore raised and maxNewPositions reduced
-
-- TREND:
-  if index proxy above EMA200 and breadth strong
-  => tradeAllowed true, riskMultiplier 1.0, normal limits
-
-7.3 Outputs used by risk engine
-- tradeAllowed
-- riskMultiplier
-- maxNewPositions
-- minSignalScore
-
-
-8) STRATEGY ENGINE (EOD SETUPS, LONG‑ONLY)
-------------------------------------------
-Strategy A: Trend Pullback EOD (primary)
-Entry conditions (example rules):
-- Trend aligned:
-  - close > EMA50
-  - EMA50 slope positive
-  - RSI regime supportive (e.g., RSI > 50)
-- Pullback:
-  - price pulled back into EMA20/EMA50 zone
-  - near S/R support zone (from srZones)
-- Confirmation (EOD):
-  - bullish rejection / strong close (configurable)
-- Plan:
-  - entry NEXT_OPEN (T+1 open)
-  - stop below recent swing low or below support zone
-  - targets ensure RR >= 2.0 (first target at 2R, optional runner)
-
-Strategy B: Breakout Close EOD (secondary)
-Entry conditions:
-- Range identified over N days (tight consolidation)
-- EOD close above range high
-- Optional: volume expansion proxy vs 20d median volume
-- Plan:
-  - entry NEXT_OPEN
-  - stop below breakout level or range midpoint
-  - targets RR >= 2.0 with trailing option if trend strong
-
-Signal scoring:
-- Combine confluences into score 0..100:
-  trend strength + location quality + breadth alignment + liquidity + volatility suitability
-- Apply minSignalScore from regime engine.
-
-Output:
-- Create signals docs with checklist + reasons + score.
-
-
-9) PORTFOLIO & RISK ENGINE (PRO-GRADE, LONG‑ONLY)
--------------------------------------------------
-9.1 Hard gates
-- If regime.tradeAllowed == false => reject all new entries.
-
-9.2 Adaptive position sizing
-Base:
-- baseRiskAmount = equity * baseRiskPct (e.g., 0.5%)
-
-Multipliers:
-- regimeMultiplier (from regime engine; 0..1)
-- drawdownMultiplier (from equity curve)
-  DD < 5% => 1.0
-  5–10% => 0.75
-  10–15% => 0.5
-  >15% => 0.25 or stop new entries
-
-Final:
-- riskAmount = baseRiskAmount * regimeMultiplier * drawdownMultiplier
-
-Sizing:
-- qty = floor(riskAmount / abs(entryPriceAssumption - stopPrice))
-
-Note:
-- For NEXT_OPEN, entryPriceAssumption = lastClose or modelled open estimate.
-
-9.3 Portfolio heat controls
-- maxOpenPositions (e.g., 12–18)
-- maxTotalOpenRiskR (e.g., 4R)
-- maxNewPositionsPerDay = regime.maxNewPositions
-
-9.4 Sector exposure caps
-- maxSectorExposurePct (e.g., 25% of portfolio value)
-- sector exposure computed from current positions + proposed order
-
-9.5 Correlation/cluster caps (critical for 500+)
-- Use corrTopN lists with 60-day lookback
-- Define cluster membership:
-  candidate is in same cluster as any held position if corr > 0.75
-- Enforce:
-  - maxPositionsPerCluster (e.g., 2–3)
-  - maxClusterRiskR (e.g., 1.5R)
-
-9.6 Liquidity gating
-- Reject symbols below minimum median traded value threshold
-- Optionally raise slippage model for liquidity bucket B/C
-
-9.7 Gap-risk gating (without earnings feed)
-Compute per symbol "gap risk score":
-- For last N days:
-  gap = abs(open - prevClose) / ATR
-- If gapRiskPercentile > threshold => reduce size or reject
-This protects long-only from overnight gap disasters.
-
-Approval output:
-- APPROVED signals become paper orders for NEXT_OPEN.
-- Store rejection reasons in signals for auditability.
-
-
-10) PAPER BROKER (HARSH REALITY MODE)
--------------------------------------
-Purpose:
-Paper results must approximate live behavior; avoid perfect fills.
-
-10.1 Entry fill model for NEXT_OPEN
-At next day open:
-- baseFill = openPrice
-- slippageBps = f(liquidityBucket, atrPct, regimeState)
-- fillPrice = baseFill * (1 + slippageBps/10000) for BUY
-- record slippage and fees
-
-10.2 Gap-through-stop
-If open gaps below stop (for long position):
-- stop executes at open (worse than stop), plus slippage
-- realize loss > planned R
-- record "gapStop" in fill metadata
-
-10.3 Exit simulation events
-- stop loss: if low breaches stop => exit at stop ± slippage;
-  if open gaps through stop => exit at open ± slippage
-- target: if high reaches target => exit at target ± slippage
-- time stop: if daysInTrade >= N and MFE < threshold => exit at next open
-- thesis break: if close < key level (e.g., EMA50 or support zone) => exit next open
-
-10.4 Fees
-- Configurable estimate (brokerage + taxes + impact)
-- Store in fill records so net P&L is realistic.
-
-10.5 Broker adapter contract
-BrokerAdapter:
-  placeOrder(orderIntent) -> orderAck
-  cancelOrder(orderId)
-  getOrderStatus(orderId)
-  getPositions()
-
-Implementations:
-- PaperBrokerAdapter (now)
-- ZerodhaBrokerAdapter (later)
-
-
-11) EXIT LOGIC (MINIMAL BUT ROBUST)
------------------------------------
-Long-only swing exits (recommended minimal set):
-1) Initial stop beyond structure.
-2) Time stop:
-   - if trade does not reach +0.5R within 10 trading days => exit next open.
-3) Structure trailing:
-   - once trade reaches +1R, trail stop to last swing low (or EMA20/EMA50 depending on rules).
-4) Thesis break:
-   - if EOD close breaks key support or EMA50 with bearish structure => exit next open.
-Optional:
-5) Partial at 1R and trail remaining runner.
-
-Keep exits deterministic and consistent across backtests and paper sim.
-
-
-12) SAFETY, RELIABILITY, OBSERVABILITY
---------------------------------------
-Kill switches (runtime config):
-- TRADING_ENABLED (false stops all order creation)
-- PAPER_ONLY (true prevents real broker execution)
-- MAX_DAILY_NEW_ENTRIES override (emergency throttle)
-
-Circuit breakers:
-- If data stale or missing for index proxy OR >X% universe symbols missing bars => block run.
-- If abnormal slippage spikes (indicates data issue) => block new entries.
-- If portfolio drawdown breaches hard limit => stop new entries and optionally reduce exposure.
-
-Idempotency:
-- Each stage writes outputs with deterministic IDs.
-- Orchestrator can resume from last completed stage.
-- Cloud Tasks retries safe due to overwrite semantics.
-
-Auditability:
-- Every signal stores "why" (feature snapshot) and checklist results.
-- Every rejection stores the exact reason(s).
-- Every fill stores slippage/fees and whether it was gap-through-stop.
-
-Monitoring:
-- Dashboard derived from Firestore:
-  - job stage latency and failures
-  - number of signals generated/approved/rejected
-  - exposure by sector/cluster
-  - equity curve, drawdowns, expectancy
-  - regime performance breakdown
-
-
-13) IMPLEMENTATION PHASES (PAPER-FIRST)
----------------------------------------
-Phase 0 (2–3 days):
-- Firestore schema, orchestrator skeleton, Cloud Scheduler, Cloud Tasks queues, universe import.
-
-Phase 1 (1 week):
-- marketdata-service with throttled fetching + QA, rolling Firestore storage, optional GCS archive.
-
-Phase 2 (1 week):
-- feature engine + regime/breadth engine + basic reports.
-
-Phase 3 (1–2 weeks):
-- strategy engine + portfolio/risk engine including sector + corrTopN clusters + adaptive sizing.
-
-Phase 4 (1 week):
-- paper broker harsh fill simulation + exits + full trade lifecycle + journal analytics.
-
-Phase 5 (later, live readiness):
-- Zerodha auth + execution adapter (AMO), shadow mode (signals compare), then limited live rollout.
-
-
-14) DEFAULT PARAMETERS (SANE STARTING POINTS)
+  validateRequest()   — checks action string against KNOWN_ACTIONS whitelist
+  validateApiKey()    — reads config/apiKey from Firestore; matches x-api-key header
+                        REQUIRE_AUTH=false by default (for development)
+  checkRateLimit()    — sliding window, 60 requests per 60 seconds per IP
+  checkKiteHealth()   — verifies config/kiteSession accessToken exists and not expired
+
+
+4) ORCHESTRATION (orchestrator.ts)
+----------------------------------
+4.1 doStartEodRun()
+  - Creates Job doc in jobs/{jobId}
+  - Fans out per-symbol processing via Cloud Tasks
+  - Stage barriers enforce strict ordering:
+      FETCH(all) → FEATURES(all) → RS_RANK → REGIME → SIGNALS → RISK/CORR → ORDERS
+
+4.2 Idempotency
+  - Sentinel docs: signals/{dateId}/status/{jobId_symbol} prevent duplicate processing
+  - Each stage writes with deterministic IDs (jobId + symbol + stage)
+  - Re-running a stage safely overwrites existing results
+
+4.3 Circuit breaker
+  - If >20% of symbols fail in any stage → abort entire run
+  - Max 3 retries per symbol per stage, then mark FAILED
+  - Job timeout: 30 minutes auto-fail for stuck jobs
+
+4.4 doStartDeepSync()
+  - Historical data backfill mode
+  - Fetches extended bar history for all universe symbols
+
+
+5) DATA PIPELINE
+----------------
+
+5.1 Market Data (marketdata.ts)
+  - Primary source: Kite Connect historical API (doFetchCandles)
+  - Storage: barsD/{symbol}/days/{dateId} — OHLCV candles
+  - Kite session management: updateToken (OAuth flow), updateKiteCredentials
+  - NSE instrument token mapping from Kite instruments file
+  - Market hours guard: rejects EOD runs before 15:45 IST
+
+5.2 Features (features.ts)
+  - doComputeFeatures(): computes per-symbol technical indicators
+  - Output: features/{symbol}/days/{dateId}
+  - Indicators computed:
+      EMA20, EMA50, EMA200
+      RSI14
+      ATR14
+      Bollinger Bands (20-period, 2 std dev)
+      Swing highs and lows
+      Support/resistance zones
+      Volume SMA20
+  - Derived fields:
+      20-day and 60-day returns (for RS ranking input)
+      VDU flag (Volume Dry-Up — 3+ declining volume bars on pullback)
+      Gap risk score (historical gap frequency normalized by ATR)
+      Liquidity bucket: A (>50M INR median traded value),
+                        B (10M-50M), C (<10M)
+
+5.3 RS Ranking (rsRanking.ts)
+  - doComputeRsRanking(): ranks all universe symbols on 0-99 scale
+  - Composite score: weighted blend of 20-day + 60-day return percentile
+  - Writes rsScore to each features/{symbol}/days/{dateId} doc
+  - Writes universe median returns to regime/{dateId} doc
+
+5.4 Regime Detection (regime.ts)
+  - doComputeRegime(): classifies current market state
+  - States: TREND | RANGE | HIGH_VOL | TRANSITION | BEAR
+  - Inputs:
+      Nifty50 EMA slopes
+      Breadth: pctAboveEMA50 across universe
+      VIX proxy
+  - Hysteresis: requires 3 consecutive bars to confirm regime change
+  - Breadth confirmation:
+      TREND requires >55% of universe above EMA50
+      BEAR  requires <35% of universe above EMA50
+  - Output: regime/{dateId}
+
+5.5 Correlation (corrTopN.ts)
+  - computeCorrTopN(): stores top-20 most correlated peers per symbol
+  - Used by risk approval for correlation cluster enforcement
+
+
+6) STRATEGIES (strategy.ts)
+---------------------------
+6 strategies evaluated per-symbol per-day. All generate NEXT_OPEN entry plans.
+Each strategy has regime gates, technical gates, and per-strategy scoring.
+
+6.1 PullbackEOD (BUY)
+  Regime:     TREND or RANGE
+  Gates:
+    - ema20 > ema50
+    - ATR-normalized EMA touch (within 0.3 ATR of EMA20 or in EMA band)
+    - RSI in regime-aware range (TREND: 38-58, RANGE: 40-55)
+    - VDU active (hard gate — must show volume dry-up)
+  Exit plan:  stop 2.0x ATR, target 3.0x ATR, max 7 days, trailing stop
+  Scoring:    min score 55, RS threshold 60-100
+
+6.2 BreakoutCloseEOD (BUY)
+  Regime:     TREND only
+  Gates:
+    - ema20 > ema50
+    - Close above 20-day high
+    - Volume > SMA20
+    - Consolidation check (5+ low-ATR bars in prior 10)
+  Exit plan:  stop 2.5x ATR, target 4.0x ATR, max 10 days, trailing stop
+  Scoring:    min score 60, RS threshold 70-100
+
+6.3 MeanReversionEOD (BUY)
+  Regime:     RANGE (RSI < 30, bucket A/B) or BEAR (RSI < 25, bucket A only)
+  Gates:
+    - Price below Bollinger lower band
+    - Extended earnings check (avoid buying into earnings)
+  Exit plan:  stop 1.5x ATR, target 2.0x ATR, max 5 days
+  Scoring:    min score 50, RS threshold 30-100
+
+6.4 ShortBounceEOD (SELL)
+  Regime:     BEAR or HIGH_VOL
+  Gates:
+    - SHORT_CONFIG.ENABLED = true
+    - ema20 < ema50 (confirmed downtrend)
+    - ATR-normalized EMA touch (bounce into resistance)
+    - RSI 45-65 (overbought on bounce)
+    - Bucket A only (shorts need deep liquidity)
+    - Max 2 short positions simultaneously
+    - F&O ban check (cannot short if in ban period)
+  Exit plan:  stop 1.5x ATR, target 2.0x ATR, max 5 days
+  Scoring:    min score 65, RS threshold 0-50 (only short weak stocks)
+
+6.5 BearBounceEOD (BUY)
+  Regime:     BEAR or HIGH_VOL
+  Gates:
+    - RSI < 25 (deeply oversold)
+    - Price below Bollinger lower band
+    - Volume spike > 1.5x SMA20 (capitulation signal)
+    - Bucket A/B
+  Exit plan:  stop 1.5x ATR, target 1.5x ATR, max 3 days (quick bounce only)
+  Scoring:    min score 55, RS threshold 0-100 (no RS filter — oversold bounce)
+
+6.6 RSLeaderEOD (BUY)
+  Regime:     any (designed to find leaders even in bear markets)
+  Gates:
+    - ema20 > ema50 (uptrend despite market weakness)
+    - RS score >= 80 (relative strength leader)
+    - RSI 40-65
+    - ATR-normalized EMA touch
+    - Bucket A (or B in non-BEAR regimes)
+  Exit plan:  stop 2.5x ATR, target 4.0x ATR, trailing stop (wide — leaders run far)
+  Scoring:    min score 65, RS threshold 80-100
+
+
+7) RISK PIPELINE (13 gates in doRiskApproval)
 ---------------------------------------------
-Universe:
-- 500–800 liquid equities
+Every signal must pass all 13 gates in sequence to be approved:
 
-Lookbacks:
-- Bars: 300–800 daily bars (rolling)
-- Correlation: 60 trading days
-- Gap risk: 60–120 days
+  Gate 1:  Regime hard gate
+           - Checks tradeAllowed flag from regime doc
+           - TRANSITION regime blocks all new entries
 
-Risk:
-- baseRiskPct: 0.5%
-- maxOpenPositions: 12–18
-- maxTotalOpenRiskR: 4R
-- maxSectorExposurePct: 25%
-- corrThreshold: 0.75
-- maxPositionsPerCluster: 2–3
-- maxClusterRiskR: 1.5R
+  Gate 2:  Feature validation
+           - ema20 and atr14 must be finite numbers
+           - Rejects if feature data is corrupt or missing
 
-Regime:
-- transitionCooldownDays: 3–5
-- highVolAtrPctile: 80th
-- highVolRiskMultiplier: 0.25–0.5
-- rangeMinSignalScore uplift: +10 to +20
+  Gate 3:  RSI fail-closed
+           - If RSI14 is unavailable, reject the signal
+           - Prevents trading without momentum context
 
-Exits:
-- timeStopDays: 10
-- timeStopMFE: +0.5R
-- trailActivation: +1R
+  Gate 4:  Kill switch check
+           - Reads config/runtime KILL_SWITCH flag
+           - Hard block when kill switch is active
 
-Paper execution realism:
-- slippageBps buckets:
-  A (high liquidity): 2–8 bps
-  B (mid): 5–20 bps
-  C (low): 10–40 bps
-- add regime multiplier to slippage in HIGH_VOL
+  Gate 5:  Event calendar
+           - Checks earnings dates, corporate actions, F&O bans
+           - Rejects entries around scheduled events
+
+  Gate 6:  Strategy-aware RS filter
+           - Each strategy defines its own min/max RS thresholds
+           - PullbackEOD: 60-100, BreakoutCloseEOD: 70-100, ShortBounceEOD: 0-50, etc.
+
+  Gate 7:  Gap risk gate
+           - Rejects signal if gapRiskScore >= 0.8
+
+  Gate 8:  Drawdown multiplier
+           - Halts new entries at 20% portfolio drawdown
+           - Scales down position size starting at 5% drawdown
+
+  Gate 9:  Vol-targeting position sizing
+           - Targets 12% annualized portfolio volatility
+           - Adjusts position sizes to stay within vol budget
+
+  Gate 10: ADV liquidity cap
+           - Max 2% of average daily volume per position
+           - Hard cap at Rs 2 crore position value
+
+  Gate 11: Gap stress test
+           - Per-position and portfolio-level worst-case overnight gap loss
+           - Rejects if gap scenario exceeds risk tolerance
+
+  Gate 12: Portfolio constraints
+           - Max open positions limit
+           - Sector exposure caps
+           - Portfolio heat limit (total open risk in R-multiples)
+
+  Gate 13: Correlation cluster enforcement
+           - Max 2 positions per correlation cluster
+           - Fail-closed: if correlation data unavailable, reject
+
+
+8) DYNAMIC SCORING (computeDynamicScore)
+----------------------------------------
+Base score assigned per strategy:
+  PullbackEOD:       55-75 depending on setup quality
+  BreakoutCloseEOD:  55-75
+  MeanReversionEOD:  55-75
+  ShortBounceEOD:    55-75
+  BearBounceEOD:     55-75
+  RSLeaderEOD:       55-75
+
+Score adjustments:
+  RS boost:          +5 if rsScore >= 80, +3 if >= BOOST_THRESHOLD
+  VDU boost:         +5 for PullbackEOD or RSLeaderEOD when VDU active
+  Liquidity penalty: -5 for bucket C
+  BEAR regime:       shorts +5, leaders +5, generic longs -5
+  Inverse RS boost:  +5 for ShortBounceEOD when RS <= 20
+
+Per-strategy min score cutoffs override the regime-level minSignalScore.
+Signal must exceed both its strategy cutoff and the regime cutoff to proceed.
+
+
+9) PAPER BROKER & EXECUTION
+----------------------------
+
+9.1 Order Flow
+  1. Signal APPROVED → PaperOrder created (ACCEPTED status)
+  2. Next day: doOpenFillSimulation() → fill at open price + slippage
+  3. Position created in portfolio/default/positions/
+  4. Daily: tradeManager updates trailing stops, checks exit conditions
+  5. Position closed → Trade record created with full P&L breakdown
+
+9.2 Slippage Model
+  Dynamic by liquidity bucket with regime multiplier:
+    Bucket A (>50M INR):   uniform random in [2, 8] bps
+    Bucket B (10M-50M):    uniform random in [5, 20] bps
+    Bucket C (<10M):       uniform random in [10, 40] bps
+  Regime multipliers applied on top:
+    TREND=1.0x, RANGE=1.2x, HIGH_VOL=2.0x, BEAR=1.5x
+
+9.3 Indian Fee Breakdown
+  STT (Securities Transaction Tax):  0.025% sell side
+  Stamp duty:                         0.003%
+  Exchange transaction charges:       0.00345%
+  SEBI turnover fee:                  0.0001%
+  GST:                                18% on (brokerage + exchange charges)
+  Brokerage:                          Rs 20 flat per order
+
+9.4 Gap-Through-Stop
+  If bar.open gaps past the stop price:
+    - Fill at open price (not stop price), plus slippage
+    - Realizes loss greater than planned R
+    - Prevents unrealistic P&L in volatile markets
+    - Recorded as "gapStop" in fill metadata
+
+
+10) FIRESTORE SCHEMA
+--------------------
+
+10.1 Core Collections
+  barsD/{symbol}/days/{dateId}
+    OHLCV candles (open, high, low, close, volume)
+
+  features/{symbol}/days/{dateId}
+    Computed indicators: ema20, ema50, ema200, rsi14, atr14,
+    bollingerUpper, bollingerLower, swingHigh, swingLow, srZones,
+    volumeSMA20, ret20d, ret60d, vduActive, gapRiskScore,
+    liquidityBucket, rsScore, computedAt
+
+  regime/{dateId}
+    marketState, tradeAllowed, riskMultiplier, maxNewPositions,
+    minSignalScore, breadth (pctAboveEMA50, universeMedianRet20d,
+    universeMedianRet60d)
+
+  signals/{dateId}/items/{signalId}
+    signalId format: {symbol}_{dateId}_{strategyName}
+    Fields: symbol, direction (BUY|SELL), strategy, score, entryPlan,
+    stopPrice, targetPrice, rr, checklist, reasons,
+    status (NEW|APPROVED|REJECTED|ORDERED|IN_TRADE|DONE)
+
+  signals/{dateId}/status/{sentinelKey}
+    sentinelKey format: {jobId}_{symbol}
+    Idempotency sentinels to prevent duplicate signal evaluation
+
+  paperOrders/{dateId}/items/{orderId}
+    symbol, side (BUY|SELL), orderType (NEXT_OPEN), intendedQty,
+    createdFromSignalId, risk (plannedR, riskAmount, stopDistance),
+    status (CREATED|ACCEPTED|FILLED|CANCELLED|REJECTED)
+
+  paperFills/{dateId}/items/{fillId}
+    orderId, symbol, fillPrice, fillQty, slippageBps, feeEstimate,
+    fillType (ENTRY|EXIT_STOP|EXIT_TARGET|EXIT_TIME|EXIT_THESIS)
+
+  portfolio/default/positions/{symbol}
+    Open and closed positions with entry/exit details, P&L
+
+10.2 Config Collections
+  config/account
+    equity, baseRiskPct, maxPositions, strategyRiskWeights, peakEquity
+
+  config/runtime
+    TRADING_ENABLED (bool), MODE, KILL_SWITCH (bool)
+
+  config/kiteSession
+    accessToken, expiry, apiKey, apiSecret
+
+  config/kiteCredentials
+    apiKey, apiSecret, userId, password, totpSecret (for auto-renewal)
+
+10.3 Reference Collections
+  universes/{universeId}/members/{symbol}
+    sector, liquidityBucket, instrumentToken
+
+  calendar/{dateId}
+    isTradingDay, tradingIndex, prevTradingDateId
+
+  jobs/{jobId}
+    stage, status, symbolCount, errors, startedAt, updatedAt
+
+  logs/{dateId}/entries/{entryId}
+    Structured log entries (level, message, context, timestamp)
+
+  earnings/{symbol}
+    Upcoming earnings dates
+
+  corporateActions/{symbol}
+    Corporate action dates (splits, dividends, etc.)
+
+  fnoBans/{dateId}
+    F&O ban list for the trading day
+
+  alerts/{alertId}
+    Alert type, message, severity, timestamp
+
+
+11) AUTOMATION (Cloud Scheduler)
+--------------------------------
+
+11.1 Kite Auto-Renewal (kite_automation.ts)
+  Gateway action: scheduledKiteRenew
+  Schedule:       08:30 IST weekdays (Mon-Fri)
+  Flow:
+    1. Read credentials from Firestore config/kiteCredentials
+    2. Headless login via axios: POST to Kite /api/login
+    3. Two-factor auth: POST to /api/twofa with TOTP code
+    4. Extract request_token from redirect
+    5. KiteConnect.generateSession() to get access_token
+    6. Store new accessToken + expiry in config/kiteSession
+  Note: totpSecret must be the base32 seed string, NOT a 6-digit code.
+
+11.2 Daily EOD Run
+  Gateway action: scheduledEod
+  Schedule:       15:45 IST weekdays (Mon-Fri)
+  Flow:
+    1. Check kill switch — abort if active
+    2. Verify Kite session is active and not expired
+    3. Call doStartEodRun(force=true) to begin pipeline
+
+11.3 Cloud Scheduler Setup (GCP Console)
+  Two HTTP POST jobs targeting the gateway URL with x-api-key header:
+
+  Job 1: kite-auto-renew
+    Cron:     30 8 * * 1-5
+    Timezone: Asia/Kolkata
+    Body:     {"action": "scheduledKiteRenew"}
+
+  Job 2: daily-eod
+    Cron:     45 15 * * 1-5
+    Timezone: Asia/Kolkata
+    Body:     {"action": "scheduledEod"}
+
+
+12) DASHBOARD (React + Vite)
+----------------------------
+
+12.1 Tabs
+  Dashboard tab:
+    - Open positions table with live P&L
+    - Portfolio stats (equity, drawdown, heat)
+    - Current regime display
+    - Active/recent jobs with stage progress
+    - Today's signals (approved, rejected, reasons)
+    - Manual trigger buttons (start EOD, deep sync, etc.)
+
+  History tab:
+    - Closed positions log
+    - Win rate and expectancy by strategy
+    - P&L breakdown (gross, fees, net)
+
+  Logs tab:
+    - Real-time log viewer from logs/{dateId}/entries
+    - Filterable by level and context
+
+  Settings tab:
+    - Kite credentials form (apiKey, apiSecret, userId, password, totpSecret)
+    - Test auto-renewal button
+    - Cloud Scheduler schedule info
+
+12.2 Gateway Client
+  - All API calls via POST to gateway URL
+  - Real-time updates: Firestore onSnapshot listeners for positions, jobs,
+    signals, and log entries
+
+
+13) ALERTING (alerting.ts)
+--------------------------
+Alert types:
+  KILL_SWITCH            — kill switch activated
+  SESSION_EXPIRED        — Kite access token expired
+  RECONCILIATION_DRIFT   — paper vs expected position mismatch
+  SYSTEMATIC_BIAS        — persistent directional error pattern
+
+Storage: Firestore alerts collection
+
+Systematic bias detection:
+  - Triggers alert after 5+ consecutive same-direction errors
+  - Indicates potential model or data issue
+
+Reconciliation drift thresholds:
+  - Warn at 30 bps drift
+  - Halt trading at 50 bps drift
+
+
+14) TESTING
+-----------
+  - 86 tests across 10 suites (Jest + ts-jest)
+  - Coverage areas:
+      Strategy evaluation (all 6 strategies)
+      Features computation
+      Risk approval (all 13 gates)
+      Regime detection
+      Aggregation stats
+      Paper broker (fills, slippage, fees)
+      Reconciliation
+  - Mock pattern: shared jest.setup.js with chainable Firestore mock
+
+
+15) DEPLOYMENT
+--------------
+Functions:
+  npm run build && firebase deploy --only functions
+  Node 20 runtime, region us-central1
+
+Hosting (dashboard):
+  cd dashboard && npm run build && firebase deploy --only hosting
+  Serves from dashboard/dist to https://suhas-ag.web.app

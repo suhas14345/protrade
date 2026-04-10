@@ -1,11 +1,19 @@
 // Firestore Document Models for ProTrade V2.1
 
+export interface CalendarDay {
+  dateId: string; // YYYYMMDD
+  isTradingDay: boolean;
+  tradingIndex: number; // Monotonic integer for trading days
+  prevTradingDateId?: string;
+  nextTradingDateId?: string;
+}
+
 export interface Job {
   runDate: string; // YYYY-MM-DD
   universeId?: string; // nifty50, nifty500
-  type: 'EOD_RUN' | 'OPEN_SIM_RUN';
+  type: 'EOD_RUN' | 'OPEN_SIM_RUN' | 'DEEP_SYNC';
   stage: 'FETCH' | 'FEATURES' | 'REGIME' | 'CORR' | 'SIGNALS' | 'RISK' | 'ORDERS' | 'DONE';
-  status: 'RUNNING' | 'FAILED' | 'DONE';
+  status: 'RUNNING' | 'FINALIZING' | 'FAILED' | 'DONE';
   counts: {
     total: number;
     done: number;
@@ -48,6 +56,9 @@ export interface Features {
   bbMid?: number;
   bbLower?: number;
   bbUpper?: number;
+  // V2.4: Rolling 20-day high/low for breadth computation
+  high20?: number;
+  low20?: number;
   trendState?: 'UP' | 'DOWN' | 'RANGE';
   swing?: {
     lastSwingHigh: number;
@@ -62,14 +73,19 @@ export interface Features {
     ret1d: number;
     ret5d: number;
     ret20d: number;
+    ret60d: number; // V2.2: used for RS ranking
   };
-  barsCount?: number; // Added for dashboard inventory grouping
-  volSma20?: number; // Added for V1.1 breakout confirmation
+  barsCount?: number;
+  volSma20?: number;
   liquidity?: {
     medVol20: number;
     medTradedValue20: number;
     bucket: 'A' | 'B' | 'C';
   };
+  // V2.2: RS ranking, VDU, gap risk
+  rsScore?: number;           // 0-99, filled by RS ranking pass after all features done
+  vduActive?: boolean;        // Volume Dry-Up flag: institutional patience on pullback
+  gapRiskScore?: number;      // 0-100 percentile: how gappy this stock is historically
   patterns?: string[];
   computedAt: FirebaseFirestore.Timestamp;
 }
@@ -93,13 +109,17 @@ export interface Regime {
     pctAboveEMA200: number;
     newHighs20: number;
     newLows20: number;
+    universeMedianRet20d?: number; // V2.2: used for RS score computation
+    universeMedianRet60d?: number; // V2.2: used for RS score computation
   };
+  persistenceDays?: number;
+  regimeConfirmed?: boolean;
 }
 
 export interface Signal {
   symbol: string;
   direction: 'BUY' | 'SELL';
-  strategy: 'PullbackEOD' | 'BreakoutCloseEOD' | 'ShortBounceEOD' | 'MeanReversionEOD';
+  strategy: 'PullbackEOD' | 'BreakoutCloseEOD' | 'ShortBounceEOD' | 'MeanReversionEOD' | 'BearBounceEOD' | 'RSLeaderEOD';
   score: number;
   entryPlan: {
     type: 'NEXT_OPEN';
@@ -142,12 +162,24 @@ export interface Signal {
   atrRef?: number;
   stopAtrMult?: number;
   targetAtrMult?: number;
+
+  // V2.3: ADV check result
+  advCheck?: {
+    medVol20: number;
+    maxQtyByAdv: number;
+    capped: boolean;
+  };
+  // V2.3: Gap stress estimate
+  gapStress?: {
+    worstCaseLossInr: number;
+    worstCaseLossR: number;
+  };
 }
 
 export interface PaperOrder {
   symbol: string;
   side: 'BUY' | 'SELL';
-  orderType: 'NEXT_OPEN';
+  orderType: 'ENTRY' | 'EXIT'; // Gap B2 & B3 alignment
   intendedQty: number;
   intendedEntryRef: 'OPEN';
   createdFromSignalId: string;
@@ -157,6 +189,10 @@ export interface PaperOrder {
     stopDistance: number;
   };
   status: 'CREATED' | 'ACCEPTED' | 'FILLED' | 'CANCELLED' | 'REJECTED';
+  exitType?: PaperFill['fillType']; // Gap B3 alignment
+  parentPositionPath?: string;
+  jobId?: string;
+  createdAt?: FirebaseFirestore.Timestamp;
 }
 
 export interface PaperFill {
@@ -187,10 +223,21 @@ export interface PaperPosition {
   exitReason?: PaperFill['fillType'];
   
   // V1.1 Enhanced Tracking
+  direction: 'BUY' | 'SELL';
   atrAtEntry?: number;
   partialTaken?: boolean;
   mfeAtr?: number;
   entryDateId?: string;
+  riskAmount?: number;
+  signalId?: string;
+  signalPath?: string;
+
+  // V2.3: Strategy-aware exit profile
+  strategy?: string;
+  trailingStopActive?: boolean;
+  trailingStopPrice?: number;      // Current trailing stop level
+  worstCaseGapLoss?: number;       // Estimated loss under gap stress scenario (INR)
+  worstCaseGapLossR?: number;      // Same in R-multiple units
 }
 
 export interface Trade {
@@ -215,4 +262,29 @@ export interface AccountConfig {
   maxOpenRiskR: number;
   maxPositions: number;
   strategyRiskWeights: Record<string, number>;
+  peakEquity?: number;        // V2.2: for drawdown multiplier computation
+  equityEMA25?: number;       // V2.2: 25-day EMA of equity for curve filter
+  portfolioRealizedVol?: number; // V2.3: 20-day realized portfolio volatility (annualized)
+}
+
+// V2.3: Event calendar entry
+export interface EventInfo {
+  symbol: string;
+  eventType: 'EARNINGS' | 'CORPORATE_ACTION' | 'FNO_BAN' | 'INDEX_REBALANCE';
+  eventDateId: string;         // YYYYMMDD
+  description?: string;
+  blockEntry: boolean;
+  blockShort: boolean;
+}
+
+// V2.3: Reconciliation record
+export interface ReconciliationRecord {
+  dateId: string;
+  symbol: string;
+  expectedSlippageBps: number;
+  actualSlippageBps?: number;
+  expectedFillPrice: number;
+  actualFillPrice?: number;
+  discrepancyBps: number;
+  status: 'PENDING' | 'MATCHED' | 'DISCREPANT';
 }
