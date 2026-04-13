@@ -120,8 +120,8 @@ function App() {
   useEffect(() => {
     if (!authToken) return;
 
-    // 1. Listen for positions
-    const posQuery = query(collection(db, 'positions'));
+    // 1. Listen for positions (stored under portfolio/default/positions subcollection)
+    const posQuery = query(collection(db, 'portfolio', 'default', 'positions'));
     const unsubPos = onSnapshot(posQuery, (snap: any) => {
       const allPos = snap.docs.map((doc: any) => doc.data() as Position);
       const active = allPos.filter((p: Position) => p.status === 'OPEN');
