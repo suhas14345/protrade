@@ -25,17 +25,21 @@ async function gw(action: string, body: Record<string, unknown> = {}, opts?: { r
 // Basic types to match backend models
 interface Position {
   symbol: string;
-  avgEntryPrice: number;
+  avgEntryPrice?: number;
+  entryPrice?: number;
   qty: number;
   unrealizedPnl: number;
   realizedPnl: number;
   status: string;
+  direction?: string;
+  strategy?: string;
   exitReason?: string;
   lastUpdatedAt: any;
   mfeR?: number;
   maeR?: number;
   targets?: number[];
   stopPrice?: number;
+  entryDate?: string;
 }
 
 interface Job {
@@ -501,7 +505,7 @@ function App() {
           <section className="stats-grid" style={{ gridArea: 'stats' }}>
             <div className="card">
               <div className="stat-label">Total Portfolio Equity</div>
-              <div className="stat-value">₹{(stats.equity + positions.reduce((a,p)=>a+p.unrealizedPnl,0)).toLocaleString()}</div>
+              <div className="stat-value">₹{(stats.equity + positions.reduce((a,p)=>a+(p.unrealizedPnl||0),0)).toLocaleString()}</div>
             </div>
             <div className="card">
               <div className="stat-label">Realized PnL</div>
@@ -742,41 +746,43 @@ function App() {
                   <thead>
                     <tr>
                       <th>Symbol</th>
-                      <th>Qty</th>
+                      <th>Dir × Qty</th>
                       <th>Entry</th>
                       <th>PnL</th>
                       <th>MFE / MAE</th>
-                      <th>RSI</th>
-                      <th>Vol (ATR%)</th>
-                      <th>Target</th>
+                      <th>Strategy</th>
+                      <th>Stop</th>
+                      <th>Date</th>
                     </tr>
                   </thead>
                   <tbody>
                     {positions.map(p => {
-                      const target = p.targets?.[0] || 0;
-                      const progress = target > p.avgEntryPrice ? 
-                        Math.max(0, Math.min(100, ((p.avgEntryPrice + (p.unrealizedPnl/p.qty)) - p.avgEntryPrice) / (target - p.avgEntryPrice) * 100)) : 0;
+                      const entry = p.entryPrice || p.avgEntryPrice || 0;
+                      const pnl = p.unrealizedPnl || 0;
+                      const target = p.targets?.[0] || p.stopPrice || 0;
+                      const progress = target > entry ? 
+                        Math.max(0, Math.min(100, ((entry + (pnl/(p.qty||1))) - entry) / (target - entry) * 100)) : 0;
                       
                       return (
                         <tr key={p.symbol}>
                           <td><span className="symbol-tag">{p.symbol}</span></td>
-                          <td>{p.qty}</td>
-                          <td>₹{p.avgEntryPrice.toFixed(1)}</td>
-                          <td className={p.unrealizedPnl >= 0 ? 'up-text' : 'down-text'}>
-                            ₹{p.unrealizedPnl.toFixed(0)}
+                          <td>{p.direction || 'BUY'} × {p.qty}</td>
+                          <td>₹{entry.toFixed(1)}</td>
+                          <td className={pnl >= 0 ? 'up-text' : 'down-text'}>
+                            ₹{pnl.toFixed(0)}
                           </td>
                           <td style={{ fontSize: '0.75rem' }}>
                             <span style={{ color: '#10b981' }}>{p.mfeR?.toFixed(1) || 0}R</span> / 
                             <span style={{ color: '#ef4444' }}> {p.maeR?.toFixed(1) || 0}R</span>
                           </td>
                           <td style={{ fontSize: '0.8rem', color: '#94a3b8' }}>
-                            {(p as any).features?.rsi14?.toFixed(1) || (p as any).features?.rsi?.toFixed(1) || 'N/A'}
+                            {p.strategy || 'N/A'}
                           </td>
                           <td style={{ fontSize: '0.8rem', color: '#94a3b8' }}>
-                            {(p as any).features?.atrPct ? ((p as any).features.atrPct * 100).toFixed(2) + '%' : 'N/A'}
+                            ₹{p.stopPrice?.toFixed(1) || 'N/A'}
                           </td>
                           <td style={{ width: '100px' }}>
-                            <div style={{ fontSize: '0.65rem', color: '#94a3b8', marginBottom: '2px' }}>₹{target.toFixed(0)}</div>
+                            <div style={{ fontSize: '0.65rem', color: '#94a3b8', marginBottom: '2px' }}>{p.entryDate || ''}</div>
                             <div style={{ width: '100%', height: '4px', background: 'rgba(255,255,255,0.05)', borderRadius: '2px' }}>
                               <div style={{ width: `${progress}%`, height: '100%', background: '#10b981', borderRadius: '2px' }}></div>
                             </div>
@@ -893,8 +899,8 @@ function App() {
                     <tr key={i}>
                       <td><span className="symbol-tag" style={{ background: 'rgba(255,255,255,0.05)', color: '#fff' }}>{p.symbol}</span></td>
                       <td>{p.qty}</td>
-                      <td>₹{p.avgEntryPrice.toFixed(2)}</td>
-                      <td className={p.realizedPnl >= 0 ? 'up-text' : 'down-text'}>{p.realizedPnl >= 0 ? '+' : ''}₹{p.realizedPnl.toFixed(2)}</td>
+                      <td>₹{(p.entryPrice || p.avgEntryPrice || 0).toFixed(2)}</td>
+                      <td className={(p.realizedPnl||0) >= 0 ? 'up-text' : 'down-text'}>{(p.realizedPnl||0) >= 0 ? '+' : ''}₹{(p.realizedPnl||0).toFixed(2)}</td>
                       <td><div className="trend-badge range" style={{ fontSize: '0.65rem' }}>{p.exitReason}</div></td>
                       <td style={{ color: '#444', fontSize: '0.75rem' }}>{p.lastUpdatedAt?.toDate?.().toLocaleDateString() || 'N/A'}</td>
                     </tr>
