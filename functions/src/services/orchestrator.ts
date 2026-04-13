@@ -389,7 +389,7 @@ export async function runMorningLogic(targetDate: string, targetJobId: string, t
 
   try {
     for (const symbol of symbols) {
-      await taskClient.enqueueDispatch('processMorningSymbolTask', { jobId: targetJobId, date: targetDate, symbol });
+      await taskClient.enqueueDispatch('processSymbolTask', { jobId: targetJobId, date: targetDate, symbol, taskSubType: 'morning' });
       await new Promise(resolve => setTimeout(resolve, 350));
     }
   } catch (err: any) {
@@ -402,6 +402,11 @@ export async function runMorningLogic(targetDate: string, targetJobId: string, t
  * Task Handler: Process a single symbol (Redundancy Removed Gap B1)
  */
 export async function processSymbolTask(req: any) {
+  // Route morning fill tasks to the dedicated handler
+  if (req.body?.taskSubType === 'morning') {
+    return processMorningSymbolTask(req);
+  }
+
   const { jobId, symbol, date, forceRegime, forceDays, universe } = req.body;
   let { dateId } = req.body;
   if (!jobId || !symbol || !date) {

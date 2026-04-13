@@ -265,6 +265,29 @@ export const gateway = functions.runWith(v1Options).https.onRequest(async (req, 
                 await doStartEodRun({ body: { date: today, universe: 'nifty50', force: true }, query: {} }, res);
                 break;
             }
+            case 'scheduledMorning': {
+                // Morning fill simulation: fills previous day's ACCEPTED orders at today's open
+                const db = admin.apps.length ? admin.firestore() : admin.initializeApp() && admin.firestore();
+                const kiteSnap = await db.collection('settings').doc('kite').get();
+                const kiteData = kiteSnap.data();
+                if (!kiteData?.accessToken || kiteData?.status !== 'ACTIVE') {
+                    const { raiseAlert, AlertType } = await import('./services/alerting');
+                    await raiseAlert(AlertType.SESSION_EXPIRED, 'CRITICAL', 'Scheduled Morning skipped: Kite session not active');
+                    res.status(503).send({ error: 'Kite session not active' });
+                    break;
+                }
+                const morningDate = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+                console.log(`[Scheduler] Starting morning fill simulation for ${morningDate}`);
+                const { doStartMorningExecution } = await import('./services/orchestrator');
+                await doStartMorningExecution({ query: { date: morningDate, universe: 'nifty500' } }, res);
+                break;
+            }
+            case 'startMorningExecution': {
+                // Manual trigger: { action: "startMorningExecution", date: "2026-04-13", universe: "nifty500" }
+                const { doStartMorningExecution } = await import('./services/orchestrator');
+                await doStartMorningExecution({ query: { date: req.body?.date, universe: req.body?.universe || 'nifty500' } }, res);
+                break;
+            }
 
             default: res.status(400).send({ error: `Unknown op: ${type}` });
         }
@@ -316,8 +339,10 @@ async function gatewayHandler(req: any) {
 }
 
 // V3.1: Scheduled actions — called by Google Cloud Scheduler via HTTP POST to gateway
-// Setup: Create 2 Cloud Scheduler jobs in GCP Console:
+// Setup: Create 3 Cloud Scheduler jobs in GCP Console:
 //   1. kite-auto-renew: POST https://us-central1-suhas-ag.cloudfunctions.net/gateway
 //      Body: {"action":"scheduledKiteRenew"}  Cron: 30 8 * * 1-5  TZ: Asia/Kolkata
 //   2. daily-eod: POST https://us-central1-suhas-ag.cloudfunctions.net/gateway
 //      Body: {"action":"scheduledEod"}  Cron: 45 15 * * 1-5  TZ: Asia/Kolkata
+//   3. morning-fill: POST https://us-central1-suhas-ag.cloudfunctions.net/gateway
+//      Body: {"action":"scheduledMorning"}  Cron: 15 9 * * 1-5  TZ: Asia/Kolkata

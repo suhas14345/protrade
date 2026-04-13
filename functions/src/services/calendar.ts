@@ -28,12 +28,17 @@ export class CalendarService {
     const day = await this.getCalendarDay(dateId);
     if (day?.prevTradingDateId) return day.prevTradingDateId;
 
-    // Fallback: If calendar not seeded, we might have to scan or use fragile math
-    console.warn(`[Calendar] Calendar doc missing for ${dateId}. Fallback to numeric subtraction.`);
-    // Simple numeric fallback (fragile for weekends/months)
+    // Fallback: walk backwards skipping weekends (max 7 days to handle long weekends + holidays)
+    console.warn(`[Calendar] Calendar doc missing for ${dateId}. Fallback to weekend-aware subtraction.`);
     const d = new Date(`${dateId.slice(0, 4)}-${dateId.slice(4, 6)}-${dateId.slice(6, 8)}`);
-    d.setDate(d.getDate() - 1);
-    return d.toISOString().split('T')[0].replace(/-/g, '');
+    for (let i = 0; i < 7; i++) {
+      d.setDate(d.getDate() - 1);
+      const dow = d.getUTCDay();
+      if (dow !== 0 && dow !== 6) {
+        return d.toISOString().split('T')[0].replace(/-/g, '');
+      }
+    }
+    return null;
   }
 
   /**

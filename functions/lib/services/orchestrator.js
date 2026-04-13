@@ -401,7 +401,7 @@ async function runMorningLogic(targetDate, targetJobId, targetUniverse = 'nifty5
     await db.collection('jobs').doc(targetJobId).update({ 'counts.total': symbols.length, stage: 'ORDERS' });
     try {
         for (const symbol of symbols) {
-            await tasks_1.taskClient.enqueueDispatch('processMorningSymbolTask', { jobId: targetJobId, date: targetDate, symbol });
+            await tasks_1.taskClient.enqueueDispatch('processSymbolTask', { jobId: targetJobId, date: targetDate, symbol, taskSubType: 'morning' });
             await new Promise(resolve => setTimeout(resolve, 350));
         }
     }
@@ -414,7 +414,11 @@ async function runMorningLogic(targetDate, targetJobId, targetUniverse = 'nifty5
  * Task Handler: Process a single symbol (Redundancy Removed Gap B1)
  */
 async function processSymbolTask(req) {
-    var _a, _b, _c, _d;
+    var _a, _b, _c, _d, _e;
+    // Route morning fill tasks to the dedicated handler
+    if (((_a = req.body) === null || _a === void 0 ? void 0 : _a.taskSubType) === 'morning') {
+        return processMorningSymbolTask(req);
+    }
     const { jobId, symbol, date, forceRegime, forceDays, universe } = req.body;
     let { dateId } = req.body;
     if (!jobId || !symbol || !date) {
@@ -427,8 +431,8 @@ async function processSymbolTask(req) {
     const jobRef = db.collection('jobs').doc(jobId);
     // V3.0: Check if job is still RUNNING (don't process if FAILED/DONE)
     const jobCheck = await jobRef.get();
-    if (!jobCheck.exists || !['RUNNING', 'FINALIZING'].includes((_a = jobCheck.data()) === null || _a === void 0 ? void 0 : _a.status)) {
-        console.warn(`[Orchestrator] Skipping ${symbol}: job ${jobId} is ${(_b = jobCheck.data()) === null || _b === void 0 ? void 0 : _b.status}`);
+    if (!jobCheck.exists || !['RUNNING', 'FINALIZING'].includes((_b = jobCheck.data()) === null || _b === void 0 ? void 0 : _b.status)) {
+        console.warn(`[Orchestrator] Skipping ${symbol}: job ${jobId} is ${(_c = jobCheck.data()) === null || _c === void 0 ? void 0 : _c.status}`);
         return;
     }
     try {
@@ -477,7 +481,7 @@ async function processSymbolTask(req) {
         const jobSnap = await jobRef.get();
         const jobData = jobSnap.data();
         if (jobData && jobData.status === 'RUNNING') {
-            const failPct = (((_c = jobData.counts) === null || _c === void 0 ? void 0 : _c.failed) || 0) / (((_d = jobData.counts) === null || _d === void 0 ? void 0 : _d.total) || 1);
+            const failPct = (((_d = jobData.counts) === null || _d === void 0 ? void 0 : _d.failed) || 0) / (((_e = jobData.counts) === null || _e === void 0 ? void 0 : _e.total) || 1);
             if (failPct > runtime_1.ORCH_CONFIG.MAX_FAILURE_PCT) {
                 await logger_1.logger.error(`[Orchestrator] ABORTING job ${jobId}: ${(failPct * 100).toFixed(0)}% symbols failed (threshold: ${runtime_1.ORCH_CONFIG.MAX_FAILURE_PCT * 100}%)`, 'Orchestrator', { jobId });
                 await (0, alerting_1.raiseAlert)(alerting_1.AlertType.JOB_FAILED, 'CRITICAL', `Job ${jobId} aborted: ${(failPct * 100).toFixed(0)}% symbol failure rate`, { jobId, failPct });

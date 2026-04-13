@@ -57,7 +57,7 @@ async function checkRuntimeKillSwitch() {
  * V3.0: Wired middleware — validation, auth, rate limiting, kill switch
  */
 exports.gateway = functions.runWith(v1Options).https.onRequest(async (req, res) => {
-    var _a;
+    var _a, _b, _c;
     // CORS: allow dashboard origin
     res.set('Access-Control-Allow-Origin', '*');
     res.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
@@ -295,6 +295,29 @@ exports.gateway = functions.runWith(v1Options).https.onRequest(async (req, res) 
                 await doStartEodRun({ body: { date: today, universe: 'nifty50', force: true }, query: {} }, res);
                 break;
             }
+            case 'scheduledMorning': {
+                // Morning fill simulation: fills previous day's ACCEPTED orders at today's open
+                const db = admin.apps.length ? admin.firestore() : admin.initializeApp() && admin.firestore();
+                const kiteSnap = await db.collection('settings').doc('kite').get();
+                const kiteData = kiteSnap.data();
+                if (!(kiteData === null || kiteData === void 0 ? void 0 : kiteData.accessToken) || (kiteData === null || kiteData === void 0 ? void 0 : kiteData.status) !== 'ACTIVE') {
+                    const { raiseAlert, AlertType } = await Promise.resolve().then(() => __importStar(require('./services/alerting')));
+                    await raiseAlert(AlertType.SESSION_EXPIRED, 'CRITICAL', 'Scheduled Morning skipped: Kite session not active');
+                    res.status(503).send({ error: 'Kite session not active' });
+                    break;
+                }
+                const morningDate = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+                console.log(`[Scheduler] Starting morning fill simulation for ${morningDate}`);
+                const { doStartMorningExecution } = await Promise.resolve().then(() => __importStar(require('./services/orchestrator')));
+                await doStartMorningExecution({ query: { date: morningDate, universe: 'nifty500' } }, res);
+                break;
+            }
+            case 'startMorningExecution': {
+                // Manual trigger: { action: "startMorningExecution", date: "2026-04-13", universe: "nifty500" }
+                const { doStartMorningExecution } = await Promise.resolve().then(() => __importStar(require('./services/orchestrator')));
+                await doStartMorningExecution({ query: { date: (_b = req.body) === null || _b === void 0 ? void 0 : _b.date, universe: ((_c = req.body) === null || _c === void 0 ? void 0 : _c.universe) || 'nifty500' } }, res);
+                break;
+            }
             default: res.status(400).send({ error: `Unknown op: ${type}` });
         }
     }
@@ -341,9 +364,11 @@ async function gatewayHandler(req) {
     }
 }
 // V3.1: Scheduled actions — called by Google Cloud Scheduler via HTTP POST to gateway
-// Setup: Create 2 Cloud Scheduler jobs in GCP Console:
+// Setup: Create 3 Cloud Scheduler jobs in GCP Console:
 //   1. kite-auto-renew: POST https://us-central1-suhas-ag.cloudfunctions.net/gateway
 //      Body: {"action":"scheduledKiteRenew"}  Cron: 30 8 * * 1-5  TZ: Asia/Kolkata
 //   2. daily-eod: POST https://us-central1-suhas-ag.cloudfunctions.net/gateway
 //      Body: {"action":"scheduledEod"}  Cron: 45 15 * * 1-5  TZ: Asia/Kolkata
+//   3. morning-fill: POST https://us-central1-suhas-ag.cloudfunctions.net/gateway
+//      Body: {"action":"scheduledMorning"}  Cron: 15 9 * * 1-5  TZ: Asia/Kolkata
 //# sourceMappingURL=index.js.map
