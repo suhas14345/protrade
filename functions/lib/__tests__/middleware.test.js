@@ -13,7 +13,7 @@ describe('Middleware — validateRequest', () => {
         'probeInventory', 'auditJobs', 'downloadReport',
         'scheduledKiteRenew', 'scheduledEod', 'scheduledMorning',
         'startMorningExecution', 'getKiteSettings',
-        'syncNseHolidays',
+        'syncNseHolidays', 'syncCorporateEvents',
     ];
     it.each(EXPECTED_ACTIONS)('accepts known action: %s', (action) => {
         const result = (0, middleware_1.validateRequest)({ action });

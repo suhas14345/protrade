@@ -267,6 +267,14 @@ export const gateway = functions.runWith(v1Options).https.onRequest(async (req, 
                     res.status(503).send({ error: 'Kite session not active' });
                     break;
                 }
+                // Auto-sync corporate events before EOD scan (non-blocking)
+                try {
+                    const { syncAllCorporateEvents } = await import('./services/eventSync');
+                    const evtResult = await syncAllCorporateEvents(30);
+                    console.log(`[Scheduler] Pre-EOD event sync: ${evtResult.earnings} earnings, ${evtResult.corporateActions} corp actions, ${evtResult.fnoBans} F&O bans`);
+                } catch (syncErr: any) {
+                    console.warn(`[Scheduler] Pre-EOD event sync failed (non-blocking): ${syncErr.message}`);
+                }
                 console.log(`[Scheduler] Starting scheduled EOD for ${todayEod}`);
                 const { doStartEodRun } = await import('./services/orchestrator');
                 await doStartEodRun({ body: { date: todayEod, universe: 'nifty50', force: true }, query: {} }, res);
@@ -308,6 +316,19 @@ export const gateway = functions.runWith(v1Options).https.onRequest(async (req, 
                 const db = admin.firestore();
                 const result = await syncNseHolidays(db);
                 res.status(200).send({ message: `Synced ${result.synced} holidays`, source: result.source });
+                break;
+            }
+
+            case 'syncCorporateEvents': {
+                const { syncAllCorporateEvents } = await import('./services/eventSync');
+                const lookAhead = Number(req.body?.lookAheadDays) || 30;
+                const result = await syncAllCorporateEvents(lookAhead);
+                res.status(200).send({
+                    message: 'Corporate events synced',
+                    earnings: result.earnings,
+                    corporateActions: result.corporateActions,
+                    fnoBans: result.fnoBans,
+                });
                 break;
             }
 

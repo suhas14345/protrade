@@ -57,7 +57,7 @@ async function checkRuntimeKillSwitch() {
  * V3.0: Wired middleware — validation, auth, rate limiting, kill switch
  */
 exports.gateway = functions.runWith(v1Options).https.onRequest(async (req, res) => {
-    var _a, _b, _c;
+    var _a, _b, _c, _d;
     // CORS: allow dashboard origin
     res.set('Access-Control-Allow-Origin', '*');
     res.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
@@ -297,6 +297,15 @@ exports.gateway = functions.runWith(v1Options).https.onRequest(async (req, res) 
                     res.status(503).send({ error: 'Kite session not active' });
                     break;
                 }
+                // Auto-sync corporate events before EOD scan (non-blocking)
+                try {
+                    const { syncAllCorporateEvents } = await Promise.resolve().then(() => __importStar(require('./services/eventSync')));
+                    const evtResult = await syncAllCorporateEvents(30);
+                    console.log(`[Scheduler] Pre-EOD event sync: ${evtResult.earnings} earnings, ${evtResult.corporateActions} corp actions, ${evtResult.fnoBans} F&O bans`);
+                }
+                catch (syncErr) {
+                    console.warn(`[Scheduler] Pre-EOD event sync failed (non-blocking): ${syncErr.message}`);
+                }
                 console.log(`[Scheduler] Starting scheduled EOD for ${todayEod}`);
                 const { doStartEodRun } = await Promise.resolve().then(() => __importStar(require('./services/orchestrator')));
                 await doStartEodRun({ body: { date: todayEod, universe: 'nifty50', force: true }, query: {} }, res);
@@ -337,6 +346,18 @@ exports.gateway = functions.runWith(v1Options).https.onRequest(async (req, res) 
                 const db = admin.firestore();
                 const result = await syncNseHolidays(db);
                 res.status(200).send({ message: `Synced ${result.synced} holidays`, source: result.source });
+                break;
+            }
+            case 'syncCorporateEvents': {
+                const { syncAllCorporateEvents } = await Promise.resolve().then(() => __importStar(require('./services/eventSync')));
+                const lookAhead = Number((_d = req.body) === null || _d === void 0 ? void 0 : _d.lookAheadDays) || 30;
+                const result = await syncAllCorporateEvents(lookAhead);
+                res.status(200).send({
+                    message: 'Corporate events synced',
+                    earnings: result.earnings,
+                    corporateActions: result.corporateActions,
+                    fnoBans: result.fnoBans,
+                });
                 break;
             }
             default: res.status(400).send({ error: `Unknown op: ${type}` });
