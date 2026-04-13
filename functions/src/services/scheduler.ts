@@ -310,8 +310,10 @@ export async function syncNseHolidays(
   }
 
   // Seed into Firestore calendar via CalendarService
+  // Convert YYYY-MM-DD → YYYYMMDD (system dateId format) for Firestore doc IDs
   const { CalendarService } = await import('./calendar');
-  await CalendarService.seedFutureHolidays(holidays);
+  const holidayDateIds = holidays.map(h => h.replace(/-/g, ''));
+  await CalendarService.seedFutureHolidays(holidayDateIds);
 
   // Also update the in-memory set for scheduler helpers
   for (const h of holidays) {

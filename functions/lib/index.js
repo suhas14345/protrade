@@ -343,8 +343,8 @@ exports.gateway = functions.runWith(v1Options).https.onRequest(async (req, res) 
             }
             case 'syncNseHolidays': {
                 const { syncNseHolidays } = await Promise.resolve().then(() => __importStar(require('./services/scheduler')));
-                const db = admin.firestore();
-                const result = await syncNseHolidays(db);
+                const hdb = admin.apps.length ? admin.firestore() : (admin.initializeApp(), admin.firestore());
+                const result = await syncNseHolidays(hdb);
                 res.status(200).send({ message: `Synced ${result.synced} holidays`, source: result.source });
                 break;
             }

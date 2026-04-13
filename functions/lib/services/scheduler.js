@@ -306,8 +306,10 @@ async function syncNseHolidays(db) {
         holidays = [...exports.NSE_HOLIDAYS_2025, ...exports.NSE_HOLIDAYS_2026];
     }
     // Seed into Firestore calendar via CalendarService
+    // Convert YYYY-MM-DD → YYYYMMDD (system dateId format) for Firestore doc IDs
     const { CalendarService } = await Promise.resolve().then(() => __importStar(require('./calendar')));
-    await CalendarService.seedFutureHolidays(holidays);
+    const holidayDateIds = holidays.map(h => h.replace(/-/g, ''));
+    await CalendarService.seedFutureHolidays(holidayDateIds);
     // Also update the in-memory set for scheduler helpers
     for (const h of holidays) {
         HOLIDAY_SET.add(h);
