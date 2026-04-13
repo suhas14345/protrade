@@ -33,7 +33,7 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.NSE_HOLIDAYS_2025 = void 0;
+exports.NSE_HOLIDAYS_2026 = exports.NSE_HOLIDAYS_2025 = void 0;
 exports.isTradingDay = isTradingDay;
 exports.getNextTradingDay = getNextTradingDay;
 exports.getPrevTradingDay = getPrevTradingDay;
@@ -41,6 +41,7 @@ exports.detectMissedRuns = detectMissedRuns;
 exports.runCatchUp = runCatchUp;
 exports.sweepStuckJobs = sweepStuckJobs;
 exports.getSystemHealth = getSystemHealth;
+exports.syncNseHolidays = syncNseHolidays;
 const admin = __importStar(require("firebase-admin"));
 const runtime_1 = require("../config/runtime");
 exports.NSE_HOLIDAYS_2025 = [
@@ -57,7 +58,28 @@ exports.NSE_HOLIDAYS_2025 = [
     '2025-11-05', // Gurunanak Jayanti
     '2025-12-25', // Christmas
 ];
-const HOLIDAY_SET = new Set(exports.NSE_HOLIDAYS_2025);
+// Source: NSE official API (https://www.nseindia.com/api/holiday-master?type=trading)
+// Segment: CM (Cash Market) — excludes weekends that already appear in the list
+exports.NSE_HOLIDAYS_2026 = [
+    '2026-01-15', // Municipal Corporation Election — Maharashtra
+    '2026-01-26', // Republic Day
+    '2026-03-03', // Holi
+    '2026-03-26', // Shri Ram Navami
+    '2026-03-31', // Shri Mahavir Jayanti
+    '2026-04-03', // Good Friday
+    '2026-04-14', // Dr. Baba Saheb Ambedkar Jayanti
+    '2026-05-01', // Maharashtra Day
+    '2026-05-28', // Bakri Id
+    '2026-06-26', // Muharram
+    '2026-08-26', // Id-E-Milad
+    '2026-09-14', // Ganesh Chaturthi
+    '2026-10-02', // Mahatma Gandhi Jayanti
+    '2026-10-20', // Dussehra
+    '2026-11-10', // Diwali-Balipratipada
+    '2026-11-24', // Prakash Gurpurb Sri Guru Nanak Dev
+    '2026-12-25', // Christmas
+];
+const HOLIDAY_SET = new Set([...exports.NSE_HOLIDAYS_2025, ...exports.NSE_HOLIDAYS_2026]);
 // ── Trading-day helpers (pure / sync — no Firestore) ────────────────────────
 /** Check if a YYYY-MM-DD date is an NSE trading day (not weekend, not holiday). */
 function isTradingDay(date) {
@@ -241,5 +263,56 @@ async function getSystemHealth(db) {
         dataFreshness: { latestBarDate, staleMinutes },
         killSwitchStatus,
     };
+}
+// ── Automated NSE holiday sync ──────────────────────────────────────────────
+/**
+ * Fetch official NSE trading holidays from the NSE API and seed them into
+ * the Firestore calendar + the in-memory HOLIDAY_SET.
+ * Falls back to the hardcoded lists if the API is unreachable.
+ */
+async function syncNseHolidays(db) {
+    var _a;
+    let holidays = [];
+    let source = 'static';
+    try {
+        const axios = (await Promise.resolve().then(() => __importStar(require('axios')))).default;
+        const res = await axios.get('https://www.nseindia.com/api/holiday-master?type=trading', {
+            headers: {
+                'User-Agent': 'Mozilla/5.0',
+                'Accept': 'application/json',
+            },
+            timeout: 10000,
+        });
+        // CM = Cash Market segment (equity trading holidays)
+        const cmHolidays = ((_a = res.data) === null || _a === void 0 ? void 0 : _a.CM) || [];
+        for (const h of cmHolidays) {
+            // tradingDate format: "15-Jan-2026" → parse to YYYY-MM-DD
+            const parsed = new Date(h.tradingDate);
+            if (!isNaN(parsed.getTime())) {
+                const dow = parsed.getUTCDay();
+                if (dow !== 0 && dow !== 6) { // Skip weekends (already non-trading)
+                    holidays.push(parsed.toISOString().split('T')[0]);
+                }
+            }
+        }
+        if (holidays.length > 0)
+            source = 'api';
+    }
+    catch (err) {
+        console.warn(`[Scheduler] NSE API unreachable (${err.message}). Using static holiday lists.`);
+    }
+    // Fallback: use the hardcoded static lists
+    if (holidays.length === 0) {
+        holidays = [...exports.NSE_HOLIDAYS_2025, ...exports.NSE_HOLIDAYS_2026];
+    }
+    // Seed into Firestore calendar via CalendarService
+    const { CalendarService } = await Promise.resolve().then(() => __importStar(require('./calendar')));
+    await CalendarService.seedFutureHolidays(holidays);
+    // Also update the in-memory set for scheduler helpers
+    for (const h of holidays) {
+        HOLIDAY_SET.add(h);
+    }
+    console.log(`[Scheduler] Synced ${holidays.length} NSE holidays (source: ${source})`);
+    return { synced: holidays.length, source };
 }
 //# sourceMappingURL=scheduler.js.map

@@ -281,6 +281,14 @@ exports.gateway = functions.runWith(v1Options).https.onRequest(async (req, res) 
             }
             case 'scheduledEod': {
                 const db = admin.apps.length ? admin.firestore() : admin.initializeApp() && admin.firestore();
+                // Holiday guard: skip if today is not a trading day
+                const todayEod = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+                const { isTradingDay: isTradingDayCheck } = await Promise.resolve().then(() => __importStar(require('./services/scheduler')));
+                if (!isTradingDayCheck(todayEod)) {
+                    console.log(`[Scheduler] Skipping scheduled EOD: ${todayEod} is a holiday/weekend`);
+                    res.status(200).send({ message: `Skipped: ${todayEod} is not a trading day` });
+                    break;
+                }
                 const kiteSnap = await db.collection('settings').doc('kite').get();
                 const kiteData = kiteSnap.data();
                 if (!(kiteData === null || kiteData === void 0 ? void 0 : kiteData.accessToken) || (kiteData === null || kiteData === void 0 ? void 0 : kiteData.status) !== 'ACTIVE') {
@@ -289,14 +297,21 @@ exports.gateway = functions.runWith(v1Options).https.onRequest(async (req, res) 
                     res.status(503).send({ error: 'Kite session not active' });
                     break;
                 }
-                const today = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
-                console.log(`[Scheduler] Starting scheduled EOD for ${today}`);
+                console.log(`[Scheduler] Starting scheduled EOD for ${todayEod}`);
                 const { doStartEodRun } = await Promise.resolve().then(() => __importStar(require('./services/orchestrator')));
-                await doStartEodRun({ body: { date: today, universe: 'nifty50', force: true }, query: {} }, res);
+                await doStartEodRun({ body: { date: todayEod, universe: 'nifty50', force: true }, query: {} }, res);
                 break;
             }
             case 'scheduledMorning': {
                 // Morning fill simulation: fills previous day's ACCEPTED orders at today's open
+                const morningDate = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+                // Holiday guard: skip if today is not a trading day
+                const { isTradingDay: isMorningTradingDay } = await Promise.resolve().then(() => __importStar(require('./services/scheduler')));
+                if (!isMorningTradingDay(morningDate)) {
+                    console.log(`[Scheduler] Skipping morning fill: ${morningDate} is a holiday/weekend`);
+                    res.status(200).send({ message: `Skipped: ${morningDate} is not a trading day` });
+                    break;
+                }
                 const db = admin.apps.length ? admin.firestore() : admin.initializeApp() && admin.firestore();
                 const kiteSnap = await db.collection('settings').doc('kite').get();
                 const kiteData = kiteSnap.data();
@@ -306,7 +321,6 @@ exports.gateway = functions.runWith(v1Options).https.onRequest(async (req, res) 
                     res.status(503).send({ error: 'Kite session not active' });
                     break;
                 }
-                const morningDate = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
                 console.log(`[Scheduler] Starting morning fill simulation for ${morningDate}`);
                 const { doStartMorningExecution } = await Promise.resolve().then(() => __importStar(require('./services/orchestrator')));
                 await doStartMorningExecution({ query: { date: morningDate, universe: 'nifty500' } }, res);
@@ -316,6 +330,13 @@ exports.gateway = functions.runWith(v1Options).https.onRequest(async (req, res) 
                 // Manual trigger: { action: "startMorningExecution", date: "2026-04-13", universe: "nifty500" }
                 const { doStartMorningExecution } = await Promise.resolve().then(() => __importStar(require('./services/orchestrator')));
                 await doStartMorningExecution({ query: { date: (_b = req.body) === null || _b === void 0 ? void 0 : _b.date, universe: ((_c = req.body) === null || _c === void 0 ? void 0 : _c.universe) || 'nifty500' } }, res);
+                break;
+            }
+            case 'syncNseHolidays': {
+                const { syncNseHolidays } = await Promise.resolve().then(() => __importStar(require('./services/scheduler')));
+                const db = admin.firestore();
+                const result = await syncNseHolidays(db);
+                res.status(200).send({ message: `Synced ${result.synced} holidays`, source: result.source });
                 break;
             }
             default: res.status(400).send({ error: `Unknown op: ${type}` });

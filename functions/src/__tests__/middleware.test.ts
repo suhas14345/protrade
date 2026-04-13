@@ -13,6 +13,7 @@ describe('Middleware — validateRequest', () => {
     'probeInventory', 'auditJobs', 'downloadReport',
     'scheduledKiteRenew', 'scheduledEod', 'scheduledMorning',
     'startMorningExecution', 'getKiteSettings',
+    'syncNseHolidays',
   ];
 
   it.each(EXPECTED_ACTIONS)('accepts known action: %s', (action) => {

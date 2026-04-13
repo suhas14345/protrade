@@ -14,6 +14,7 @@ const KNOWN_ACTIONS = new Set([
   'probeInventory', 'auditJobs', 'downloadReport',
   'scheduledKiteRenew', 'scheduledEod', 'scheduledMorning',
   'startMorningExecution', 'getKiteSettings',
+  'syncNseHolidays',
 ]);
 
 export function validateRequest(body: Record<string, unknown>): { valid: boolean; error?: string } {

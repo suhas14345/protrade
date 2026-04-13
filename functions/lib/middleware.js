@@ -52,6 +52,7 @@ const KNOWN_ACTIONS = new Set([
     'probeInventory', 'auditJobs', 'downloadReport',
     'scheduledKiteRenew', 'scheduledEod', 'scheduledMorning',
     'startMorningExecution', 'getKiteSettings',
+    'syncNseHolidays',
 ]);
 function validateRequest(body) {
     const action = body === null || body === void 0 ? void 0 : body.action;
