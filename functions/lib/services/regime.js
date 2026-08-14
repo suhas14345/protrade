@@ -259,12 +259,22 @@ async function doComputeRegime(date, jobId, providedIndexSymbol, universeId = 'n
                 notes += ` [Breadth override: ${breadth.pctAboveEMA50.toFixed(0)}% above EMA50 doesn't confirm BEAR]`;
             }
         }
-        // V3.0: Regime hysteresis — check previous regime for stability
+        // V3.0: Regime hysteresis — check previous regime for stability.
+        // Bounded ascending key-range scan then take the most-recent N in memory
+        // (the emulator rejects descending key scans / limitToLast).
         const { REGIME_HARDENING: RH } = await Promise.resolve().then(() => __importStar(require('../config/runtime')));
-        const prevRegimeSnap = await db.collection('regime').orderBy(admin.firestore.FieldPath.documentId(), 'desc').limit(RH.HYSTERESIS_BARS + 1).get();
+        const need = RH.HYSTERESIS_BARS + 1;
+        const lbDate = new Date(Date.UTC(+effectiveDateId.slice(0, 4), +effectiveDateId.slice(4, 6) - 1, +effectiveDateId.slice(6, 8)));
+        lbDate.setUTCDate(lbDate.getUTCDate() - Math.ceil(need * 1.7) - 15);
+        const regimeLowerBound = `${lbDate.getUTCFullYear()}${String(lbDate.getUTCMonth() + 1).padStart(2, '0')}${String(lbDate.getUTCDate()).padStart(2, '0')}`;
+        const prevRegimeSnap = await db.collection('regime')
+            .where(admin.firestore.FieldPath.documentId(), '>=', regimeLowerBound)
+            .where(admin.firestore.FieldPath.documentId(), '<', effectiveDateId)
+            .orderBy(admin.firestore.FieldPath.documentId(), 'asc')
+            .get();
         let consecutiveSameRegime = 0;
         let prevRegimeState = '';
-        for (const doc of prevRegimeSnap.docs) {
+        for (const doc of prevRegimeSnap.docs.slice(-need).reverse()) {
             if (doc.id >= effectiveDateId)
                 continue;
             const prev = doc.data();

@@ -67,14 +67,20 @@ async function updateEquityCurve(db: FirebaseFirestore.Firestore, dateId: string
     equity, dateId, recordedAt: admin.firestore.Timestamp.now(),
   });
 
-  // Fetch last EQUITY_EMA_PERIOD equity snapshots to compute EMA
+  // Fetch last EQUITY_EMA_PERIOD equity snapshots to compute EMA.
+  // Bounded ascending key-range scan (the emulator rejects descending key
+  // scans, and limitToLast is rewritten into one by the SDK).
   const period = DRAWDOWN_CONFIG.EQUITY_EMA_PERIOD;
+  const lb = new Date(Date.UTC(+dateId.slice(0, 4), +dateId.slice(4, 6) - 1, +dateId.slice(6, 8)));
+  lb.setUTCDate(lb.getUTCDate() - Math.ceil(period * 1.7) - 15);
+  const lowerBound = `${lb.getUTCFullYear()}${String(lb.getUTCMonth() + 1).padStart(2, '0')}${String(lb.getUTCDate()).padStart(2, '0')}`;
   const snapshots = await db.collection('stats').doc('equityCurve').collection('days')
-    .orderBy(admin.firestore.FieldPath.documentId(), 'desc')
-    .limit(period)
+    .where(admin.firestore.FieldPath.documentId(), '>=', lowerBound)
+    .where(admin.firestore.FieldPath.documentId(), '<=', dateId)
+    .orderBy(admin.firestore.FieldPath.documentId(), 'asc')
     .get();
 
-  const equities = snapshots.docs.map(d => (d.data() as any).equity as number).reverse();
+  const equities = snapshots.docs.slice(-period).map(d => (d.data() as any).equity as number);
   let equityEMA25 = equities[0] ?? equity;
   const k = 2 / (period + 1);
   for (let i = 1; i < equities.length; i++) {

@@ -20,16 +20,20 @@ export async function doComputeWeeklyFeatures(symbol: string, dateId: string) {
   const weekId = getISOWeekId(date);
 
   // 2. Load the last 30 daily bars to aggregate the current week
-  // We need all bars for the week containing dateId
+  // We need all bars for the week containing dateId. Bounded ascending
+  // key-range scan (emulator rejects descending key scans / limitToLast).
+  const dailyLb = new Date(Date.UTC(+dateId.slice(0, 4), +dateId.slice(4, 6) - 1, +dateId.slice(6, 8)));
+  dailyLb.setUTCDate(dailyLb.getUTCDate() - Math.ceil(30 * 1.7) - 15);
+  const dailyLowerBound = `${dailyLb.getUTCFullYear()}${String(dailyLb.getUTCMonth() + 1).padStart(2, '0')}${String(dailyLb.getUTCDate()).padStart(2, '0')}`;
   const barsSnap = await db.collection('barsD')
     .doc(symbol)
     .collection('days')
+    .where(admin.firestore.FieldPath.documentId(), '>=', dailyLowerBound)
     .where(admin.firestore.FieldPath.documentId(), '<=', dateId)
-    .orderBy(admin.firestore.FieldPath.documentId(), 'desc')
-    .limit(30)
+    .orderBy(admin.firestore.FieldPath.documentId(), 'asc')
     .get();
 
-  const dailyBars = barsSnap.docs.map(d => ({ id: d.id, ...d.data() as Bar })).reverse();
+  const dailyBars = barsSnap.docs.slice(-30).map(d => ({ id: d.id, ...d.data() as Bar }));
   
   // Group by week and find the current one
   const currentWeekBars = dailyBars.filter(b => {
@@ -50,16 +54,16 @@ export async function doComputeWeeklyFeatures(symbol: string, dateId: string) {
 
   await db.collection('barsW').doc(symbol).collection('weeks').doc(weekId).set(weeklyBar);
 
-  // 3. Compute Weekly EMA (requires historical weekly bars)
+  // 3. Compute Weekly EMA (requires historical weekly bars). Weekly docs are
+  // few, so fetch ascending up to weekId and take the last 100 in memory.
   const historySnap = await db.collection('barsW')
     .doc(symbol)
     .collection('weeks')
     .where(admin.firestore.FieldPath.documentId(), '<=', weekId)
-    .orderBy(admin.firestore.FieldPath.documentId(), 'desc')
-    .limit(100)
+    .orderBy(admin.firestore.FieldPath.documentId(), 'asc')
     .get();
 
-  const history = historySnap.docs.map(d => d.data() as Bar).reverse();
+  const history = historySnap.docs.slice(-100).map(d => d.data() as Bar);
   const ema20 = computeEMA(history.map(b => b.close), 20);
   const ema50 = computeEMA(history.map(b => b.close), 50);
 

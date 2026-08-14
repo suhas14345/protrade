@@ -56,6 +56,9 @@ process.env.GCLOUD_PROJECT = process.env.GCLOUD_PROJECT || 'suhas-ag';
 if (admin.apps.length === 0) {
     admin.initializeApp({ projectId: process.env.GCLOUD_PROJECT });
 }
+// Match production Firestore behaviour (marketdata.ts sets this): the calendar
+// seeder writes an undefined `prevTradingDateId` for the first day.
+admin.firestore().settings({ ignoreUndefinedProperties: true });
 const seed_1 = require("./seed");
 const engine_1 = require("./engine");
 const metrics_1 = require("./metrics");
