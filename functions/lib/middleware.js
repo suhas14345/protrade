@@ -105,13 +105,18 @@ function checkRateLimit(_action, ip) {
 // ---------------------------------------------------------------------------
 async function checkKiteHealth(db) {
     var _a, _b, _c;
-    const doc = await db.doc('config/kiteSession').get();
+    // Session state lives at settings/kite — the same doc the auto-renew writer
+    // (kite_automation.autoRenewKiteSessionHandler) and marketdata reader use.
+    const doc = await db.doc('settings/kite').get();
     if (!doc.exists) {
-        return { healthy: false, reason: 'kiteSession doc missing' };
+        return { healthy: false, reason: 'settings/kite doc missing' };
     }
     const data = doc.data();
     if (!data.accessToken) {
         return { healthy: false, reason: 'No access token stored' };
+    }
+    if (data.status === 'ERROR') {
+        return { healthy: false, reason: `Kite session errored: ${data.lastError || 'unknown'}` };
     }
     const expiresAt = (_c = (_b = (_a = data.expiresAt) === null || _a === void 0 ? void 0 : _a.toDate) === null || _b === void 0 ? void 0 : _b.call(_a)) !== null && _c !== void 0 ? _c : data.expiresAt;
     if (expiresAt && new Date(expiresAt).getTime() < Date.now()) {

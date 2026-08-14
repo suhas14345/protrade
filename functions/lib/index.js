@@ -33,7 +33,7 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.orchestrateDeepSyncTask = exports.orchestrateEodTask = exports.processSymbolTask = exports.taskDispatcher = exports.gateway = void 0;
+exports.scheduledKiteRenew = exports.orchestrateDeepSyncTask = exports.orchestrateEodTask = exports.processSymbolTask = exports.taskDispatcher = exports.gateway = void 0;
 const functions = __importStar(require("firebase-functions/v1"));
 const admin = __importStar(require("firebase-admin"));
 // --- Shared Execution Options ---
@@ -413,4 +413,29 @@ async function gatewayHandler(req) {
 //      Body: {"action":"scheduledEod"}  Cron: 45 15 * * 1-5  TZ: Asia/Kolkata
 //   3. morning-fill: POST https://us-central1-suhas-ag.cloudfunctions.net/gateway
 //      Body: {"action":"scheduledMorning"}  Cron: 15 9 * * 1-5  TZ: Asia/Kolkata
+// V3.2: Native scheduled Kite session auto-renew.
+// Deploying this function auto-provisions the Cloud Scheduler job — no manual
+// GCP Console step required. Runs at 08:30 IST Mon–Fri (before market open) so a
+// fresh access token is in settings/kite ahead of the morning-fill and EOD runs.
+// Kite tokens expire daily (~07:30 IST), so a daily pre-open renew is required.
+exports.scheduledKiteRenew = functions
+    .runWith(v1Options)
+    .pubsub.schedule('30 8 * * 1-5')
+    .timeZone('Asia/Kolkata')
+    .onRun(async () => {
+    var _a, _b;
+    console.log('[Scheduler] Auto-renewing Kite session (native schedule)...');
+    const { autoRenewKiteSessionHandler } = await Promise.resolve().then(() => __importStar(require('./services/kite_automation')));
+    await autoRenewKiteSessionHandler({});
+    const db = admin.apps.length ? admin.firestore() : admin.initializeApp() && admin.firestore();
+    const snap = await db.collection('settings').doc('kite').get();
+    const status = (_a = snap.data()) === null || _a === void 0 ? void 0 : _a.status;
+    if (status === 'ERROR') {
+        console.error('[Scheduler] Kite auto-renew failed:', (_b = snap.data()) === null || _b === void 0 ? void 0 : _b.lastError);
+    }
+    else {
+        console.log(`[Scheduler] Kite session renewed (status=${status})`);
+    }
+    return null;
+});
 //# sourceMappingURL=index.js.map

@@ -79,14 +79,20 @@ export function checkRateLimit(
 export async function checkKiteHealth(
   db: FirebaseFirestore.Firestore,
 ): Promise<{ healthy: boolean; reason?: string }> {
-  const doc = await db.doc('config/kiteSession').get();
+  // Session state lives at settings/kite — the same doc the auto-renew writer
+  // (kite_automation.autoRenewKiteSessionHandler) and marketdata reader use.
+  const doc = await db.doc('settings/kite').get();
   if (!doc.exists) {
-    return { healthy: false, reason: 'kiteSession doc missing' };
+    return { healthy: false, reason: 'settings/kite doc missing' };
   }
 
   const data = doc.data()!;
   if (!data.accessToken) {
     return { healthy: false, reason: 'No access token stored' };
+  }
+
+  if (data.status === 'ERROR') {
+    return { healthy: false, reason: `Kite session errored: ${data.lastError || 'unknown'}` };
   }
 
   const expiresAt = data.expiresAt?.toDate?.() ?? data.expiresAt;

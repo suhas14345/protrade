@@ -389,3 +389,27 @@ async function gatewayHandler(req: any) {
 //      Body: {"action":"scheduledEod"}  Cron: 45 15 * * 1-5  TZ: Asia/Kolkata
 //   3. morning-fill: POST https://us-central1-suhas-ag.cloudfunctions.net/gateway
 //      Body: {"action":"scheduledMorning"}  Cron: 15 9 * * 1-5  TZ: Asia/Kolkata
+
+// V3.2: Native scheduled Kite session auto-renew.
+// Deploying this function auto-provisions the Cloud Scheduler job — no manual
+// GCP Console step required. Runs at 08:30 IST Mon–Fri (before market open) so a
+// fresh access token is in settings/kite ahead of the morning-fill and EOD runs.
+// Kite tokens expire daily (~07:30 IST), so a daily pre-open renew is required.
+export const scheduledKiteRenew = functions
+  .runWith(v1Options)
+  .pubsub.schedule('30 8 * * 1-5')
+  .timeZone('Asia/Kolkata')
+  .onRun(async () => {
+    console.log('[Scheduler] Auto-renewing Kite session (native schedule)...');
+    const { autoRenewKiteSessionHandler } = await import('./services/kite_automation');
+    await autoRenewKiteSessionHandler({});
+    const db = admin.apps.length ? admin.firestore() : admin.initializeApp() && admin.firestore();
+    const snap = await db.collection('settings').doc('kite').get();
+    const status = snap.data()?.status;
+    if (status === 'ERROR') {
+      console.error('[Scheduler] Kite auto-renew failed:', snap.data()?.lastError);
+    } else {
+      console.log(`[Scheduler] Kite session renewed (status=${status})`);
+    }
+    return null;
+  });
