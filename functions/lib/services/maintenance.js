@@ -164,6 +164,7 @@ exports.seedConfig = (0, https_1.onRequest)({ cors: true }, async (req, res) => 
     const db = getDb();
     const accountConfig = {
         equity: 1000000, // ₹10 Lakh starting capital
+        initialEquity: 1000000, // anchor for equity recomputation (never mutated)
         baseRiskPct: 0.005, // 0.5% risk per trade
         maxOpenRiskR: 6, // Max 6R open portfolio heat
         maxPositions: 10, // Max 10 concurrent open trades

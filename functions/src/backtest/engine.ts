@@ -15,7 +15,7 @@
  */
 import * as admin from 'firebase-admin';
 import { Timestamp } from 'firebase-admin/firestore';
-import { PaperPosition, PaperTrade } from '../models';
+import { PaperTrade } from '../models';
 import { RUNTIME_CONFIG } from '../config/runtime';
 import { doComputeFeatures } from '../services/features';
 import { doComputeRegime } from '../services/regime';
@@ -23,8 +23,9 @@ import { doComputeRsRanking } from '../services/rsRanking';
 import { doEvaluateSignals } from '../services/strategy';
 import { doManageTrades } from '../services/tradeManager';
 import { doPlaceOrders, doOpenFillSimulation } from '../services/paperBroker';
+import { recomputeAccountEquity, computeOpenUnrealized } from '../services/portfolioEquity';
 import { INDEX_SYMBOL } from './seed';
-import { ClosedTrade, EquityPoint, dailyReturns } from './metrics';
+import { ClosedTrade, EquityPoint } from './metrics';
 
 const getDb = () => {
   if (admin.apps.length === 0) admin.initializeApp();
@@ -34,9 +35,7 @@ const getDb = () => {
 /** Max concurrent per-symbol stage calls against the emulator. Override with BT_CONCURRENCY. */
 const STAGE_CONCURRENCY = Math.max(1, parseInt(process.env.BT_CONCURRENCY || '16', 10));
 
-/** Firestore path prefix for the paper portfolio (matches production paperBroker/tradeManager). */
-const positionsCol = (db: FirebaseFirestore.Firestore) =>
-  db.collection('portfolio').doc('default').collection('positions');
+/** Firestore path to the append-only realised-trade ledger (matches production paperBroker). */
 const tradesCol = (db: FirebaseFirestore.Firestore) =>
   db.collection('portfolio').doc('default').collection('trades');
 
@@ -67,11 +66,6 @@ export async function runReplay(opts: ReplayOptions): Promise<ReplayResult> {
   const { universeId, symbols, dates } = opts;
   const initial = opts.initialEquity;
   const curve: EquityPoint[] = [];
-  let peakEquity = initial;
-  let equityEMA25 = initial;
-  const emaK = 2 / (25 + 1);
-  // Running realised P&L booked by the authoritative exit path (portfolio/default/trades).
-  let realizedToDate = 0;
 
   for (let i = opts.tradeStartIndex; i < dates.length; i++) {
     const day = dates[i];
@@ -111,24 +105,15 @@ export async function runReplay(opts: ReplayOptions): Promise<ReplayResult> {
     // 7. Approved signals → ACCEPTED entry orders (filled tomorrow at open).
     await doPlaceOrders(day.dateId, jobId);
 
-    // 8. Equity from AUTHORITATIVE state — no parallel ledger:
-    //    realised P&L booked so far + open positions marked to market at today's close.
-    realizedToDate += await sumRealizedForDate(db, day.dateId);
-    const openUnrealized = await computeOpenUnrealized(db, day.dateId);
-    const equity = initial + realizedToDate + openUnrealized;
+    // 8. Equity from AUTHORITATIVE state via the SHARED updater the live EOD path
+    //    also calls (services/portfolioEquity): realised P&L booked so far plus
+    //    open positions marked to market at today's close. It writes equity /
+    //    peakEquity / equityEMA25 / portfolioRealizedVol back to config/account so
+    //    the drawdown and vol-targeting risk gates respond during replay — and,
+    //    because live calls the SAME function, the two paths cannot diverge.
+    const update = await recomputeAccountEquity(db, day.dateId);
+    const equity = update ? update.equity : initial;
     curve.push({ dateId: day.dateId, equity });
-
-    // Close the equity loop for the risk gates: write equity stats back.
-    peakEquity = Math.max(peakEquity, equity);
-    equityEMA25 = equity * emaK + equityEMA25 * (1 - emaK);
-    const recentRets = dailyReturns(curve.slice(-21).map((p) => p.equity));
-    const portfolioRealizedVol = annualisedVol(recentRets);
-    await db.collection('config').doc('account').update({
-      equity,
-      peakEquity,
-      equityEMA25,
-      portfolioRealizedVol,
-    });
 
     if (opts.onDay) opts.onDay(i, day.dateId, equity);
   }
@@ -189,37 +174,6 @@ async function mapPool<T>(items: T[], concurrency: number, fn: (item: T) => Prom
   await Promise.all(workers);
 }
 
-/** Sum realised P&L of all trades that closed on `dateId` (append-only ledger). */
-async function sumRealizedForDate(db: FirebaseFirestore.Firestore, dateId: string): Promise<number> {
-  const snap = await tradesCol(db).where('exitDateId', '==', dateId).get();
-  let total = 0;
-  snap.docs.forEach((d) => { total += Number((d.data() as PaperTrade).realizedPnl) || 0; });
-  return total;
-}
-
-/**
- * Mark every currently-OPEN position to market at `dateId` close, netting the
- * still-unrealised share of its entry fee. Netting long/short via P&L (not signed
- * cash) is what makes the curve reconcile: when a position later closes, its
- * realised record replaces exactly this unrealised amount.
- */
-async function computeOpenUnrealized(db: FirebaseFirestore.Firestore, dateId: string): Promise<number> {
-  const snap = await positionsCol(db).where('status', '==', 'OPEN').get();
-  let total = 0;
-  for (const doc of snap.docs) {
-    const p = doc.data() as PaperPosition;
-    if (!p.qty || p.qty <= 0) continue;
-    const barSnap = await db.collection('barsD').doc(p.symbol).collection('days').doc(dateId).get();
-    if (!barSnap.exists) continue;
-    const close = Number((barSnap.data() as { close: number }).close);
-    const gross = (p.direction === 'BUY' ? close - p.avgEntryPrice : p.avgEntryPrice - close) * p.qty;
-    const entryQty = p.entryQty ?? p.qty;
-    const openEntryFeeShare = (p.entryFee ?? 0) * (entryQty > 0 ? p.qty / entryQty : 0);
-    total += gross - openEntryFeeShare;
-  }
-  return total;
-}
-
 /** Load the authoritative closed-trade list from the append-only trades ledger. */
 async function loadClosedTrades(db: FirebaseFirestore.Firestore): Promise<ClosedTrade[]> {
   const snap = await tradesCol(db).get();
@@ -242,11 +196,4 @@ async function loadClosedTrades(db: FirebaseFirestore.Firestore): Promise<Closed
   });
   out.sort((a, b) => (a.exitDateId < b.exitDateId ? -1 : a.exitDateId > b.exitDateId ? 1 : 0));
   return out;
-}
-
-function annualisedVol(returns: number[]): number {
-  if (returns.length < 2) return 0;
-  const m = returns.reduce((a, b) => a + b, 0) / returns.length;
-  const variance = returns.reduce((a, b) => a + (b - m) * (b - m), 0) / (returns.length - 1);
-  return Math.sqrt(variance) * Math.sqrt(252);
 }

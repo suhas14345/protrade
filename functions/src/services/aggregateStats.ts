@@ -1,7 +1,6 @@
 import * as functionsV1 from 'firebase-functions';
 import * as admin from 'firebase-admin';
 import { Signal } from '../models';
-import { DRAWDOWN_CONFIG } from '../config/runtime';
 
 const getDb = () => {
   if (admin.apps.length === 0) admin.initializeApp();
@@ -52,42 +51,14 @@ function computeMaxDrawdown(equityCurve: number[]): { maxDrawdownPct: number; pe
 }
 
 /**
- * V2.2: Update peak equity and equity curve EMA in account config.
- * Called after each trading day's PnL is realized.
+ * V3.1: Recompute account equity + drawdown + realised-vol from authoritative
+ * position/trade state. Delegates to the shared `recomputeAccountEquity` helper
+ * so the live EOD path and the backtest engine update equity identically.
+ * Called after each trading day's PnL is realised.
  */
 async function updateEquityCurve(db: FirebaseFirestore.Firestore, dateId: string): Promise<void> {
-  const accountSnap = await db.collection('config').doc('account').get();
-  if (!accountSnap.exists) return;
-  const account = accountSnap.data() as any;
-  const equity: number = account.equity ?? 0;
-  const peakEquity: number = Math.max(account.peakEquity ?? equity, equity);
-
-  // Store equity snapshot for equity curve tracking
-  await db.collection('stats').doc('equityCurve').collection('days').doc(dateId).set({
-    equity, dateId, recordedAt: admin.firestore.Timestamp.now(),
-  });
-
-  // Fetch last EQUITY_EMA_PERIOD equity snapshots to compute EMA.
-  // Bounded ascending key-range scan (the emulator rejects descending key
-  // scans, and limitToLast is rewritten into one by the SDK).
-  const period = DRAWDOWN_CONFIG.EQUITY_EMA_PERIOD;
-  const lb = new Date(Date.UTC(+dateId.slice(0, 4), +dateId.slice(4, 6) - 1, +dateId.slice(6, 8)));
-  lb.setUTCDate(lb.getUTCDate() - Math.ceil(period * 1.7) - 15);
-  const lowerBound = `${lb.getUTCFullYear()}${String(lb.getUTCMonth() + 1).padStart(2, '0')}${String(lb.getUTCDate()).padStart(2, '0')}`;
-  const snapshots = await db.collection('stats').doc('equityCurve').collection('days')
-    .where(admin.firestore.FieldPath.documentId(), '>=', lowerBound)
-    .where(admin.firestore.FieldPath.documentId(), '<=', dateId)
-    .orderBy(admin.firestore.FieldPath.documentId(), 'asc')
-    .get();
-
-  const equities = snapshots.docs.slice(-period).map(d => (d.data() as any).equity as number);
-  let equityEMA25 = equities[0] ?? equity;
-  const k = 2 / (period + 1);
-  for (let i = 1; i < equities.length; i++) {
-    equityEMA25 = equities[i] * k + equityEMA25 * (1 - k);
-  }
-
-  await db.collection('config').doc('account').update({ peakEquity, equityEMA25 });
+  const { recomputeAccountEquity } = await import('./portfolioEquity');
+  await recomputeAccountEquity(db, dateId);
 }
 
 /**

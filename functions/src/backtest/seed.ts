@@ -99,6 +99,7 @@ export async function seedBacktest(opts: SeedOptions): Promise<{ dateId: string;
   await db.collection('config').doc('account').set(
     {
       equity: opts.initialEquity ?? 1_000_000,
+      initialEquity: opts.initialEquity ?? 1_000_000,
       baseRiskPct: 0.005,
       maxOpenRiskR: 6,
       maxPositions: 10,

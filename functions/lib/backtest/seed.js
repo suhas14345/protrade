@@ -95,7 +95,7 @@ async function writeSeries(db, symbol, bars) {
  * Seed everything needed for a replay. Returns the ordered list of trading dates.
  */
 async function seedBacktest(opts) {
-    var _a, _b, _c, _d, _e, _f;
+    var _a, _b, _c, _d, _e, _f, _g;
     const db = getDb();
     // Real mode = caller supplied actual bars. Trading days then come from the
     // index series itself (real NSE holidays are absent), matching production's
@@ -115,6 +115,7 @@ async function seedBacktest(opts) {
     // 3. Account config (shape mirrors maintenance.seedConfig).
     await db.collection('config').doc('account').set({
         equity: (_a = opts.initialEquity) !== null && _a !== void 0 ? _a : 1000000,
+        initialEquity: (_b = opts.initialEquity) !== null && _b !== void 0 ? _b : 1000000,
         baseRiskPct: 0.005,
         maxOpenRiskR: 6,
         maxPositions: 10,
@@ -126,13 +127,13 @@ async function seedBacktest(opts) {
             BearBounceEOD: 0.8,
             RSLeaderEOD: 1.0,
         },
-        peakEquity: (_b = opts.initialEquity) !== null && _b !== void 0 ? _b : 1000000,
+        peakEquity: (_c = opts.initialEquity) !== null && _c !== void 0 ? _c : 1000000,
     }, { merge: true });
     // 4. Bars for the index, then every tradable symbol.
-    const indexBars = (_d = (_c = opts.bars) === null || _c === void 0 ? void 0 : _c[exports.INDEX_SYMBOL]) !== null && _d !== void 0 ? _d : (0, syntheticData_1.generateSeries)(hashSeed(exports.INDEX_SYMBOL), dates, { annualDrift: 0.10, annualVol: 0.15 });
+    const indexBars = (_e = (_d = opts.bars) === null || _d === void 0 ? void 0 : _d[exports.INDEX_SYMBOL]) !== null && _e !== void 0 ? _e : (0, syntheticData_1.generateSeries)(hashSeed(exports.INDEX_SYMBOL), dates, { annualDrift: 0.10, annualVol: 0.15 });
     await writeSeries(db, exports.INDEX_SYMBOL, indexBars);
     for (const sym of opts.symbols) {
-        const series = (_f = (_e = opts.bars) === null || _e === void 0 ? void 0 : _e[sym]) !== null && _f !== void 0 ? _f : (0, syntheticData_1.generateSeries)(hashSeed(sym), dates);
+        const series = (_g = (_f = opts.bars) === null || _f === void 0 ? void 0 : _f[sym]) !== null && _g !== void 0 ? _g : (0, syntheticData_1.generateSeries)(hashSeed(sym), dates);
         await writeSeries(db, sym, series);
     }
     // 5. Calendar. In real mode derive it from the seeded index bars (production

@@ -58,8 +58,8 @@ const rsRanking_1 = require("../services/rsRanking");
 const strategy_1 = require("../services/strategy");
 const tradeManager_1 = require("../services/tradeManager");
 const paperBroker_1 = require("../services/paperBroker");
+const portfolioEquity_1 = require("../services/portfolioEquity");
 const seed_1 = require("./seed");
-const metrics_1 = require("./metrics");
 const getDb = () => {
     if (admin.apps.length === 0)
         admin.initializeApp();
@@ -67,8 +67,7 @@ const getDb = () => {
 };
 /** Max concurrent per-symbol stage calls against the emulator. Override with BT_CONCURRENCY. */
 const STAGE_CONCURRENCY = Math.max(1, parseInt(process.env.BT_CONCURRENCY || '16', 10));
-/** Firestore path prefix for the paper portfolio (matches production paperBroker/tradeManager). */
-const positionsCol = (db) => db.collection('portfolio').doc('default').collection('positions');
+/** Firestore path to the append-only realised-trade ledger (matches production paperBroker). */
 const tradesCol = (db) => db.collection('portfolio').doc('default').collection('trades');
 /**
  * Run the day-by-day replay. Returns the equity curve and reconstructed trades.
@@ -80,11 +79,6 @@ async function runReplay(opts) {
     const { universeId, symbols, dates } = opts;
     const initial = opts.initialEquity;
     const curve = [];
-    let peakEquity = initial;
-    let equityEMA25 = initial;
-    const emaK = 2 / (25 + 1);
-    // Running realised P&L booked by the authoritative exit path (portfolio/default/trades).
-    let realizedToDate = 0;
     for (let i = opts.tradeStartIndex; i < dates.length; i++) {
         const day = dates[i];
         const jobId = `bt_${day.dateId}`;
@@ -115,23 +109,15 @@ async function runReplay(opts) {
         await mapPool(symbols, STAGE_CONCURRENCY, (sym) => safeStage(() => (0, strategy_1.doEvaluateSignals)(jobId, sym, day.isoDate, undefined, universeId)));
         // 7. Approved signals → ACCEPTED entry orders (filled tomorrow at open).
         await (0, paperBroker_1.doPlaceOrders)(day.dateId, jobId);
-        // 8. Equity from AUTHORITATIVE state — no parallel ledger:
-        //    realised P&L booked so far + open positions marked to market at today's close.
-        realizedToDate += await sumRealizedForDate(db, day.dateId);
-        const openUnrealized = await computeOpenUnrealized(db, day.dateId);
-        const equity = initial + realizedToDate + openUnrealized;
+        // 8. Equity from AUTHORITATIVE state via the SHARED updater the live EOD path
+        //    also calls (services/portfolioEquity): realised P&L booked so far plus
+        //    open positions marked to market at today's close. It writes equity /
+        //    peakEquity / equityEMA25 / portfolioRealizedVol back to config/account so
+        //    the drawdown and vol-targeting risk gates respond during replay — and,
+        //    because live calls the SAME function, the two paths cannot diverge.
+        const update = await (0, portfolioEquity_1.recomputeAccountEquity)(db, day.dateId);
+        const equity = update ? update.equity : initial;
         curve.push({ dateId: day.dateId, equity });
-        // Close the equity loop for the risk gates: write equity stats back.
-        peakEquity = Math.max(peakEquity, equity);
-        equityEMA25 = equity * emaK + equityEMA25 * (1 - emaK);
-        const recentRets = (0, metrics_1.dailyReturns)(curve.slice(-21).map((p) => p.equity));
-        const portfolioRealizedVol = annualisedVol(recentRets);
-        await db.collection('config').doc('account').update({
-            equity,
-            peakEquity,
-            equityEMA25,
-            portfolioRealizedVol,
-        });
         if (opts.onDay)
             opts.onDay(i, day.dateId, equity);
     }
@@ -142,7 +128,7 @@ async function runReplay(opts) {
     // the ledger has a bug — fail loudly rather than report a fabricated number.
     const lastDateId = dates[dates.length - 1].dateId;
     const totalRealized = trades.reduce((a, t) => a + t.pnl, 0);
-    const finalOpenUnrealized = await computeOpenUnrealized(db, lastDateId);
+    const finalOpenUnrealized = await (0, portfolioEquity_1.computeOpenUnrealized)(db, lastDateId);
     const expectedEquity = initial + totalRealized + finalOpenUnrealized;
     const curveEnd = curve.length ? curve[curve.length - 1].equity : initial;
     const drift = Math.abs(curveEnd - expectedEquity);
@@ -185,38 +171,6 @@ async function mapPool(items, concurrency, fn) {
     });
     await Promise.all(workers);
 }
-/** Sum realised P&L of all trades that closed on `dateId` (append-only ledger). */
-async function sumRealizedForDate(db, dateId) {
-    const snap = await tradesCol(db).where('exitDateId', '==', dateId).get();
-    let total = 0;
-    snap.docs.forEach((d) => { total += Number(d.data().realizedPnl) || 0; });
-    return total;
-}
-/**
- * Mark every currently-OPEN position to market at `dateId` close, netting the
- * still-unrealised share of its entry fee. Netting long/short via P&L (not signed
- * cash) is what makes the curve reconcile: when a position later closes, its
- * realised record replaces exactly this unrealised amount.
- */
-async function computeOpenUnrealized(db, dateId) {
-    var _a, _b;
-    const snap = await positionsCol(db).where('status', '==', 'OPEN').get();
-    let total = 0;
-    for (const doc of snap.docs) {
-        const p = doc.data();
-        if (!p.qty || p.qty <= 0)
-            continue;
-        const barSnap = await db.collection('barsD').doc(p.symbol).collection('days').doc(dateId).get();
-        if (!barSnap.exists)
-            continue;
-        const close = Number(barSnap.data().close);
-        const gross = (p.direction === 'BUY' ? close - p.avgEntryPrice : p.avgEntryPrice - close) * p.qty;
-        const entryQty = (_a = p.entryQty) !== null && _a !== void 0 ? _a : p.qty;
-        const openEntryFeeShare = ((_b = p.entryFee) !== null && _b !== void 0 ? _b : 0) * (entryQty > 0 ? p.qty / entryQty : 0);
-        total += gross - openEntryFeeShare;
-    }
-    return total;
-}
 /** Load the authoritative closed-trade list from the append-only trades ledger. */
 async function loadClosedTrades(db) {
     const snap = await tradesCol(db).get();
@@ -239,12 +193,5 @@ async function loadClosedTrades(db) {
     });
     out.sort((a, b) => (a.exitDateId < b.exitDateId ? -1 : a.exitDateId > b.exitDateId ? 1 : 0));
     return out;
-}
-function annualisedVol(returns) {
-    if (returns.length < 2)
-        return 0;
-    const m = returns.reduce((a, b) => a + b, 0) / returns.length;
-    const variance = returns.reduce((a, b) => a + (b - m) * (b - m), 0) / (returns.length - 1);
-    return Math.sqrt(variance) * Math.sqrt(252);
 }
 //# sourceMappingURL=engine.js.map
