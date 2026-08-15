@@ -199,6 +199,9 @@ export interface PaperOrder {
 export interface PaperFill {
   orderId: string;
   symbol: string;
+  /** Cash direction of this fill: BUY = cash out, SELL = cash in. Enables an
+   *  independent cash-flow reconciliation of the ledger. */
+  side: 'BUY' | 'SELL';
   fillPrice: number;
   fillQty: number;
   slippageBps: number;

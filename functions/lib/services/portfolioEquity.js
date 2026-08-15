@@ -33,7 +33,9 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.computeExitPnl = computeExitPnl;
 exports.sumRealizedToDate = sumRealizedToDate;
+exports.lastCloseOnOrBefore = lastCloseOnOrBefore;
 exports.computeOpenUnrealized = computeOpenUnrealized;
 exports.recomputeAccountEquity = recomputeAccountEquity;
 /**
@@ -59,6 +61,24 @@ const admin = __importStar(require("firebase-admin"));
 const runtime_1 = require("../config/runtime");
 /** Number of trailing equity points used for the realised-vol estimate (→ up to 20 daily returns). */
 const VOL_LOOKBACK_POINTS = 21;
+/**
+ * Pure realised-P&L formula for one (partial or full) exit, fees included.
+ *
+ * Extracted so it is unit-testable and used by EXACTLY ONE place in production
+ * (paperBroker exit path). The entry fee is attributed pro-rata to the exited
+ * quantity so the total entry cost is counted once across all exits of a
+ * position. Long vs short is netted via price difference, never signed cash.
+ */
+function computeExitPnl(params) {
+    const grossPerShare = params.direction === 'BUY'
+        ? params.exitPrice - params.avgEntryPrice
+        : params.avgEntryPrice - params.exitPrice;
+    const entryFeeShare = params.entryQty > 0
+        ? params.entryFee * (params.exitQty / params.entryQty)
+        : 0;
+    const realizedPnl = grossPerShare * params.exitQty - params.exitFee - entryFeeShare;
+    return { realizedPnl, entryFeeShare };
+}
 /** Cumulative realised P&L booked by the exit path for all trades closed on/before `dateId`. */
 async function sumRealizedToDate(db, dateId) {
     const snap = await db
@@ -68,6 +88,25 @@ async function sumRealizedToDate(db, dateId) {
     let total = 0;
     snap.docs.forEach((d) => { total += Number(d.data().realizedPnl) || 0; });
     return total;
+}
+/**
+ * Latest close at or before `dateId` for a symbol, or null if it has no bar on
+ * or before that date. A position may still be open on a date the symbol has no
+ * bar for (end of data, a halt, or a delisting), so marking to a strict `dateId`
+ * lookup would silently value it at zero. Both the equity derivation and the
+ * independent backtest audit use THIS function, so they value open positions
+ * identically and reconcile. Ascending key-range scan (the emulator rejects
+ * descending documentId scans).
+ */
+async function lastCloseOnOrBefore(db, symbol, dateId) {
+    const snap = await db.collection('barsD').doc(symbol).collection('days')
+        .where(admin.firestore.FieldPath.documentId(), '<=', dateId)
+        .orderBy(admin.firestore.FieldPath.documentId(), 'asc')
+        .get();
+    if (snap.empty)
+        return null;
+    const last = snap.docs[snap.docs.length - 1].data();
+    return Number(last.close);
 }
 /**
  * Mark every currently-OPEN position to market at `dateId`'s close, netting the
@@ -86,10 +125,9 @@ async function computeOpenUnrealized(db, dateId) {
         const p = doc.data();
         if (!p.qty || p.qty <= 0)
             continue;
-        const barSnap = await db.collection('barsD').doc(p.symbol).collection('days').doc(dateId).get();
-        if (!barSnap.exists)
+        const close = await lastCloseOnOrBefore(db, p.symbol, dateId);
+        if (close === null)
             continue;
-        const close = Number(barSnap.data().close);
         const gross = (p.direction === 'BUY' ? close - p.avgEntryPrice : p.avgEntryPrice - close) * p.qty;
         const entryQty = (_a = p.entryQty) !== null && _a !== void 0 ? _a : p.qty;
         const openEntryFeeShare = ((_b = p.entryFee) !== null && _b !== void 0 ? _b : 0) * (entryQty > 0 ? p.qty / entryQty : 0);

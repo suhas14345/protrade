@@ -123,21 +123,38 @@ async function runReplay(opts) {
     }
     // Authoritative closed-trade list from the append-only trades ledger.
     const trades = await loadClosedTrades(db);
-    // Reconciliation invariant: the equity curve MUST equal realised P&L plus the
-    // open positions still marked to market on the final day. If these ever drift,
-    // the ledger has a bug — fail loudly rather than report a fabricated number.
     const lastDateId = dates[dates.length - 1].dateId;
+    const curveEnd = curve.length ? curve[curve.length - 1].equity : initial;
+    // ---- Reconciliation 1 (self-consistency): the equity curve must equal
+    //      realised P&L plus open-position MTM, both derived from the ledger. ----
     const totalRealized = trades.reduce((a, t) => a + t.pnl, 0);
     const finalOpenUnrealized = await (0, portfolioEquity_1.computeOpenUnrealized)(db, lastDateId);
-    const expectedEquity = initial + totalRealized + finalOpenUnrealized;
-    const curveEnd = curve.length ? curve[curve.length - 1].equity : initial;
-    const drift = Math.abs(curveEnd - expectedEquity);
-    console.log(`[backtest] ledger reconciled: curveEnd=₹${curveEnd.toFixed(0)} ` +
-        `realised=₹${totalRealized.toFixed(0)} openUnreal=₹${finalOpenUnrealized.toFixed(0)} ` +
-        `drift=₹${drift.toFixed(2)}`);
-    if (drift > 1) {
-        throw new Error(`[backtest] Ledger reconciliation FAILED: equity curve end ₹${curveEnd.toFixed(2)} != ` +
-            `realised+unrealised ₹${expectedEquity.toFixed(2)} (drift ₹${drift.toFixed(2)}).`);
+    const ledgerPnl = totalRealized + finalOpenUnrealized;
+    const selfDrift = Math.abs((initial + ledgerPnl) - curveEnd);
+    // ---- Reconciliation 2 (INDEPENDENT double-entry): reconstruct net trading
+    //      P&L purely from raw cash flows (every fill: sell = +cash, buy = -cash,
+    //      minus fees) plus the market value of still-open positions. This shares
+    //      NO code with the per-share P&L formula, so a formula bug shows up here
+    //      as a rupee-scale mismatch. The two methods are algebraically identical
+    //      (incl. entry-fee proration on partials), so they must agree to the paisa. ----
+    const dateIds = dates.map((d) => d.dateId);
+    const independentPnl = await reconstructPnlFromCashFlows(db, dateIds, lastDateId);
+    const crossDrift = Math.abs(ledgerPnl - independentPnl);
+    console.log(`[backtest] ledger reconciled: curveEnd=₹${curveEnd.toFixed(2)} ` +
+        `realised=₹${totalRealized.toFixed(2)} openUnreal=₹${finalOpenUnrealized.toFixed(2)} | ` +
+        `independent(cash-flow)=₹${independentPnl.toFixed(2)} ` +
+        `selfDrift=₹${selfDrift.toFixed(4)} crossDrift=₹${crossDrift.toFixed(4)}`);
+    // Zero-tolerance policy: a ledger error of even ₹1 is a bug, not noise. The
+    // threshold is 1 paisa to absorb pure float re-summation ordering only.
+    const TOL = 0.01;
+    if (selfDrift > TOL) {
+        throw new Error(`[backtest] Self-reconciliation FAILED: initial+realised+unrealised ₹${(initial + ledgerPnl).toFixed(2)} ` +
+            `!= equity curve end ₹${curveEnd.toFixed(2)} (drift ₹${selfDrift.toFixed(4)}).`);
+    }
+    if (crossDrift > TOL) {
+        throw new Error(`[backtest] Independent double-entry reconciliation FAILED: ledger P&L ₹${ledgerPnl.toFixed(2)} ` +
+            `!= cash-flow P&L ₹${independentPnl.toFixed(2)} (drift ₹${crossDrift.toFixed(4)}). ` +
+            `A realised-P&L formula or fill-accounting bug is present.`);
     }
     return { curve, trades };
 }
@@ -170,6 +187,42 @@ async function mapPool(items, concurrency, fn) {
         }
     });
     await Promise.all(workers);
+}
+/**
+ * Independent double-entry reconstruction of net trading P&L from raw cash flows.
+ *
+ * For every fill: SELL brings cash in (+price*qty), BUY takes cash out (-price*qty),
+ * and fees always reduce cash. Add back the market value of positions still open
+ * on `lastDateId` (long = +qty*close, short = -qty*close). The result equals total
+ * realised P&L (closed trades) + open-position mark-to-market — but is computed
+ * without touching the per-share P&L formula or the trades ledger, so it is a true
+ * independent check on both.
+ */
+async function reconstructPnlFromCashFlows(db, dateIds, lastDateId) {
+    let cashFlow = 0;
+    for (const dateId of dateIds) {
+        const snap = await db.collection('paperFills').doc(dateId).collection('items').get();
+        snap.docs.forEach((d) => {
+            const f = d.data();
+            const sign = f.side === 'SELL' ? 1 : -1;
+            cashFlow += sign * f.fillPrice * f.fillQty - f.feeEstimate;
+        });
+    }
+    let marketValue = 0;
+    const openSnap = await db
+        .collection('portfolio').doc('default').collection('positions')
+        .where('status', '==', 'OPEN')
+        .get();
+    for (const doc of openSnap.docs) {
+        const p = doc.data();
+        if (!p.qty || p.qty <= 0)
+            continue;
+        const close = await (0, portfolioEquity_1.lastCloseOnOrBefore)(db, p.symbol, lastDateId);
+        if (close === null)
+            continue;
+        marketValue += (p.direction === 'BUY' ? 1 : -1) * p.qty * close;
+    }
+    return cashFlow + marketValue;
 }
 /** Load the authoritative closed-trade list from the append-only trades ledger. */
 async function loadClosedTrades(db) {

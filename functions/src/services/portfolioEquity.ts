@@ -24,6 +24,33 @@ import { DRAWDOWN_CONFIG } from '../config/runtime';
 /** Number of trailing equity points used for the realised-vol estimate (→ up to 20 daily returns). */
 const VOL_LOOKBACK_POINTS = 21;
 
+/**
+ * Pure realised-P&L formula for one (partial or full) exit, fees included.
+ *
+ * Extracted so it is unit-testable and used by EXACTLY ONE place in production
+ * (paperBroker exit path). The entry fee is attributed pro-rata to the exited
+ * quantity so the total entry cost is counted once across all exits of a
+ * position. Long vs short is netted via price difference, never signed cash.
+ */
+export function computeExitPnl(params: {
+  direction: 'BUY' | 'SELL';
+  avgEntryPrice: number;
+  exitPrice: number;
+  exitQty: number;
+  entryQty: number;
+  entryFee: number;
+  exitFee: number;
+}): { realizedPnl: number; entryFeeShare: number } {
+  const grossPerShare = params.direction === 'BUY'
+    ? params.exitPrice - params.avgEntryPrice
+    : params.avgEntryPrice - params.exitPrice;
+  const entryFeeShare = params.entryQty > 0
+    ? params.entryFee * (params.exitQty / params.entryQty)
+    : 0;
+  const realizedPnl = grossPerShare * params.exitQty - params.exitFee - entryFeeShare;
+  return { realizedPnl, entryFeeShare };
+}
+
 /** Cumulative realised P&L booked by the exit path for all trades closed on/before `dateId`. */
 export async function sumRealizedToDate(
   db: FirebaseFirestore.Firestore,
@@ -36,6 +63,29 @@ export async function sumRealizedToDate(
   let total = 0;
   snap.docs.forEach((d) => { total += Number((d.data() as PaperTrade).realizedPnl) || 0; });
   return total;
+}
+
+/**
+ * Latest close at or before `dateId` for a symbol, or null if it has no bar on
+ * or before that date. A position may still be open on a date the symbol has no
+ * bar for (end of data, a halt, or a delisting), so marking to a strict `dateId`
+ * lookup would silently value it at zero. Both the equity derivation and the
+ * independent backtest audit use THIS function, so they value open positions
+ * identically and reconcile. Ascending key-range scan (the emulator rejects
+ * descending documentId scans).
+ */
+export async function lastCloseOnOrBefore(
+  db: FirebaseFirestore.Firestore,
+  symbol: string,
+  dateId: string
+): Promise<number | null> {
+  const snap = await db.collection('barsD').doc(symbol).collection('days')
+    .where(admin.firestore.FieldPath.documentId(), '<=', dateId)
+    .orderBy(admin.firestore.FieldPath.documentId(), 'asc')
+    .get();
+  if (snap.empty) return null;
+  const last = snap.docs[snap.docs.length - 1].data() as { close: number };
+  return Number(last.close);
 }
 
 /**
@@ -56,9 +106,8 @@ export async function computeOpenUnrealized(
   for (const doc of snap.docs) {
     const p = doc.data() as PaperPosition;
     if (!p.qty || p.qty <= 0) continue;
-    const barSnap = await db.collection('barsD').doc(p.symbol).collection('days').doc(dateId).get();
-    if (!barSnap.exists) continue;
-    const close = Number((barSnap.data() as { close: number }).close);
+    const close = await lastCloseOnOrBefore(db, p.symbol, dateId);
+    if (close === null) continue;
     const gross = (p.direction === 'BUY' ? close - p.avgEntryPrice : p.avgEntryPrice - close) * p.qty;
     const entryQty = p.entryQty ?? p.qty;
     const openEntryFeeShare = (p.entryFee ?? 0) * (entryQty > 0 ? p.qty / entryQty : 0);

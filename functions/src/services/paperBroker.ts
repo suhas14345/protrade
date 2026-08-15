@@ -4,6 +4,7 @@ import { checkSafety } from './safety';
 import { SLIPPAGE_CONFIG, INDIAN_FEE_CONFIG, ADV_LIMITS } from '../config/runtime';
 import { Timestamp } from 'firebase-admin/firestore';
 import { CalendarService } from './calendar';
+import { computeExitPnl } from './portfolioEquity';
 import { logger } from './logger';
 
 const getDb = () => {
@@ -177,15 +178,35 @@ export async function doOpenFillSimulation(jobId: string, runDate: string, symbo
     const fillId = `fill_${doc.id}_${dateId}`;
 
     const fill: PaperFill = {
-      orderId: doc.id, symbol, fillPrice, fillQty: order.intendedQty,
+      orderId: doc.id, symbol, side: order.side, fillPrice, fillQty: order.intendedQty,
       slippageBps, feeEstimate, fillType: order.exitType || 'ENTRY', timestamp: Timestamp.now()
     };
-    batch.set(db.collection('paperFills').doc(dateId).collection('items').doc(fillId), fill);
+    const fillRef = db.collection('paperFills').doc(dateId).collection('items').doc(fillId);
+    // The fill is recorded ONLY once we know it establishes (entry) or settles
+    // (exit) a tracked position — see the guarded writes below. Writing it up
+    // front left "phantom" fills for orders that then aborted on a missing
+    // signal/position: cash the equity ledger never saw (an audit break) and,
+    // in live, a filled order with no position behind it.
 
     if (order.orderType === 'ENTRY') {
       const signalPath = `signals/${prevDateId}/items/${order.createdFromSignalId}`;
       const sigSnap = await db.doc(signalPath).get();
-      if (!sigSnap.exists) continue;
+      if (!sigSnap.exists) {
+        batch.update(doc.ref, { status: 'CANCELLED', rejectReason: 'SIGNAL_MISSING' });
+        continue;
+      }
+      // One position per symbol. The position doc is keyed by symbol, so a second
+      // ENTRY while one is still OPEN would OVERWRITE the first — spending cash on
+      // shares the system then stops tracking and never exits (a capital leak that
+      // broke the independent cash-flow audit). Reject the stacked entry instead.
+      const posDocRef = db.collection('portfolio').doc('default').collection('positions').doc(symbol);
+      const existingPos = await posDocRef.get();
+      if (existingPos.exists && (existingPos.data() as PaperPosition).status === 'OPEN') {
+        batch.update(doc.ref, { status: 'CANCELLED', rejectReason: 'POSITION_ALREADY_OPEN' });
+        await logger.warn(`[PaperBroker] REJECTING stacked entry: ${symbol} already has an OPEN position`, 'PaperBroker', { symbol, jobId });
+        continue;
+      }
+      batch.set(fillRef, fill);
       const signal = sigSnap.data() as Signal;
 
       const atrRef = signal.atrRef || 0;
@@ -217,7 +238,11 @@ export async function doOpenFillSimulation(jobId: string, runDate: string, symbo
       // EXIT Order Logic
       const posRef = db.collection('portfolio').doc('default').collection('positions').doc(symbol);
       const posSnap = await posRef.get();
-      if (!posSnap.exists) continue;
+      if (!posSnap.exists) {
+        batch.update(doc.ref, { status: 'CANCELLED', rejectReason: 'POSITION_MISSING' });
+        continue;
+      }
+      batch.set(fillRef, fill);
       const pos = posSnap.data() as PaperPosition;
 
       // V3.1: Realise P&L on the exited quantity (partial or full). Attribute a
@@ -226,9 +251,15 @@ export async function doOpenFillSimulation(jobId: string, runDate: string, symbo
       // broken signed-cash convention entirely.
       const exitQty = order.intendedQty; // == fill.fillQty
       const entryQty = pos.entryQty ?? pos.qty;
-      const grossPerShare = pos.direction === 'BUY' ? fillPrice - pos.avgEntryPrice : pos.avgEntryPrice - fillPrice;
-      const entryFeeShare = (pos.entryFee ?? 0) * (entryQty > 0 ? exitQty / entryQty : 0);
-      const realizedPnl = grossPerShare * exitQty - feeEstimate - entryFeeShare;
+      const { realizedPnl, entryFeeShare } = computeExitPnl({
+        direction: pos.direction,
+        avgEntryPrice: pos.avgEntryPrice,
+        exitPrice: fillPrice,
+        exitQty,
+        entryQty,
+        entryFee: pos.entryFee ?? 0,
+        exitFee: feeEstimate,
+      });
       const rMultiple = pos.riskAmount && pos.riskAmount > 0 && entryQty > 0
         ? realizedPnl / (pos.riskAmount * (exitQty / entryQty))
         : undefined;
