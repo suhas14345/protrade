@@ -127,7 +127,7 @@ async function doPlaceOrders(dateId, jobId) {
  * Morning Fill Simulation (NEXT_OPEN for both Entry and Exit)
  */
 async function doOpenFillSimulation(jobId, runDate, symbol) {
-    var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k;
+    var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k, _l, _m;
     const db = getDb();
     const dateId = runDate.replace(/-/g, '');
     const prevDateId = await calendar_1.CalendarService.getPrevTradingDateId(dateId);
@@ -212,6 +212,9 @@ async function doOpenFillSimulation(jobId, runDate, symbol) {
                 riskAmount: order.risk.riskAmount, signalId: order.createdFromSignalId, signalPath,
                 // V2.4: Strategy field for per-strategy exit profiles
                 strategy: signal.strategy,
+                // V3.1: fee/qty basis for realised-P&L attribution across (partial) exits
+                entryFee: feeEstimate,
+                entryQty: order.intendedQty,
             };
             batch.set(db.collection('portfolio').doc('default').collection('positions').doc(symbol), position);
             batch.update(sigSnap.ref, {
@@ -226,9 +229,42 @@ async function doOpenFillSimulation(jobId, runDate, symbol) {
             if (!posSnap.exists)
                 continue;
             const pos = posSnap.data();
+            // V3.1: Realise P&L on the exited quantity (partial or full). Attribute a
+            // prorated share of the entry fee so entry cost is counted exactly once
+            // across all exits of this position. Netting long and short here avoids the
+            // broken signed-cash convention entirely.
+            const exitQty = order.intendedQty; // == fill.fillQty
+            const entryQty = (_l = pos.entryQty) !== null && _l !== void 0 ? _l : pos.qty;
+            const grossPerShare = pos.direction === 'BUY' ? fillPrice - pos.avgEntryPrice : pos.avgEntryPrice - fillPrice;
+            const entryFeeShare = ((_m = pos.entryFee) !== null && _m !== void 0 ? _m : 0) * (entryQty > 0 ? exitQty / entryQty : 0);
+            const realizedPnl = grossPerShare * exitQty - feeEstimate - entryFeeShare;
+            const rMultiple = pos.riskAmount && pos.riskAmount > 0 && entryQty > 0
+                ? realizedPnl / (pos.riskAmount * (exitQty / entryQty))
+                : undefined;
+            const tradeRec = {
+                symbol,
+                direction: pos.direction,
+                strategy: pos.strategy,
+                entryDateId: pos.entryDateId || '',
+                exitDateId: dateId,
+                entryPrice: pos.avgEntryPrice,
+                exitPrice: fillPrice,
+                qty: exitQty,
+                fees: feeEstimate + entryFeeShare,
+                realizedPnl,
+                exitReason: order.exitType,
+                entryFillId: pos.entryFillId,
+                exitFillId: fillId,
+                closedAt: firestore_1.Timestamp.now(),
+            };
+            if (rMultiple !== undefined)
+                tradeRec.rMultiple = rMultiple;
+            // Append-only: keyed by the (unique) exit fill id, never overwritten on re-entry.
+            batch.set(db.collection('portfolio').doc('default').collection('trades').doc(fillId), tradeRec);
             if (order.exitType === 'PARTIAL_PROFIT') {
                 batch.update(posRef, {
-                    qty: admin.firestore.FieldValue.increment(-order.intendedQty),
+                    qty: admin.firestore.FieldValue.increment(-exitQty),
+                    realizedPnl: admin.firestore.FieldValue.increment(realizedPnl),
                     stopPrice: pos.avgEntryPrice, // Breakeven (Gap B3 Rules)
                     partialTaken: true,
                     lastUpdatedAt: firestore_1.Timestamp.now()
@@ -239,7 +275,15 @@ async function doOpenFillSimulation(jobId, runDate, symbol) {
             }
             else {
                 // Full Exit
-                batch.update(posRef, { status: 'CLOSED', exitReason: order.exitType, exitFillId: fillId, closedAt: firestore_1.Timestamp.now() });
+                batch.update(posRef, {
+                    status: 'CLOSED',
+                    realizedPnl: admin.firestore.FieldValue.increment(realizedPnl),
+                    exitReason: order.exitType,
+                    exitFillId: fillId,
+                    exitPrice: fillPrice,
+                    exitDateId: dateId,
+                    closedAt: firestore_1.Timestamp.now(),
+                });
                 if (pos.signalPath)
                     batch.update(db.doc(pos.signalPath), { status: 'DONE' });
             }

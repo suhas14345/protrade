@@ -15,9 +15,8 @@
  */
 import * as admin from 'firebase-admin';
 import { Timestamp } from 'firebase-admin/firestore';
-import { PaperOrder, PaperFill } from '../models';
+import { PaperPosition, PaperTrade } from '../models';
 import { RUNTIME_CONFIG } from '../config/runtime';
-import { CalendarService } from '../services/calendar';
 import { doComputeFeatures } from '../services/features';
 import { doComputeRegime } from '../services/regime';
 import { doComputeRsRanking } from '../services/rsRanking';
@@ -35,15 +34,11 @@ const getDb = () => {
 /** Max concurrent per-symbol stage calls against the emulator. Override with BT_CONCURRENCY. */
 const STAGE_CONCURRENCY = Math.max(1, parseInt(process.env.BT_CONCURRENCY || '16', 10));
 
-interface OpenLot {
-  direction: 'BUY' | 'SELL';
-  qty: number;
-  originalQty: number;
-  entryPrice: number;
-  entryFee: number;
-  entryDateId: string;
-  riskAmount: number;
-}
+/** Firestore path prefix for the paper portfolio (matches production paperBroker/tradeManager). */
+const positionsCol = (db: FirebaseFirestore.Firestore) =>
+  db.collection('portfolio').doc('default').collection('positions');
+const tradesCol = (db: FirebaseFirestore.Firestore) =>
+  db.collection('portfolio').doc('default').collection('trades');
 
 export interface ReplayOptions {
   universeId: string;
@@ -70,13 +65,13 @@ export async function runReplay(opts: ReplayOptions): Promise<ReplayResult> {
   RUNTIME_CONFIG.MODE = 'REPLAY';
 
   const { universeId, symbols, dates } = opts;
-  let cash = opts.initialEquity;
-  const lots = new Map<string, OpenLot>();
-  const trades: ClosedTrade[] = [];
+  const initial = opts.initialEquity;
   const curve: EquityPoint[] = [];
-  let peakEquity = opts.initialEquity;
-  let equityEMA25 = opts.initialEquity;
+  let peakEquity = initial;
+  let equityEMA25 = initial;
   const emaK = 2 / (25 + 1);
+  // Running realised P&L booked by the authoritative exit path (portfolio/default/trades).
+  let realizedToDate = 0;
 
   for (let i = opts.tradeStartIndex; i < dates.length; i++) {
     const day = dates[i];
@@ -93,10 +88,11 @@ export async function runReplay(opts: ReplayOptions): Promise<ReplayResult> {
       updatedAt: Timestamp.now(),
     });
 
-    // 1. Fill yesterday's ACCEPTED orders at today's open (entries and exits).
+    // 1. Fill yesterday's ACCEPTED orders at today's open (entries and exits). This
+    //    is the SAME production path that writes authoritative position docs and,
+    //    on every exit, appends an immutable realised-trade record. The engine no
+    //    longer keeps a parallel cash ledger — it reads that authoritative state.
     await mapPool(symbols, STAGE_CONCURRENCY, (sym) => doOpenFillSimulation(jobId, day.isoDate, sym));
-    // 1b. Reconcile today's fills into the cash ledger and closed-trade list.
-    await applyFills(db, day.dateId, lots, trades, (delta) => { cash += delta; });
 
     // 2. Manage open positions vs today's close → queues exit orders for tomorrow.
     await doManageTrades(day.dateId, jobId);
@@ -115,9 +111,11 @@ export async function runReplay(opts: ReplayOptions): Promise<ReplayResult> {
     // 7. Approved signals → ACCEPTED entry orders (filled tomorrow at open).
     await doPlaceOrders(day.dateId, jobId);
 
-    // 8. Mark to market at today's close and record equity.
-    const mtm = await markToMarket(db, day.dateId, lots);
-    const equity = cash + mtm;
+    // 8. Equity from AUTHORITATIVE state — no parallel ledger:
+    //    realised P&L booked so far + open positions marked to market at today's close.
+    realizedToDate += await sumRealizedForDate(db, day.dateId);
+    const openUnrealized = await computeOpenUnrealized(db, day.dateId);
+    const equity = initial + realizedToDate + openUnrealized;
     curve.push({ dateId: day.dateId, equity });
 
     // Close the equity loop for the risk gates: write equity stats back.
@@ -133,6 +131,30 @@ export async function runReplay(opts: ReplayOptions): Promise<ReplayResult> {
     });
 
     if (opts.onDay) opts.onDay(i, day.dateId, equity);
+  }
+
+  // Authoritative closed-trade list from the append-only trades ledger.
+  const trades = await loadClosedTrades(db);
+
+  // Reconciliation invariant: the equity curve MUST equal realised P&L plus the
+  // open positions still marked to market on the final day. If these ever drift,
+  // the ledger has a bug — fail loudly rather than report a fabricated number.
+  const lastDateId = dates[dates.length - 1].dateId;
+  const totalRealized = trades.reduce((a, t) => a + t.pnl, 0);
+  const finalOpenUnrealized = await computeOpenUnrealized(db, lastDateId);
+  const expectedEquity = initial + totalRealized + finalOpenUnrealized;
+  const curveEnd = curve.length ? curve[curve.length - 1].equity : initial;
+  const drift = Math.abs(curveEnd - expectedEquity);
+  console.log(
+    `[backtest] ledger reconciled: curveEnd=₹${curveEnd.toFixed(0)} ` +
+    `realised=₹${totalRealized.toFixed(0)} openUnreal=₹${finalOpenUnrealized.toFixed(0)} ` +
+    `drift=₹${drift.toFixed(2)}`
+  );
+  if (drift > 1) {
+    throw new Error(
+      `[backtest] Ledger reconciliation FAILED: equity curve end ₹${curveEnd.toFixed(2)} != ` +
+      `realised+unrealised ₹${expectedEquity.toFixed(2)} (drift ₹${drift.toFixed(2)}).`
+    );
   }
 
   return { curve, trades };
@@ -167,88 +189,59 @@ async function mapPool<T>(items: T[], concurrency: number, fn: (item: T) => Prom
   await Promise.all(workers);
 }
 
-/**
- * Read the day's fills, join each to its order (for side), update cash and the
- * lot ledger, and emit a ClosedTrade for every exit fill.
- */
-async function applyFills(
-  db: FirebaseFirestore.Firestore,
-  dateId: string,
-  lots: Map<string, OpenLot>,
-  trades: ClosedTrade[],
-  addCash: (delta: number) => void
-): Promise<void> {
-  const fillsSnap = await db.collection('paperFills').doc(dateId).collection('items').get();
-  if (fillsSnap.empty) return;
-
-  const prevDateId = await CalendarService.getPrevTradingDateId(dateId);
-  const ordersSnap = prevDateId
-    ? await db.collection('paperOrders').doc(prevDateId).collection('items').get()
-    : null;
-  const orderById = new Map<string, PaperOrder>();
-  ordersSnap?.docs.forEach((d) => orderById.set(d.id, d.data() as PaperOrder));
-
-  for (const doc of fillsSnap.docs) {
-    const fill = doc.data() as PaperFill;
-    const order = orderById.get(fill.orderId);
-    if (!order) continue; // exits placed on other days are rare; skip if unmatched
-    const side = order.side; // 'BUY' | 'SELL'
-
-    // Cash convention: a SELL brings cash in, a BUY takes cash out; fees always reduce cash.
-    const signedValue = (side === 'SELL' ? 1 : -1) * fill.fillPrice * fill.fillQty;
-    addCash(signedValue - fill.feeEstimate);
-
-    if (fill.fillType === 'ENTRY') {
-      lots.set(fill.symbol, {
-        direction: side,
-        qty: fill.fillQty,
-        originalQty: fill.fillQty,
-        entryPrice: fill.fillPrice,
-        entryFee: fill.feeEstimate,
-        entryDateId: dateId,
-        riskAmount: order.risk?.riskAmount ?? 0,
-      });
-      continue;
-    }
-
-    // Exit fill (full or partial): realise P&L on the filled quantity.
-    const lot = lots.get(fill.symbol);
-    if (!lot) continue;
-    const grossPerShare = lot.direction === 'BUY' ? fill.fillPrice - lot.entryPrice : lot.entryPrice - fill.fillPrice;
-    const entryFeeShare = lot.originalQty > 0 ? lot.entryFee * (fill.fillQty / lot.originalQty) : 0;
-    const pnl = grossPerShare * fill.fillQty - fill.feeEstimate - entryFeeShare;
-    trades.push({
-      symbol: fill.symbol,
-      direction: lot.direction,
-      entryDateId: lot.entryDateId,
-      exitDateId: dateId,
-      qty: fill.fillQty,
-      entryPrice: lot.entryPrice,
-      exitPrice: fill.fillPrice,
-      fees: fill.feeEstimate + entryFeeShare,
-      pnl,
-      rMultiple: lot.riskAmount > 0 ? pnl / lot.riskAmount : undefined,
-      exitReason: fill.fillType,
-    });
-    lot.qty -= fill.fillQty;
-    if (lot.qty <= 0) lots.delete(fill.symbol);
-  }
+/** Sum realised P&L of all trades that closed on `dateId` (append-only ledger). */
+async function sumRealizedForDate(db: FirebaseFirestore.Firestore, dateId: string): Promise<number> {
+  const snap = await tradesCol(db).where('exitDateId', '==', dateId).get();
+  let total = 0;
+  snap.docs.forEach((d) => { total += Number((d.data() as PaperTrade).realizedPnl) || 0; });
+  return total;
 }
 
-/** Sum the market value of open lots at the day's close (long = +qty*close, short = -qty*close). */
-async function markToMarket(
-  db: FirebaseFirestore.Firestore,
-  dateId: string,
-  lots: Map<string, OpenLot>
-): Promise<number> {
+/**
+ * Mark every currently-OPEN position to market at `dateId` close, netting the
+ * still-unrealised share of its entry fee. Netting long/short via P&L (not signed
+ * cash) is what makes the curve reconcile: when a position later closes, its
+ * realised record replaces exactly this unrealised amount.
+ */
+async function computeOpenUnrealized(db: FirebaseFirestore.Firestore, dateId: string): Promise<number> {
+  const snap = await positionsCol(db).where('status', '==', 'OPEN').get();
   let total = 0;
-  for (const [symbol, lot] of lots) {
-    const barSnap = await db.collection('barsD').doc(symbol).collection('days').doc(dateId).get();
+  for (const doc of snap.docs) {
+    const p = doc.data() as PaperPosition;
+    if (!p.qty || p.qty <= 0) continue;
+    const barSnap = await db.collection('barsD').doc(p.symbol).collection('days').doc(dateId).get();
     if (!barSnap.exists) continue;
     const close = Number((barSnap.data() as { close: number }).close);
-    total += (lot.direction === 'BUY' ? 1 : -1) * lot.qty * close;
+    const gross = (p.direction === 'BUY' ? close - p.avgEntryPrice : p.avgEntryPrice - close) * p.qty;
+    const entryQty = p.entryQty ?? p.qty;
+    const openEntryFeeShare = (p.entryFee ?? 0) * (entryQty > 0 ? p.qty / entryQty : 0);
+    total += gross - openEntryFeeShare;
   }
   return total;
+}
+
+/** Load the authoritative closed-trade list from the append-only trades ledger. */
+async function loadClosedTrades(db: FirebaseFirestore.Firestore): Promise<ClosedTrade[]> {
+  const snap = await tradesCol(db).get();
+  const out: ClosedTrade[] = snap.docs.map((d) => {
+    const t = d.data() as PaperTrade;
+    const ct: ClosedTrade = {
+      symbol: t.symbol,
+      direction: t.direction,
+      entryDateId: t.entryDateId,
+      exitDateId: t.exitDateId,
+      qty: t.qty,
+      entryPrice: t.entryPrice,
+      exitPrice: t.exitPrice,
+      fees: t.fees,
+      pnl: t.realizedPnl,
+      rMultiple: t.rMultiple,
+      exitReason: t.exitReason,
+    };
+    return ct;
+  });
+  out.sort((a, b) => (a.exitDateId < b.exitDateId ? -1 : a.exitDateId > b.exitDateId ? 1 : 0));
+  return out;
 }
 
 function annualisedVol(returns: number[]): number {

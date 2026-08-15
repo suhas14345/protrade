@@ -239,6 +239,38 @@ export interface PaperPosition {
   trailingStopPrice?: number;      // Current trailing stop level
   worstCaseGapLoss?: number;       // Estimated loss under gap stress scenario (INR)
   worstCaseGapLossR?: number;      // Same in R-multiple units
+
+  // V3.1: fee/qty basis needed to attribute entry cost across (partial) exits
+  entryFee?: number;               // total fee paid on entry fill
+  entryQty?: number;               // original entry quantity (constant; qty decrements on partials)
+  exitPrice?: number;              // fill price of the closing exit
+  exitDateId?: string;             // dateId of the closing exit
+}
+
+/**
+ * V3.1: Immutable, append-only realised round-trip record, written on every exit
+ * fill (partial or full) to portfolio/default/trades/{exitFillId}. Unlike the
+ * per-symbol position doc (which is overwritten on re-entry), this survives so the
+ * complete P&L history — live or backtest — is never lost.
+ */
+export interface PaperTrade {
+  symbol: string;
+  direction: 'BUY' | 'SELL';
+  strategy?: string;
+  entryDateId: string;
+  exitDateId: string;
+  entryPrice: number;
+  exitPrice: number;
+  qty: number;
+  /** exit fee + prorated share of the entry fee for this quantity */
+  fees: number;
+  /** net realised P&L for this exit, fees included */
+  realizedPnl: number;
+  rMultiple?: number;
+  exitReason?: PaperFill['fillType'];
+  entryFillId?: string;
+  exitFillId: string;
+  closedAt: FirebaseFirestore.Timestamp;
 }
 
 export interface Trade {

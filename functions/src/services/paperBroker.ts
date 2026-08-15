@@ -1,5 +1,5 @@
 import * as admin from 'firebase-admin';
-import { Signal, PaperOrder, PaperFill, Bar, PaperPosition } from '../models';
+import { Signal, PaperOrder, PaperFill, Bar, PaperPosition, PaperTrade } from '../models';
 import { checkSafety } from './safety';
 import { SLIPPAGE_CONFIG, INDIAN_FEE_CONFIG, ADV_LIMITS } from '../config/runtime';
 import { Timestamp } from 'firebase-admin/firestore';
@@ -203,6 +203,9 @@ export async function doOpenFillSimulation(jobId: string, runDate: string, symbo
         riskAmount: order.risk.riskAmount, signalId: order.createdFromSignalId, signalPath,
         // V2.4: Strategy field for per-strategy exit profiles
         strategy: signal.strategy,
+        // V3.1: fee/qty basis for realised-P&L attribution across (partial) exits
+        entryFee: feeEstimate,
+        entryQty: order.intendedQty,
       };
 
       batch.set(db.collection('portfolio').doc('default').collection('positions').doc(symbol), position);
@@ -217,9 +220,43 @@ export async function doOpenFillSimulation(jobId: string, runDate: string, symbo
       if (!posSnap.exists) continue;
       const pos = posSnap.data() as PaperPosition;
 
+      // V3.1: Realise P&L on the exited quantity (partial or full). Attribute a
+      // prorated share of the entry fee so entry cost is counted exactly once
+      // across all exits of this position. Netting long and short here avoids the
+      // broken signed-cash convention entirely.
+      const exitQty = order.intendedQty; // == fill.fillQty
+      const entryQty = pos.entryQty ?? pos.qty;
+      const grossPerShare = pos.direction === 'BUY' ? fillPrice - pos.avgEntryPrice : pos.avgEntryPrice - fillPrice;
+      const entryFeeShare = (pos.entryFee ?? 0) * (entryQty > 0 ? exitQty / entryQty : 0);
+      const realizedPnl = grossPerShare * exitQty - feeEstimate - entryFeeShare;
+      const rMultiple = pos.riskAmount && pos.riskAmount > 0 && entryQty > 0
+        ? realizedPnl / (pos.riskAmount * (exitQty / entryQty))
+        : undefined;
+
+      const tradeRec: PaperTrade = {
+        symbol,
+        direction: pos.direction,
+        strategy: pos.strategy,
+        entryDateId: pos.entryDateId || '',
+        exitDateId: dateId,
+        entryPrice: pos.avgEntryPrice,
+        exitPrice: fillPrice,
+        qty: exitQty,
+        fees: feeEstimate + entryFeeShare,
+        realizedPnl,
+        exitReason: order.exitType,
+        entryFillId: pos.entryFillId,
+        exitFillId: fillId,
+        closedAt: Timestamp.now(),
+      };
+      if (rMultiple !== undefined) tradeRec.rMultiple = rMultiple;
+      // Append-only: keyed by the (unique) exit fill id, never overwritten on re-entry.
+      batch.set(db.collection('portfolio').doc('default').collection('trades').doc(fillId), tradeRec);
+
       if (order.exitType === 'PARTIAL_PROFIT') {
-        batch.update(posRef, { 
-            qty: admin.firestore.FieldValue.increment(-order.intendedQty),
+        batch.update(posRef, {
+            qty: admin.firestore.FieldValue.increment(-exitQty),
+            realizedPnl: admin.firestore.FieldValue.increment(realizedPnl),
             stopPrice: pos.avgEntryPrice, // Breakeven (Gap B3 Rules)
             partialTaken: true,
             lastUpdatedAt: Timestamp.now()
@@ -228,7 +265,15 @@ export async function doOpenFillSimulation(jobId: string, runDate: string, symbo
         if (pos.signalPath) batch.update(db.doc(pos.signalPath), { stopPrice: pos.avgEntryPrice });
       } else {
         // Full Exit
-        batch.update(posRef, { status: 'CLOSED', exitReason: order.exitType, exitFillId: fillId, closedAt: Timestamp.now() });
+        batch.update(posRef, {
+          status: 'CLOSED',
+          realizedPnl: admin.firestore.FieldValue.increment(realizedPnl),
+          exitReason: order.exitType,
+          exitFillId: fillId,
+          exitPrice: fillPrice,
+          exitDateId: dateId,
+          closedAt: Timestamp.now(),
+        });
         if (pos.signalPath) batch.update(db.doc(pos.signalPath), { status: 'DONE' });
       }
     }
