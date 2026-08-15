@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { db } from './firebase'
-import { collection, onSnapshot, query, orderBy, limit } from 'firebase/firestore'
+import { collection, doc, onSnapshot, query, orderBy, limit } from 'firebase/firestore'
 import { LayoutDashboard, Activity, Zap, Download, History, PieChart as PieIcon, BarChart3, LogOut, Terminal, Play, CheckCircle2, XCircle, Loader2, Settings } from 'lucide-react'
 import { ResponsiveContainer, BarChart, Bar, LineChart, Line, XAxis, YAxis, Tooltip, CartesianGrid } from 'recharts'
 import Login from './components/Login'
@@ -155,9 +155,16 @@ function App() {
       console.log(`[Dashboard] Jobs loaded:`, allJobs.length);
     });
 
+    // 6. Listen for account equity (source of truth is config/account)
+    const unsubAccount = onSnapshot(doc(db, 'config', 'account'), (snap) => {
+      const acct = snap.data();
+      if (acct?.equity != null) setStats((prev: any) => ({ ...prev, equity: acct.equity }));
+    });
+
     return () => {
       unsubPos();
       unsubJobs();
+      unsubAccount();
       unsubStats();
     };
   }, [authToken])
@@ -1209,7 +1216,7 @@ function App() {
                 </div>
                 <div style={{ display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid #1e293b', padding: '0.5rem 0' }}>
                   <span>📊 EOD Signal Run</span>
-                  <span style={{ color: '#10b981' }}>3:45 PM IST (Mon-Fri)</span>
+                  <span style={{ color: '#10b981' }}>4:30 PM IST (Mon-Fri)</span>
                 </div>
                 <div style={{ display: 'flex', justifyContent: 'space-between', padding: '0.5rem 0' }}>
                   <span>📈 Order Fill Simulation</span>

@@ -33,7 +33,7 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.scheduledKiteRenew = exports.orchestrateDeepSyncTask = exports.orchestrateEodTask = exports.processSymbolTask = exports.taskDispatcher = exports.gateway = void 0;
+exports.scheduledMorning = exports.scheduledEod = exports.scheduledKiteRenew = exports.orchestrateDeepSyncTask = exports.orchestrateEodTask = exports.processSymbolTask = exports.taskDispatcher = exports.gateway = void 0;
 const functions = __importStar(require("firebase-functions/v1"));
 const admin = __importStar(require("firebase-admin"));
 // --- Shared Execution Options ---
@@ -57,7 +57,7 @@ async function checkRuntimeKillSwitch() {
  * V3.0: Wired middleware — validation, auth, rate limiting, kill switch
  */
 exports.gateway = functions.runWith(v1Options).https.onRequest(async (req, res) => {
-    var _a, _b, _c, _d;
+    var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k;
     // CORS: allow dashboard origin
     res.set('Access-Control-Allow-Origin', '*');
     res.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
@@ -360,6 +360,31 @@ exports.gateway = functions.runWith(v1Options).https.onRequest(async (req, res) 
                 });
                 break;
             }
+            case 'backfillHistorical': {
+                const { runHistoricalBackfill } = await Promise.resolve().then(() => __importStar(require('./services/historicalBackfill')));
+                const result = await runHistoricalBackfill({
+                    universeId: ((_e = req.body) === null || _e === void 0 ? void 0 : _e.universe) || 'nifty500',
+                    startISO: (_f = req.body) === null || _f === void 0 ? void 0 : _f.start,
+                    endISO: (_g = req.body) === null || _g === void 0 ? void 0 : _g.end,
+                    maxSymbols: Number((_h = req.body) === null || _h === void 0 ? void 0 : _h.maxSymbols) || 500,
+                });
+                res.status(200).send(result);
+                break;
+            }
+            case 'resetTradingState': {
+                const { runResetTradingState } = await Promise.resolve().then(() => __importStar(require('./services/resetState')));
+                const result = await runResetTradingState({
+                    equity: Number((_j = req.body) === null || _j === void 0 ? void 0 : _j.equity) || 1000000,
+                });
+                res.status(200).send(result);
+                break;
+            }
+            case 'cleanupStale': {
+                const { runStaleCleanup } = await Promise.resolve().then(() => __importStar(require('./services/cleanupStale')));
+                const result = await runStaleCleanup((_k = req.body) === null || _k === void 0 ? void 0 : _k.retention);
+                res.status(200).send({ message: 'Stale data cleaned', deleted: result });
+                break;
+            }
             default: res.status(400).send({ error: `Unknown op: ${type}` });
         }
     }
@@ -410,7 +435,7 @@ async function gatewayHandler(req) {
 //   1. kite-auto-renew: POST https://us-central1-suhas-ag.cloudfunctions.net/gateway
 //      Body: {"action":"scheduledKiteRenew"}  Cron: 30 8 * * 1-5  TZ: Asia/Kolkata
 //   2. daily-eod: POST https://us-central1-suhas-ag.cloudfunctions.net/gateway
-//      Body: {"action":"scheduledEod"}  Cron: 45 15 * * 1-5  TZ: Asia/Kolkata
+//      Body: {"action":"scheduledEod"}  Cron: 30 16 * * 1-5  TZ: Asia/Kolkata
 //   3. morning-fill: POST https://us-central1-suhas-ag.cloudfunctions.net/gateway
 //      Body: {"action":"scheduledMorning"}  Cron: 15 9 * * 1-5  TZ: Asia/Kolkata
 // V3.2: Native scheduled Kite session auto-renew.
@@ -436,6 +461,64 @@ exports.scheduledKiteRenew = functions
     else {
         console.log(`[Scheduler] Kite session renewed (status=${status})`);
     }
+    return null;
+});
+function scheduledResponse() {
+    return {
+        status: (code) => ({
+            send: (body) => console.log(`[Scheduler] Native action response ${code}`, body),
+        }),
+    };
+}
+/** Native EOD schedule; supersedes the manually-created gateway scheduler job. */
+exports.scheduledEod = functions
+    .runWith(v1Options)
+    .pubsub.schedule('30 16 * * 1-5')
+    .timeZone('Asia/Kolkata')
+    .onRun(async () => {
+    const date = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+    const { isTradingDay } = await Promise.resolve().then(() => __importStar(require('./services/scheduler')));
+    if (!isTradingDay(date)) {
+        console.log(`[Scheduler] Skipping native EOD: ${date} is not a trading day`);
+        return null;
+    }
+    const db = admin.apps.length ? admin.firestore() : admin.initializeApp() && admin.firestore();
+    const kite = (await db.collection('settings').doc('kite').get()).data();
+    if (!(kite === null || kite === void 0 ? void 0 : kite.accessToken) || kite.status !== 'ACTIVE') {
+        console.warn('[Scheduler] Skipping native EOD: Kite session is not active');
+        return null;
+    }
+    try {
+        const { syncAllCorporateEvents } = await Promise.resolve().then(() => __importStar(require('./services/eventSync')));
+        await syncAllCorporateEvents(30);
+    }
+    catch (error) {
+        console.warn('[Scheduler] Native EOD event sync failed:', error);
+    }
+    const { doStartEodRun } = await Promise.resolve().then(() => __importStar(require('./services/orchestrator')));
+    await doStartEodRun({ body: { date, universe: 'nifty50', force: true }, query: {} }, scheduledResponse());
+    return null;
+});
+/** Native morning fill schedule; supersedes the manually-created gateway scheduler job. */
+exports.scheduledMorning = functions
+    .runWith(v1Options)
+    .pubsub.schedule('15 9 * * 1-5')
+    .timeZone('Asia/Kolkata')
+    .onRun(async () => {
+    const date = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+    const { isTradingDay } = await Promise.resolve().then(() => __importStar(require('./services/scheduler')));
+    if (!isTradingDay(date)) {
+        console.log(`[Scheduler] Skipping native morning fill: ${date} is not a trading day`);
+        return null;
+    }
+    const db = admin.apps.length ? admin.firestore() : admin.initializeApp() && admin.firestore();
+    const kite = (await db.collection('settings').doc('kite').get()).data();
+    if (!(kite === null || kite === void 0 ? void 0 : kite.accessToken) || kite.status !== 'ACTIVE') {
+        console.warn('[Scheduler] Skipping native morning fill: Kite session is not active');
+        return null;
+    }
+    const { doStartMorningExecution } = await Promise.resolve().then(() => __importStar(require('./services/orchestrator')));
+    await doStartMorningExecution({ query: { date, universe: 'nifty500' } }, scheduledResponse());
     return null;
 });
 //# sourceMappingURL=index.js.map

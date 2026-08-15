@@ -332,6 +332,34 @@ export const gateway = functions.runWith(v1Options).https.onRequest(async (req, 
                 break;
             }
 
+            case 'backfillHistorical': {
+                const { runHistoricalBackfill } = await import('./services/historicalBackfill');
+                const result = await runHistoricalBackfill({
+                    universeId: req.body?.universe || 'nifty500',
+                    startISO: req.body?.start,
+                    endISO: req.body?.end,
+                    maxSymbols: Number(req.body?.maxSymbols) || 500,
+                });
+                res.status(200).send(result);
+                break;
+            }
+
+            case 'resetTradingState': {
+                const { runResetTradingState } = await import('./services/resetState');
+                const result = await runResetTradingState({
+                    equity: Number(req.body?.equity) || 1000000,
+                });
+                res.status(200).send(result);
+                break;
+            }
+
+            case 'cleanupStale': {
+                const { runStaleCleanup } = await import('./services/cleanupStale');
+                const result = await runStaleCleanup(req.body?.retention);
+                res.status(200).send({ message: 'Stale data cleaned', deleted: result });
+                break;
+            }
+
             default: res.status(400).send({ error: `Unknown op: ${type}` });
         }
     } catch (err: any) {
@@ -386,7 +414,7 @@ async function gatewayHandler(req: any) {
 //   1. kite-auto-renew: POST https://us-central1-suhas-ag.cloudfunctions.net/gateway
 //      Body: {"action":"scheduledKiteRenew"}  Cron: 30 8 * * 1-5  TZ: Asia/Kolkata
 //   2. daily-eod: POST https://us-central1-suhas-ag.cloudfunctions.net/gateway
-//      Body: {"action":"scheduledEod"}  Cron: 45 15 * * 1-5  TZ: Asia/Kolkata
+//      Body: {"action":"scheduledEod"}  Cron: 30 16 * * 1-5  TZ: Asia/Kolkata
 //   3. morning-fill: POST https://us-central1-suhas-ag.cloudfunctions.net/gateway
 //      Body: {"action":"scheduledMorning"}  Cron: 15 9 * * 1-5  TZ: Asia/Kolkata
 
@@ -413,3 +441,63 @@ export const scheduledKiteRenew = functions
     }
     return null;
   });
+
+function scheduledResponse(): any {
+    return {
+        status: (code: number) => ({
+            send: (body: unknown) => console.log(`[Scheduler] Native action response ${code}`, body),
+        }),
+    };
+}
+
+/** Native EOD schedule; supersedes the manually-created gateway scheduler job. */
+export const scheduledEod = functions
+    .runWith(v1Options)
+    .pubsub.schedule('30 16 * * 1-5')
+    .timeZone('Asia/Kolkata')
+    .onRun(async () => {
+        const date = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+        const { isTradingDay } = await import('./services/scheduler');
+        if (!isTradingDay(date)) {
+            console.log(`[Scheduler] Skipping native EOD: ${date} is not a trading day`);
+            return null;
+        }
+        const db = admin.apps.length ? admin.firestore() : admin.initializeApp() && admin.firestore();
+        const kite = (await db.collection('settings').doc('kite').get()).data();
+        if (!kite?.accessToken || kite.status !== 'ACTIVE') {
+            console.warn('[Scheduler] Skipping native EOD: Kite session is not active');
+            return null;
+        }
+        try {
+            const { syncAllCorporateEvents } = await import('./services/eventSync');
+            await syncAllCorporateEvents(30);
+        } catch (error) {
+            console.warn('[Scheduler] Native EOD event sync failed:', error);
+        }
+        const { doStartEodRun } = await import('./services/orchestrator');
+        await doStartEodRun({ body: { date, universe: 'nifty50', force: true }, query: {} }, scheduledResponse());
+        return null;
+    });
+
+/** Native morning fill schedule; supersedes the manually-created gateway scheduler job. */
+export const scheduledMorning = functions
+    .runWith(v1Options)
+    .pubsub.schedule('15 9 * * 1-5')
+    .timeZone('Asia/Kolkata')
+    .onRun(async () => {
+        const date = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+        const { isTradingDay } = await import('./services/scheduler');
+        if (!isTradingDay(date)) {
+            console.log(`[Scheduler] Skipping native morning fill: ${date} is not a trading day`);
+            return null;
+        }
+        const db = admin.apps.length ? admin.firestore() : admin.initializeApp() && admin.firestore();
+        const kite = (await db.collection('settings').doc('kite').get()).data();
+        if (!kite?.accessToken || kite.status !== 'ACTIVE') {
+            console.warn('[Scheduler] Skipping native morning fill: Kite session is not active');
+            return null;
+        }
+        const { doStartMorningExecution } = await import('./services/orchestrator');
+        await doStartMorningExecution({ query: { date, universe: 'nifty500' } }, scheduledResponse());
+        return null;
+    });
