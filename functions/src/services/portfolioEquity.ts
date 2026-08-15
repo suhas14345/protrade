@@ -20,6 +20,7 @@
 import * as admin from 'firebase-admin';
 import { PaperPosition, PaperTrade } from '../models';
 import { DRAWDOWN_CONFIG } from '../config/runtime';
+import { getLatestOnOrBefore } from './barCache';
 
 /** Number of trailing equity points used for the realised-vol estimate (→ up to 20 daily returns). */
 const VOL_LOOKBACK_POINTS = 21;
@@ -79,13 +80,8 @@ export async function lastCloseOnOrBefore(
   symbol: string,
   dateId: string
 ): Promise<number | null> {
-  const snap = await db.collection('barsD').doc(symbol).collection('days')
-    .where(admin.firestore.FieldPath.documentId(), '<=', dateId)
-    .orderBy(admin.firestore.FieldPath.documentId(), 'asc')
-    .get();
-  if (snap.empty) return null;
-  const last = snap.docs[snap.docs.length - 1].data() as { close: number };
-  return Number(last.close);
+  const bar = await getLatestOnOrBefore(db, symbol, dateId);
+  return bar ? Number(bar.close) : null;
 }
 
 /**

@@ -2,6 +2,7 @@ import * as functionsV1 from 'firebase-functions';
 import * as admin from 'firebase-admin';
 import { Regime } from '../models';
 import { logger } from './logger';
+import { getLatestOnOrBefore } from './barCache';
 
 const getDb = () => {
   if (admin.apps.length === 0) admin.initializeApp();
@@ -15,17 +16,9 @@ const toDateId = (date: string) => date.replace(/-/g, '');
 type AnyRecord = Record<string, any>;
 
 async function getLatestBarOnOrBefore(db: FirebaseFirestore.Firestore, symbol: string, dateId: string) {
-  const snap = await db
-    .collection('barsD')
-    .doc(symbol)
-    .collection('days')
-    .where(admin.firestore.FieldPath.documentId(), '<=', dateId)
-    .orderBy(admin.firestore.FieldPath.documentId(), 'asc') // Use ASC to avoid DESC scan issues in emulator
-    .get();
-
-  if (snap.empty) return null;
-  const doc = snap.docs[snap.docs.length - 1]; // Take the last (most recent)
-  return { id: doc.id, ...(doc.data() as AnyRecord) };
+  const bar = await getLatestOnOrBefore(db, symbol, dateId);
+  if (!bar) return null;
+  return { id: bar.dateId as string, ...(bar as AnyRecord) };
 }
 
 async function getEma200SlopeNeg(

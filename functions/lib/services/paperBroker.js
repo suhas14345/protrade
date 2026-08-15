@@ -41,6 +41,7 @@ const runtime_1 = require("../config/runtime");
 const firestore_1 = require("firebase-admin/firestore");
 const calendar_1 = require("./calendar");
 const portfolioEquity_1 = require("./portfolioEquity");
+const barCache_1 = require("./barCache");
 const logger_1 = require("./logger");
 const getDb = () => {
     if (admin.apps.length === 0)
@@ -142,10 +143,9 @@ async function doOpenFillSimulation(jobId, runDate, symbol) {
         .where('symbol', '==', symbol).where('status', '==', 'ACCEPTED').get();
     if (ordersSnap.empty)
         return;
-    const barSnap = await db.collection('barsD').doc(symbol).collection('days').doc(dateId).get();
-    if (!barSnap.exists)
+    const bar = await (0, barCache_1.getBarOn)(db, symbol, dateId);
+    if (!bar)
         return;
-    const bar = barSnap.data();
     const batch = db.batch();
     for (const doc of ordersSnap.docs) {
         const order = doc.data();

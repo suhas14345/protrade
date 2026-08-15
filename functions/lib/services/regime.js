@@ -38,6 +38,7 @@ exports.doComputeRegime = doComputeRegime;
 const functionsV1 = __importStar(require("firebase-functions"));
 const admin = __importStar(require("firebase-admin"));
 const logger_1 = require("./logger");
+const barCache_1 = require("./barCache");
 const getDb = () => {
     if (admin.apps.length === 0)
         admin.initializeApp();
@@ -45,17 +46,10 @@ const getDb = () => {
 };
 const toDateId = (date) => date.replace(/-/g, '');
 async function getLatestBarOnOrBefore(db, symbol, dateId) {
-    const snap = await db
-        .collection('barsD')
-        .doc(symbol)
-        .collection('days')
-        .where(admin.firestore.FieldPath.documentId(), '<=', dateId)
-        .orderBy(admin.firestore.FieldPath.documentId(), 'asc') // Use ASC to avoid DESC scan issues in emulator
-        .get();
-    if (snap.empty)
+    const bar = await (0, barCache_1.getLatestOnOrBefore)(db, symbol, dateId);
+    if (!bar)
         return null;
-    const doc = snap.docs[snap.docs.length - 1]; // Take the last (most recent)
-    return Object.assign({ id: doc.id }, doc.data());
+    return Object.assign({ id: bar.dateId }, bar);
 }
 async function getEma200SlopeNeg(db, symbol, dateId, lookbackBars = 20) {
     // Try to infer slope of EMA200 using historical feature snapshots

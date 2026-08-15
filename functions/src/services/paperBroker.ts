@@ -1,10 +1,11 @@
 import * as admin from 'firebase-admin';
-import { Signal, PaperOrder, PaperFill, Bar, PaperPosition, PaperTrade } from '../models';
+import { Signal, PaperOrder, PaperFill, PaperPosition, PaperTrade } from '../models';
 import { checkSafety } from './safety';
 import { SLIPPAGE_CONFIG, INDIAN_FEE_CONFIG, ADV_LIMITS } from '../config/runtime';
 import { Timestamp } from 'firebase-admin/firestore';
 import { CalendarService } from './calendar';
 import { computeExitPnl } from './portfolioEquity';
+import { getBarOn } from './barCache';
 import { logger } from './logger';
 
 const getDb = () => {
@@ -124,9 +125,8 @@ export async function doOpenFillSimulation(jobId: string, runDate: string, symbo
 
   if (ordersSnap.empty) return;
 
-  const barSnap = await db.collection('barsD').doc(symbol).collection('days').doc(dateId).get();
-  if (!barSnap.exists) return;
-  const bar = barSnap.data() as Bar;
+  const bar = await getBarOn(db, symbol, dateId);
+  if (!bar) return;
 
   const batch = db.batch();
 

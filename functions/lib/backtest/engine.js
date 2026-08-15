@@ -59,6 +59,7 @@ const strategy_1 = require("../services/strategy");
 const tradeManager_1 = require("../services/tradeManager");
 const paperBroker_1 = require("../services/paperBroker");
 const portfolioEquity_1 = require("../services/portfolioEquity");
+const barCache_1 = require("../services/barCache");
 const seed_1 = require("./seed");
 const getDb = () => {
     if (admin.apps.length === 0)
@@ -76,6 +77,8 @@ async function runReplay(opts) {
     const db = getDb();
     // Backtest mode: disables market-hours guard and data-staleness checks.
     runtime_1.RUNTIME_CONFIG.MODE = 'REPLAY';
+    // Fresh in-memory bar cache for this run (bars are immutable during replay).
+    (0, barCache_1.clearBarCache)();
     const { universeId, symbols, dates } = opts;
     const initial = opts.initialEquity;
     const curve = [];

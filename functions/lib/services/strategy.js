@@ -42,6 +42,7 @@ const safety_1 = require("./safety");
 const calendar_1 = require("./calendar");
 const eventCalendar_1 = require("./eventCalendar");
 const logger_1 = require("./logger");
+const barCache_1 = require("./barCache");
 const getDb = () => {
     if (admin.apps.length === 0)
         admin.initializeApp();
@@ -112,30 +113,12 @@ function computeGapStress(atrAtEntry, qty, price, riskAmount) {
     return { worstCaseLossInr, worstCaseLossR };
 }
 /**
- * Optimized Historical Bar Fetch
+ * Optimized Historical Bar Fetch — served from the shared bar reader (in-memory
+ * cache during REPLAY, identical bounded scan in live).
  */
 async function getRecentBarsOnOrBefore(db, symbol, dateId, limit) {
-    const snap = await db.collection('barsD').doc(symbol).collection('days')
-        .where(admin.firestore.FieldPath.documentId(), '>=', keyLowerBoundDateId(dateId, limit))
-        .where(admin.firestore.FieldPath.documentId(), '<=', dateId)
-        .orderBy(admin.firestore.FieldPath.documentId(), 'asc')
-        .get();
-    if (snap.empty)
-        return [];
-    return snap.docs.slice(-limit).map(d => (Object.assign({ id: d.id }, d.data())));
-}
-/**
- * Lower-bound YYYYMMDD key for a bounded ascending key-range scan that is
- * guaranteed to contain at least `count` trading days. Used instead of a
- * descending key scan (unsupported by the Firestore emulator) or limitToLast
- * (which the SDK rewrites into a descending scan). Trading days are ~69% of
- * calendar days, so 1.7x + 15 always covers `count` trading days with margin.
- */
-function keyLowerBoundDateId(dateId, count) {
-    const y = +dateId.slice(0, 4), m = +dateId.slice(4, 6) - 1, d = +dateId.slice(6, 8);
-    const dt = new Date(Date.UTC(y, m, d));
-    dt.setUTCDate(dt.getUTCDate() - Math.ceil(count * 1.7) - 15);
-    return `${dt.getUTCFullYear()}${String(dt.getUTCMonth() + 1).padStart(2, '0')}${String(dt.getUTCDate()).padStart(2, '0')}`;
+    const bars = await (0, barCache_1.getWindowOnOrBefore)(db, symbol, dateId, limit);
+    return bars.map((b) => (Object.assign({ id: b.dateId }, b)));
 }
 /**
  * V2.2: Compute drawdown multiplier from peak equity.

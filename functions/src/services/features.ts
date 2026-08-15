@@ -4,6 +4,7 @@ import { Timestamp } from 'firebase-admin/firestore';
 import { Features, Bar } from '../models';
 import { logger } from './logger';
 import { VDU_CONFIG, GAP_RISK_CONFIG } from '../config/runtime';
+import { getWindowOnOrBefore } from './barCache';
 
 // Lazy load technicalindicators inside functions to avoid deployment timeouts
 
@@ -11,19 +12,6 @@ const getDb = () => {
   if (admin.apps.length === 0) admin.initializeApp();
   return admin.firestore();
 };
-
-/**
- * Lower-bound YYYYMMDD key for a bounded ascending key-range scan guaranteed to
- * contain at least `count` trading days. Trading days are ~69% of calendar days,
- * so 1.7x + 15 always covers `count` with margin. Avoids reading the entire
- * (growing) bar history every day.
- */
-function keyLowerBoundDateId(dateId: string, count: number): string {
-  const y = +dateId.slice(0, 4), m = +dateId.slice(4, 6) - 1, d = +dateId.slice(6, 8);
-  const dt = new Date(Date.UTC(y, m, d));
-  dt.setUTCDate(dt.getUTCDate() - Math.ceil(count * 1.7) - 15);
-  return `${dt.getUTCFullYear()}${String(dt.getUTCMonth() + 1).padStart(2, '0')}${String(dt.getUTCDate()).padStart(2, '0')}`;
-}
 
 export async function doComputeFeatures(jobId: string, symbol: string, runDate: string) {
   const db = getDb();
@@ -54,34 +42,19 @@ export async function doComputeFeatures(jobId: string, symbol: string, runDate: 
 
   console.log(`[Job ${jobId}] Computing features for ${symbol} up to ${runDate}`);
 
-  // 1. Fetch historical bars up to the run date.
-  // Bounded ascending key-range scan: only the most recent ~200 trading days are
-  // needed (slice(-200) below). A lower bound keeps every read O(200) instead of
-  // O(full history), which matters both for the emulator replay and production.
-  // 200 trading days ≈ 200/0.69 calendar days; 1.7x + 15 gives a safe margin.
-  const barsLowerBound = keyLowerBoundDateId(dateId, 200);
-  const barsSnap = await db.collection('barsD')
-    .doc(symbol)
-    .collection('days')
-    .where(admin.firestore.FieldPath.documentId(), '>=', barsLowerBound)
-    .where(admin.firestore.FieldPath.documentId(), '<=', dateId)
-    .orderBy(admin.firestore.FieldPath.documentId(), 'asc')
-    .get();
+  // 1. Fetch the trailing 200-bar window up to the run date via the shared bar
+  //    reader. In REPLAY it is served from an in-memory cache (one Firestore read
+  //    per symbol for the whole run); in live it runs the identical bounded scan.
+  //    200 trading days gives indicator stability; the current closed bar is the
+  //    signal bar (signals fire for NEXT_OPEN entry).
+  const bars = await getWindowOnOrBefore(db, symbol, dateId, 200);
 
-  if (barsSnap.empty || barsSnap.size < 25) {
-    const errorMsg = `[Features Fail] Insufficient data for ${symbol}. Found ${barsSnap.size} bars. Needs 25.`;
+  if (bars.length < 25) {
+    const errorMsg = `[Features Fail] Insufficient data for ${symbol}. Found ${bars.length} bars. Needs 25.`;
     console.error(errorMsg);
     throw new Error(errorMsg);
   }
 
-  // Sort and limit locally to avoid emulator 'descending key scan' error
-  const allBars = barsSnap.docs.map(d => d.data() as Bar);
-  allBars.sort((a, b) => a.timestamp.toMillis() - b.timestamp.toMillis());
-  
-  // Take last 200 for indicator stability; use slice(-200) — current closed bar is included
-  // Note: signals are for NEXT_OPEN entry so today's EOD bar IS the signal bar
-  const bars = allBars.slice(-200);
-  
   // 2. Compute Real Indicators with adaptive periods for simulation stability
   const closes = bars.map(b => b.close);
   const highs = bars.map(b => b.high);
@@ -162,7 +135,7 @@ export async function doComputeFeatures(jobId: string, symbol: string, runDate: 
       ret20d: closes.length >= 21 ? (closes[closes.length - 1] / closes[closes.length - 21]) - 1 : 0,
       ret60d: closes.length >= 61 ? (closes[closes.length - 1] / closes[closes.length - 61]) - 1 : 0, // V2.2
     },
-    barsCount: barsSnap.size,
+    barsCount: bars.length,
     // V2.2: Computed liquidity bucket from median traded value
     liquidity: computeLiquidity(bars),
     // V2.2: Volume Dry-Up flag

@@ -59,6 +59,7 @@ exports.recomputeAccountEquity = recomputeAccountEquity;
  */
 const admin = __importStar(require("firebase-admin"));
 const runtime_1 = require("../config/runtime");
+const barCache_1 = require("./barCache");
 /** Number of trailing equity points used for the realised-vol estimate (→ up to 20 daily returns). */
 const VOL_LOOKBACK_POINTS = 21;
 /**
@@ -99,14 +100,8 @@ async function sumRealizedToDate(db, dateId) {
  * descending documentId scans).
  */
 async function lastCloseOnOrBefore(db, symbol, dateId) {
-    const snap = await db.collection('barsD').doc(symbol).collection('days')
-        .where(admin.firestore.FieldPath.documentId(), '<=', dateId)
-        .orderBy(admin.firestore.FieldPath.documentId(), 'asc')
-        .get();
-    if (snap.empty)
-        return null;
-    const last = snap.docs[snap.docs.length - 1].data();
-    return Number(last.close);
+    const bar = await (0, barCache_1.getLatestOnOrBefore)(db, symbol, dateId);
+    return bar ? Number(bar.close) : null;
 }
 /**
  * Mark every currently-OPEN position to market at `dateId`'s close, netting the

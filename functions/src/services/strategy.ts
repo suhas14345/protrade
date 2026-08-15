@@ -6,6 +6,7 @@ import { checkSafety } from './safety';
 import { CalendarService } from './calendar';
 import { EventCalendarService } from './eventCalendar';
 import { logger } from './logger';
+import { getWindowOnOrBefore } from './barCache';
 
 const getDb = () => {
   if (admin.apps.length === 0) admin.initializeApp();
@@ -84,30 +85,12 @@ function computeGapStress(atrAtEntry: number, qty: number, price: number, riskAm
 }
 
 /**
- * Optimized Historical Bar Fetch
+ * Optimized Historical Bar Fetch — served from the shared bar reader (in-memory
+ * cache during REPLAY, identical bounded scan in live).
  */
 async function getRecentBarsOnOrBefore(db: FirebaseFirestore.Firestore, symbol: string, dateId: string, limit: number): Promise<BarDoc[]> {
-  const snap = await db.collection('barsD').doc(symbol).collection('days')
-    .where(admin.firestore.FieldPath.documentId(), '>=', keyLowerBoundDateId(dateId, limit))
-    .where(admin.firestore.FieldPath.documentId(), '<=', dateId)
-    .orderBy(admin.firestore.FieldPath.documentId(), 'asc')
-    .get();
-  if (snap.empty) return [];
-  return snap.docs.slice(-limit).map(d => ({ id: d.id, ...(d.data() as Bar) }));
-}
-
-/**
- * Lower-bound YYYYMMDD key for a bounded ascending key-range scan that is
- * guaranteed to contain at least `count` trading days. Used instead of a
- * descending key scan (unsupported by the Firestore emulator) or limitToLast
- * (which the SDK rewrites into a descending scan). Trading days are ~69% of
- * calendar days, so 1.7x + 15 always covers `count` trading days with margin.
- */
-function keyLowerBoundDateId(dateId: string, count: number): string {
-  const y = +dateId.slice(0, 4), m = +dateId.slice(4, 6) - 1, d = +dateId.slice(6, 8);
-  const dt = new Date(Date.UTC(y, m, d));
-  dt.setUTCDate(dt.getUTCDate() - Math.ceil(count * 1.7) - 15);
-  return `${dt.getUTCFullYear()}${String(dt.getUTCMonth() + 1).padStart(2, '0')}${String(dt.getUTCDate()).padStart(2, '0')}`;
+  const bars = await getWindowOnOrBefore(db, symbol, dateId, limit);
+  return bars.map((b) => ({ id: b.dateId as string, ...b }));
 }
 
 /**

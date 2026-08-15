@@ -24,6 +24,7 @@ import { doEvaluateSignals } from '../services/strategy';
 import { doManageTrades } from '../services/tradeManager';
 import { doPlaceOrders, doOpenFillSimulation } from '../services/paperBroker';
 import { recomputeAccountEquity, computeOpenUnrealized, lastCloseOnOrBefore } from '../services/portfolioEquity';
+import { clearBarCache } from '../services/barCache';
 import { INDEX_SYMBOL } from './seed';
 import { ClosedTrade, EquityPoint } from './metrics';
 
@@ -62,6 +63,8 @@ export async function runReplay(opts: ReplayOptions): Promise<ReplayResult> {
   const db = getDb();
   // Backtest mode: disables market-hours guard and data-staleness checks.
   RUNTIME_CONFIG.MODE = 'REPLAY';
+  // Fresh in-memory bar cache for this run (bars are immutable during replay).
+  clearBarCache();
 
   const { universeId, symbols, dates } = opts;
   const initial = opts.initialEquity;

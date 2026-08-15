@@ -39,6 +39,7 @@ const functionsV1 = __importStar(require("firebase-functions"));
 const admin = __importStar(require("firebase-admin"));
 const calendar_1 = require("./calendar");
 const runtime_1 = require("../config/runtime");
+const barCache_1 = require("./barCache");
 const getDb = () => {
     if (admin.apps.length === 0)
         admin.initializeApp();
@@ -64,10 +65,9 @@ async function doManageTrades(dateId, jobId) {
         const pos = doc.data();
         const symbol = pos.symbol;
         const profile = getExitProfile(pos.strategy);
-        const barSnap = await db.collection('barsD').doc(symbol).collection('days').doc(dateId).get();
-        if (!barSnap.exists)
+        const currentBar = await (0, barCache_1.getBarOn)(db, symbol, dateId);
+        if (!currentBar)
             continue;
-        const currentBar = barSnap.data();
         const currentClose = Number(currentBar.close);
         const currentHigh = Number(currentBar.high);
         const currentLow = Number(currentBar.low);

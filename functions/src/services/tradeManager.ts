@@ -3,6 +3,7 @@ import * as admin from 'firebase-admin';
 import { PaperPosition, PaperOrder } from '../models';
 import { CalendarService } from './calendar';
 import { EXIT_PROFILES } from '../config/runtime';
+import { getBarOn } from './barCache';
 
 const getDb = () => {
     if (admin.apps.length === 0) admin.initializeApp();
@@ -33,9 +34,8 @@ export async function doManageTrades(dateId: string, jobId: string) {
         const symbol = pos.symbol;
         const profile = getExitProfile(pos.strategy);
 
-        const barSnap = await db.collection('barsD').doc(symbol).collection('days').doc(dateId).get();
-        if (!barSnap.exists) continue;
-        const currentBar = barSnap.data() as any;
+        const currentBar = await getBarOn(db, symbol, dateId);
+        if (!currentBar) continue;
         const currentClose = Number(currentBar.close);
         const currentHigh = Number(currentBar.high);
         const currentLow = Number(currentBar.low);

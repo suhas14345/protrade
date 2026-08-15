@@ -25,10 +25,12 @@ describe('Features Service', () => {
 
   it('should compute features correctly for a valid symbol', async () => {
     const { mockFirestore } = global as any;
-    const mockBars = [
-      { close: 100, high: 105, low: 95, volume: 1000, timestamp: admin.firestore.Timestamp.now() },
-      { close: 110, high: 115, low: 105, volume: 1100, timestamp: admin.firestore.Timestamp.now() }
-    ];
+    // 30 bars so the >=25 guard passes; docs.length matches size (a real
+    // Firestore snapshot can never report a size that disagrees with its docs).
+    const mockBars = Array.from({ length: 30 }, (_, i) => ({
+      close: 100 + i, high: 105 + i, low: 95 + i, volume: 1000 + i * 10,
+      timestamp: admin.firestore.Timestamp.now(),
+    }));
 
     mockFirestore.get
         .mockResolvedValueOnce({ exists: false }) // Initial skip check
@@ -36,7 +38,7 @@ describe('Features Service', () => {
         .mockResolvedValueOnce({ 
           empty: false, 
           size: 30, 
-          docs: mockBars.map(b => ({ data: () => b, id: '20260321' })) 
+          docs: mockBars.map((b, i) => ({ data: () => b, id: `2026032${i % 10}` })) 
         }); // bars fetch
 
     await doComputeFeatures('test-job', 'RELIANCE.NS', '2026-03-21');
