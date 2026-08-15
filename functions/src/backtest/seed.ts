@@ -77,10 +77,14 @@ export interface SeedOptions {
  */
 export async function seedBacktest(opts: SeedOptions): Promise<{ dateId: string; isoDate: string }[]> {
   const db = getDb();
-  const dates = tradingDates(opts.startISO, opts.endISO);
 
-  // 1. Calendar (reuses the production seeder for identical prev/next semantics).
-  await CalendarService.seedCalendar(opts.startISO, opts.endISO);
+  // Real mode = caller supplied actual bars. Trading days then come from the
+  // index series itself (real NSE holidays are absent), matching production's
+  // calendar source-of-truth. Synthetic mode uses every weekday in range.
+  const realMode = !!(opts.bars && opts.bars[INDEX_SYMBOL]);
+  const dates = realMode
+    ? opts.bars![INDEX_SYMBOL].map((b) => ({ dateId: b.dateId, isoDate: b.isoDate }))
+    : tradingDates(opts.startISO, opts.endISO);
 
   // 2. Universe members (doc id === symbol; index is intentionally excluded).
   const memberOps = opts.symbols.map((sym) => (batch: FirebaseFirestore.WriteBatch) => {
@@ -118,6 +122,15 @@ export async function seedBacktest(opts: SeedOptions): Promise<{ dateId: string;
   for (const sym of opts.symbols) {
     const series = opts.bars?.[sym] ?? generateSeries(hashSeed(sym), dates);
     await writeSeries(db, sym, series);
+  }
+
+  // 5. Calendar. In real mode derive it from the seeded index bars (production
+  // source-of-truth: real trading days + non-trading gaps). In synthetic mode
+  // reuse the weekday seeder for identical prev/next semantics.
+  if (realMode) {
+    await CalendarService.syncFromIndexData(INDEX_SYMBOL);
+  } else {
+    await CalendarService.seedCalendar(opts.startISO, opts.endISO);
   }
 
   return dates;

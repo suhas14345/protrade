@@ -97,9 +97,13 @@ async function writeSeries(db, symbol, bars) {
 async function seedBacktest(opts) {
     var _a, _b, _c, _d, _e, _f;
     const db = getDb();
-    const dates = (0, syntheticData_1.tradingDates)(opts.startISO, opts.endISO);
-    // 1. Calendar (reuses the production seeder for identical prev/next semantics).
-    await calendar_1.CalendarService.seedCalendar(opts.startISO, opts.endISO);
+    // Real mode = caller supplied actual bars. Trading days then come from the
+    // index series itself (real NSE holidays are absent), matching production's
+    // calendar source-of-truth. Synthetic mode uses every weekday in range.
+    const realMode = !!(opts.bars && opts.bars[exports.INDEX_SYMBOL]);
+    const dates = realMode
+        ? opts.bars[exports.INDEX_SYMBOL].map((b) => ({ dateId: b.dateId, isoDate: b.isoDate }))
+        : (0, syntheticData_1.tradingDates)(opts.startISO, opts.endISO);
     // 2. Universe members (doc id === symbol; index is intentionally excluded).
     const memberOps = opts.symbols.map((sym) => (batch) => {
         batch.set(db.collection('universes').doc(opts.universeId).collection('members').doc(sym), {
@@ -130,6 +134,15 @@ async function seedBacktest(opts) {
     for (const sym of opts.symbols) {
         const series = (_f = (_e = opts.bars) === null || _e === void 0 ? void 0 : _e[sym]) !== null && _f !== void 0 ? _f : (0, syntheticData_1.generateSeries)(hashSeed(sym), dates);
         await writeSeries(db, sym, series);
+    }
+    // 5. Calendar. In real mode derive it from the seeded index bars (production
+    // source-of-truth: real trading days + non-trading gaps). In synthetic mode
+    // reuse the weekday seeder for identical prev/next semantics.
+    if (realMode) {
+        await calendar_1.CalendarService.syncFromIndexData(exports.INDEX_SYMBOL);
+    }
+    else {
+        await calendar_1.CalendarService.seedCalendar(opts.startISO, opts.endISO);
     }
     return dates;
 }

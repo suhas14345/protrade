@@ -49,6 +49,15 @@ const getDb = () => {
  * Captures runtime issues and logs them to Firestore for persistence and dashboard viewing.
  */
 async function log(level, message, context, metadata) {
+    // Backtest fast-path: the replay engine emits tens of thousands of log lines,
+    // and each Firestore log write is an emulator round-trip that dominates runtime.
+    // When BACKTEST_SILENCE=1 (only ever set by the backtest runner, never in
+    // production), skip all log persistence; still surface ERRORs to the console.
+    if (process.env.BACKTEST_SILENCE === '1') {
+        if (level === 'ERROR')
+            console.error(`[${context || 'SYSTEM'}] ${message}`, metadata !== null && metadata !== void 0 ? metadata : '');
+        return;
+    }
     const db = getDb();
     // Use metadata.dateId for partition if provided (Backfill support)
     // Otherwise default to current UTC date. Sanitize to YYYYMMDD.

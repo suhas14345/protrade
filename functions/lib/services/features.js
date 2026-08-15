@@ -46,6 +46,18 @@ const getDb = () => {
         admin.initializeApp();
     return admin.firestore();
 };
+/**
+ * Lower-bound YYYYMMDD key for a bounded ascending key-range scan guaranteed to
+ * contain at least `count` trading days. Trading days are ~69% of calendar days,
+ * so 1.7x + 15 always covers `count` with margin. Avoids reading the entire
+ * (growing) bar history every day.
+ */
+function keyLowerBoundDateId(dateId, count) {
+    const y = +dateId.slice(0, 4), m = +dateId.slice(4, 6) - 1, d = +dateId.slice(6, 8);
+    const dt = new Date(Date.UTC(y, m, d));
+    dt.setUTCDate(dt.getUTCDate() - Math.ceil(count * 1.7) - 15);
+    return `${dt.getUTCFullYear()}${String(dt.getUTCMonth() + 1).padStart(2, '0')}${String(dt.getUTCDate()).padStart(2, '0')}`;
+}
 async function doComputeFeatures(jobId, symbol, runDate) {
     const db = getDb();
     const dateId = runDate.replace(/-/g, '');
@@ -71,10 +83,16 @@ async function doComputeFeatures(jobId, symbol, runDate) {
         }
     }
     console.log(`[Job ${jobId}] Computing features for ${symbol} up to ${runDate}`);
-    // 1. Fetch historical bars up to the run date
+    // 1. Fetch historical bars up to the run date.
+    // Bounded ascending key-range scan: only the most recent ~200 trading days are
+    // needed (slice(-200) below). A lower bound keeps every read O(200) instead of
+    // O(full history), which matters both for the emulator replay and production.
+    // 200 trading days ≈ 200/0.69 calendar days; 1.7x + 15 gives a safe margin.
+    const barsLowerBound = keyLowerBoundDateId(dateId, 200);
     const barsSnap = await db.collection('barsD')
         .doc(symbol)
         .collection('days')
+        .where(admin.firestore.FieldPath.documentId(), '>=', barsLowerBound)
         .where(admin.firestore.FieldPath.documentId(), '<=', dateId)
         .orderBy(admin.firestore.FieldPath.documentId(), 'asc')
         .get();

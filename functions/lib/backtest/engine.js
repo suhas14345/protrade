@@ -66,6 +66,8 @@ const getDb = () => {
         admin.initializeApp();
     return admin.firestore();
 };
+/** Max concurrent per-symbol stage calls against the emulator. Override with BT_CONCURRENCY. */
+const STAGE_CONCURRENCY = Math.max(1, parseInt(process.env.BT_CONCURRENCY || '16', 10));
 /**
  * Run the day-by-day replay. Returns the equity curve and reconstructed trades.
  */
@@ -95,25 +97,19 @@ async function runReplay(opts) {
             updatedAt: firestore_1.Timestamp.now(),
         });
         // 1. Fill yesterday's ACCEPTED orders at today's open (entries and exits).
-        for (const sym of symbols) {
-            await (0, paperBroker_1.doOpenFillSimulation)(jobId, day.isoDate, sym);
-        }
+        await mapPool(symbols, STAGE_CONCURRENCY, (sym) => (0, paperBroker_1.doOpenFillSimulation)(jobId, day.isoDate, sym));
         // 1b. Reconcile today's fills into the cash ledger and closed-trade list.
         await applyFills(db, day.dateId, lots, trades, (delta) => { cash += delta; });
         // 2. Manage open positions vs today's close → queues exit orders for tomorrow.
         await (0, tradeManager_1.doManageTrades)(day.dateId, jobId);
         // 3. Features for the index and every tradable symbol.
         await safeStage(() => (0, features_1.doComputeFeatures)(jobId, seed_1.INDEX_SYMBOL, day.isoDate));
-        for (const sym of symbols) {
-            await safeStage(() => (0, features_1.doComputeFeatures)(jobId, sym, day.isoDate));
-        }
+        await mapPool(symbols, STAGE_CONCURRENCY, (sym) => safeStage(() => (0, features_1.doComputeFeatures)(jobId, sym, day.isoDate)));
         // 4. Regime, 5. RS ranking.
         await (0, regime_1.doComputeRegime)(day.isoDate, jobId, seed_1.INDEX_SYMBOL, universeId);
         await (0, rsRanking_1.doComputeRsRanking)(day.dateId, jobId, universeId);
         // 6. Signals per symbol.
-        for (const sym of symbols) {
-            await safeStage(() => (0, strategy_1.doEvaluateSignals)(jobId, sym, day.isoDate, undefined, universeId));
-        }
+        await mapPool(symbols, STAGE_CONCURRENCY, (sym) => safeStage(() => (0, strategy_1.doEvaluateSignals)(jobId, sym, day.isoDate, undefined, universeId)));
         // 7. Approved signals → ACCEPTED entry orders (filled tomorrow at open).
         await (0, paperBroker_1.doPlaceOrders)(day.dateId, jobId);
         // 8. Mark to market at today's close and record equity.
@@ -146,6 +142,25 @@ async function safeStage(fn) {
         if (!/insufficient|not enough|Needs 25|No bars|missing/i.test(msg))
             throw e;
     }
+}
+/**
+ * Run `fn` over `items` with bounded concurrency. The per-symbol stages
+ * (fill sim, feature compute, signal eval) are independent within a stage —
+ * each reads/writes only its own symbol's documents — so parallelising them
+ * changes only wall-clock time, not results. Aggregate stages (regime, RS
+ * ranking, order placement) stay sequential and run after these complete.
+ */
+async function mapPool(items, concurrency, fn) {
+    let next = 0;
+    const workers = Array.from({ length: Math.min(concurrency, items.length) }, async () => {
+        while (true) {
+            const idx = next++;
+            if (idx >= items.length)
+                return;
+            await fn(items[idx]);
+        }
+    });
+    await Promise.all(workers);
 }
 /**
  * Read the day's fills, join each to its order (for side), update cash and the

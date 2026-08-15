@@ -32,6 +32,9 @@ const getDb = () => {
   return admin.firestore();
 };
 
+/** Max concurrent per-symbol stage calls against the emulator. Override with BT_CONCURRENCY. */
+const STAGE_CONCURRENCY = Math.max(1, parseInt(process.env.BT_CONCURRENCY || '16', 10));
+
 interface OpenLot {
   direction: 'BUY' | 'SELL';
   qty: number;
@@ -91,9 +94,7 @@ export async function runReplay(opts: ReplayOptions): Promise<ReplayResult> {
     });
 
     // 1. Fill yesterday's ACCEPTED orders at today's open (entries and exits).
-    for (const sym of symbols) {
-      await doOpenFillSimulation(jobId, day.isoDate, sym);
-    }
+    await mapPool(symbols, STAGE_CONCURRENCY, (sym) => doOpenFillSimulation(jobId, day.isoDate, sym));
     // 1b. Reconcile today's fills into the cash ledger and closed-trade list.
     await applyFills(db, day.dateId, lots, trades, (delta) => { cash += delta; });
 
@@ -102,18 +103,14 @@ export async function runReplay(opts: ReplayOptions): Promise<ReplayResult> {
 
     // 3. Features for the index and every tradable symbol.
     await safeStage(() => doComputeFeatures(jobId, INDEX_SYMBOL, day.isoDate));
-    for (const sym of symbols) {
-      await safeStage(() => doComputeFeatures(jobId, sym, day.isoDate));
-    }
+    await mapPool(symbols, STAGE_CONCURRENCY, (sym) => safeStage(() => doComputeFeatures(jobId, sym, day.isoDate)));
 
     // 4. Regime, 5. RS ranking.
     await doComputeRegime(day.isoDate, jobId, INDEX_SYMBOL, universeId);
     await doComputeRsRanking(day.dateId, jobId, universeId);
 
     // 6. Signals per symbol.
-    for (const sym of symbols) {
-      await safeStage(() => doEvaluateSignals(jobId, sym, day.isoDate, undefined, universeId));
-    }
+    await mapPool(symbols, STAGE_CONCURRENCY, (sym) => safeStage(() => doEvaluateSignals(jobId, sym, day.isoDate, undefined, universeId)));
 
     // 7. Approved signals → ACCEPTED entry orders (filled tomorrow at open).
     await doPlaceOrders(day.dateId, jobId);
@@ -149,6 +146,25 @@ async function safeStage(fn: () => Promise<unknown>): Promise<void> {
     const msg = e instanceof Error ? e.message : String(e);
     if (!/insufficient|not enough|Needs 25|No bars|missing/i.test(msg)) throw e;
   }
+}
+
+/**
+ * Run `fn` over `items` with bounded concurrency. The per-symbol stages
+ * (fill sim, feature compute, signal eval) are independent within a stage —
+ * each reads/writes only its own symbol's documents — so parallelising them
+ * changes only wall-clock time, not results. Aggregate stages (regime, RS
+ * ranking, order placement) stay sequential and run after these complete.
+ */
+async function mapPool<T>(items: T[], concurrency: number, fn: (item: T) => Promise<void>): Promise<void> {
+  let next = 0;
+  const workers = Array.from({ length: Math.min(concurrency, items.length) }, async () => {
+    while (true) {
+      const idx = next++;
+      if (idx >= items.length) return;
+      await fn(items[idx]);
+    }
+  });
+  await Promise.all(workers);
 }
 
 /**

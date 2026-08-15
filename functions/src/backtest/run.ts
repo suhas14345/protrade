@@ -29,6 +29,7 @@ admin.firestore().settings({ ignoreUndefinedProperties: true });
 import { seedBacktest } from './seed';
 import { runReplay } from './engine';
 import { computeMetrics, formatReport } from './metrics';
+import { loadRealBars } from './loadRealBars';
 
 interface Args {
   start: string;
@@ -38,6 +39,8 @@ interface Args {
   equity: number;
   universe: string;
   clear: boolean;
+  real: boolean;
+  dataDir: string;
 }
 
 function parseArgs(argv: string[]): Args {
@@ -53,6 +56,8 @@ function parseArgs(argv: string[]): Args {
     equity: parseInt(get('equity', '1000000')!, 10),
     universe: get('universe', 'nifty500')!,
     clear: argv.includes('--clear'),
+    real: argv.includes('--real'),
+    dataDir: get('data', 'c:\\openapi\\sm-experiment\\data')!,
   };
 }
 
@@ -78,7 +83,24 @@ async function main(): Promise<void> {
     await clearState(db);
   }
 
-  const symbols = Array.from({ length: args.symbols }, (_, i) => `SYNTH${String(i + 1).padStart(3, '0')}`);
+  let symbols: string[];
+  let bars: Record<string, import('./syntheticData').SyntheticBar[]> | undefined;
+
+  if (args.real) {
+    console.log(`[backtest] loading REAL data from ${args.dataDir} (cap ${args.symbols} symbols)...`);
+    const loaded = loadRealBars({
+      dataDir: args.dataDir,
+      startISO: args.start,
+      endISO: args.end,
+      maxSymbols: args.symbols,
+    });
+    symbols = loaded.symbols;
+    bars = loaded.bars;
+    const idxLen = bars['^NSEI']?.length ?? 0;
+    console.log(`[backtest] loaded ${symbols.length} symbols + ^NSEI (${idxLen} index bars)`);
+  } else {
+    symbols = Array.from({ length: args.symbols }, (_, i) => `SYNTH${String(i + 1).padStart(3, '0')}`);
+  }
 
   console.log('[backtest] seeding...');
   const dates = await seedBacktest({
@@ -87,9 +109,9 @@ async function main(): Promise<void> {
     startISO: args.start,
     endISO: args.end,
     initialEquity: args.equity,
+    bars,
   });
   console.log(`[backtest] seeded ${dates.length} trading days, ${symbols.length} symbols + index`);
-
   if (args.warmup >= dates.length) {
     throw new Error(`warmup (${args.warmup}) >= trading days (${dates.length}); widen the date range.`);
   }

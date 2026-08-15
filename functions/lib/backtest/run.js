@@ -62,6 +62,7 @@ admin.firestore().settings({ ignoreUndefinedProperties: true });
 const seed_1 = require("./seed");
 const engine_1 = require("./engine");
 const metrics_1 = require("./metrics");
+const loadRealBars_1 = require("./loadRealBars");
 function parseArgs(argv) {
     const get = (name, def) => {
         const idx = argv.indexOf(`--${name}`);
@@ -75,6 +76,8 @@ function parseArgs(argv) {
         equity: parseInt(get('equity', '1000000'), 10),
         universe: get('universe', 'nifty500'),
         clear: argv.includes('--clear'),
+        real: argv.includes('--real'),
+        dataDir: get('data', 'c:\\openapi\\sm-experiment\\data'),
     };
 }
 /** Delete a handful of collections so repeated runs start clean. */
@@ -87,6 +90,7 @@ async function clearState(db) {
     await db.collection('portfolio').doc('default').collection('positions').get().then((s) => Promise.all(s.docs.map((d) => d.ref.delete())));
 }
 async function main() {
+    var _a, _b;
     const args = parseArgs(process.argv.slice(2));
     const db = admin.firestore();
     console.log(`[backtest] emulator=${EMULATOR_HOST} project=${process.env.GCLOUD_PROJECT}`);
@@ -95,7 +99,24 @@ async function main() {
         console.log('[backtest] clearing prior state...');
         await clearState(db);
     }
-    const symbols = Array.from({ length: args.symbols }, (_, i) => `SYNTH${String(i + 1).padStart(3, '0')}`);
+    let symbols;
+    let bars;
+    if (args.real) {
+        console.log(`[backtest] loading REAL data from ${args.dataDir} (cap ${args.symbols} symbols)...`);
+        const loaded = (0, loadRealBars_1.loadRealBars)({
+            dataDir: args.dataDir,
+            startISO: args.start,
+            endISO: args.end,
+            maxSymbols: args.symbols,
+        });
+        symbols = loaded.symbols;
+        bars = loaded.bars;
+        const idxLen = (_b = (_a = bars['^NSEI']) === null || _a === void 0 ? void 0 : _a.length) !== null && _b !== void 0 ? _b : 0;
+        console.log(`[backtest] loaded ${symbols.length} symbols + ^NSEI (${idxLen} index bars)`);
+    }
+    else {
+        symbols = Array.from({ length: args.symbols }, (_, i) => `SYNTH${String(i + 1).padStart(3, '0')}`);
+    }
     console.log('[backtest] seeding...');
     const dates = await (0, seed_1.seedBacktest)({
         universeId: args.universe,
@@ -103,6 +124,7 @@ async function main() {
         startISO: args.start,
         endISO: args.end,
         initialEquity: args.equity,
+        bars,
     });
     console.log(`[backtest] seeded ${dates.length} trading days, ${symbols.length} symbols + index`);
     if (args.warmup >= dates.length) {

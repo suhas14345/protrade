@@ -23,6 +23,15 @@ export interface LogEntry {
  * Captures runtime issues and logs them to Firestore for persistence and dashboard viewing.
  */
 export async function log(level: LogLevel, message: string, context?: string, metadata?: any) {
+  // Backtest fast-path: the replay engine emits tens of thousands of log lines,
+  // and each Firestore log write is an emulator round-trip that dominates runtime.
+  // When BACKTEST_SILENCE=1 (only ever set by the backtest runner, never in
+  // production), skip all log persistence; still surface ERRORs to the console.
+  if (process.env.BACKTEST_SILENCE === '1') {
+    if (level === 'ERROR') console.error(`[${context || 'SYSTEM'}] ${message}`, metadata ?? '');
+    return;
+  }
+
   const db = getDb();
   
   // Use metadata.dateId for partition if provided (Backfill support)

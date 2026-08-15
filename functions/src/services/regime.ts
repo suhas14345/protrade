@@ -183,6 +183,7 @@ export async function doComputeRegime(date: string, jobId?: string, providedInde
 
   // Default: safest stance when something is missing is "no trade"
   let marketState: Regime['marketState'] = 'TRANSITION';
+  let rawState: Regime['marketState'] = 'TRANSITION'; // raw computed regime, pre-hysteresis (drives confirmation counting)
   let riskMultiplier = 0.0;
   let notes = `Computing regime for ${indexSymbol} on ${date} (using ${effectiveDateId})`;
   let breadth: { pctAboveEMA50: number; pctAboveEMA200: number; newHighs20: number; newLows20: number; universeMedianRet20d?: number; universeMedianRet60d?: number } = { pctAboveEMA50: 0, pctAboveEMA200: 0, newHighs20: 0, newLows20: 0 };
@@ -260,40 +261,52 @@ export async function doComputeRegime(date: string, jobId?: string, providedInde
       }
     }
 
-    // V3.0: Regime hysteresis — check previous regime for stability.
-    // Bounded ascending key-range scan then take the most-recent N in memory
+    // V3.0: Regime hysteresis — require N consecutive bars of a NEW regime before
+    // adopting it. Confirmation MUST be counted from the raw computed regime
+    // (`rawState`), not from the persisted `marketState`: while a change is pending
+    // we overwrite `marketState` with TRANSITION, so counting from it can never
+    // accumulate and the system dead-locks permanently in TRANSITION (no-trade).
+    // Bounded ascending key-range scan then inspect the most-recent bars in memory
     // (the emulator rejects descending key scans / limitToLast).
     const { REGIME_HARDENING: RH } = await import('../config/runtime');
-    const need = RH.HYSTERESIS_BARS + 1;
+    const rawComputedState = marketState;
+    rawState = rawComputedState;
+    // Look back far enough to both (a) confirm HYSTERESIS_BARS and (b) reach the
+    // last confirmed (non-TRANSITION) regime even after a run of pending bars.
+    const lookbackBars = Math.max(RH.HYSTERESIS_BARS * 4, 12);
     const lbDate = new Date(Date.UTC(+effectiveDateId.slice(0, 4), +effectiveDateId.slice(4, 6) - 1, +effectiveDateId.slice(6, 8)));
-    lbDate.setUTCDate(lbDate.getUTCDate() - Math.ceil(need * 1.7) - 15);
+    lbDate.setUTCDate(lbDate.getUTCDate() - Math.ceil(lookbackBars * 1.7) - 15);
     const regimeLowerBound = `${lbDate.getUTCFullYear()}${String(lbDate.getUTCMonth() + 1).padStart(2, '0')}${String(lbDate.getUTCDate()).padStart(2, '0')}`;
     const prevRegimeSnap = await db.collection('regime')
       .where(admin.firestore.FieldPath.documentId(), '>=', regimeLowerBound)
       .where(admin.firestore.FieldPath.documentId(), '<', effectiveDateId)
       .orderBy(admin.firestore.FieldPath.documentId(), 'asc')
       .get();
-    let consecutiveSameRegime = 0;
-    let prevRegimeState = '';
-    for (const doc of prevRegimeSnap.docs.slice(-need).reverse()) {
-      if (doc.id >= effectiveDateId) continue;
-      const prev = doc.data();
-      if (!prevRegimeState) prevRegimeState = prev.marketState;
-      if (prev.marketState === marketState) {
-        consecutiveSameRegime++;
-      } else break;
+    const priorDocs = prevRegimeSnap.docs.filter((d) => d.id < effectiveDateId);
+
+    // Most-recent effective regime that was actually adopted (not TRANSITION).
+    let lastConfirmedState = '';
+    for (let i = priorDocs.length - 1; i >= 0; i--) {
+      const s = priorDocs[i].data().marketState;
+      if (s && s !== 'TRANSITION') { lastConfirmedState = s; break; }
     }
-    
-    // If new regime doesn't have enough confirmation bars, use TRANSITION
-    if (prevRegimeState && prevRegimeState !== marketState && consecutiveSameRegime < RH.HYSTERESIS_BARS - 1) {
-      const originalState = marketState;
+    // Consecutive trailing bars whose RAW computed regime equals today's raw regime.
+    let rawRun = 0;
+    for (let i = priorDocs.length - 1; i >= 0; i--) {
+      const rs = priorDocs[i].data().rawState || priorDocs[i].data().marketState;
+      if (rs === rawComputedState) rawRun++; else break;
+    }
+
+    // If the new regime differs from the last confirmed one and hasn't yet been
+    // seen for HYSTERESIS_BARS consecutive bars (today included), stay in TRANSITION.
+    if (lastConfirmedState && lastConfirmedState !== rawComputedState && rawRun < RH.HYSTERESIS_BARS - 1) {
       marketState = 'TRANSITION';
       riskMultiplier = 0.5;
-      notes = `Regime change ${prevRegimeState}→${originalState} pending (${consecutiveSameRegime+1}/${RH.HYSTERESIS_BARS} bars confirmed). Using TRANSITION.`;
+      notes = `Regime change ${lastConfirmedState}→${rawComputedState} pending (${rawRun + 1}/${RH.HYSTERESIS_BARS} bars confirmed). Using TRANSITION.`;
     }
-    
-    // V3.0: Persistence score
-    persistenceDays = prevRegimeState === marketState ? consecutiveSameRegime + 1 : 1;
+
+    // V3.0: Persistence score — how long the (now effective) regime has held.
+    persistenceDays = lastConfirmedState === marketState ? rawRun + 1 : 1;
   } else {
     const errorParts = [];
     if (!indexFeatSnap) {
@@ -337,6 +350,7 @@ export async function doComputeRegime(date: string, jobId?: string, providedInde
     },
     breadth,
     // V3.0: Persistence and hysteresis tracking
+    rawState,
     persistenceDays,
     regimeConfirmed: marketState !== 'TRANSITION',
   };

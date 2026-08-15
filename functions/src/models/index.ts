@@ -114,6 +114,7 @@ export interface Regime {
   };
   persistenceDays?: number;
   regimeConfirmed?: boolean;
+  rawState?: 'TREND' | 'RANGE' | 'HIGH_VOL' | 'TRANSITION' | 'BEAR'; // raw computed regime pre-hysteresis; drives confirmation counting
 }
 
 export interface Signal {
