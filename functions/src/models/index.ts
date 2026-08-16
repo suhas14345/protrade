@@ -86,6 +86,14 @@ export interface Features {
   rsScore?: number;           // 0-99, filled by RS ranking pass after all features done
   vduActive?: boolean;        // Volume Dry-Up flag: institutional patience on pullback
   gapRiskScore?: number;      // 0-100 percentile: how gappy this stock is historically
+  // SEPA (Minervini) fields — only populated when SEPA_CONFIG.SEPA_ONLY is true.
+  sma50?: number;
+  sma150?: number;
+  sma200?: number;
+  sma200Rising?: boolean;     // 200-SMA higher than it was SMA200_SLOPE_LOOKBACK bars ago
+  high252?: number;           // 52-week high of close
+  ret126?: number;            // 126-day momentum (close/close[-126] - 1)
+  rsRank126?: number;         // cross-sectional rank by ret126 (1 = strongest), set by RS pass
   patterns?: string[];
   computedAt: FirebaseFirestore.Timestamp;
 }
@@ -120,7 +128,7 @@ export interface Regime {
 export interface Signal {
   symbol: string;
   direction: 'BUY' | 'SELL';
-  strategy: 'PullbackEOD' | 'BreakoutCloseEOD' | 'ShortBounceEOD' | 'MeanReversionEOD' | 'BearBounceEOD' | 'RSLeaderEOD';
+  strategy: 'PullbackEOD' | 'BreakoutCloseEOD' | 'ShortBounceEOD' | 'MeanReversionEOD' | 'BearBounceEOD' | 'RSLeaderEOD' | 'SepaBreakoutEOD';
   score: number;
   entryPlan: {
     type: 'NEXT_OPEN';
@@ -242,6 +250,9 @@ export interface PaperPosition {
   trailingStopPrice?: number;      // Current trailing stop level
   worstCaseGapLoss?: number;       // Estimated loss under gap stress scenario (INR)
   worstCaseGapLossR?: number;      // Same in R-multiple units
+  // SEPA trailing state (only used by SepaBreakoutEOD positions)
+  sepaHH?: number;                 // highest close observed since entry
+  sepaLockActive?: boolean;        // trailing lock armed once gain >= LOCK_AT_PCT
 
   // V3.1: fee/qty basis needed to attribute entry cost across (partial) exits
   entryFee?: number;               // total fee paid on entry fill

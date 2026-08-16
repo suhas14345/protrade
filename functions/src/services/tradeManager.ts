@@ -2,7 +2,7 @@ import * as functionsV1 from 'firebase-functions';
 import * as admin from 'firebase-admin';
 import { PaperPosition, PaperOrder } from '../models';
 import { CalendarService } from './calendar';
-import { EXIT_PROFILES } from '../config/runtime';
+import { EXIT_PROFILES, SEPA_CONFIG } from '../config/runtime';
 import { getBarOn } from './barCache';
 
 const getDb = () => {
@@ -29,6 +29,24 @@ export async function doManageTrades(dateId: string, jobId: string) {
 
     if (positionsSnap.empty) return;
 
+    // SEPA regime-off liquidation reads the PREVIOUS trading day's regime: within
+    // a day's pipeline doManageTrades runs BEFORE doComputeRegime, so regime/{today}
+    // does not exist yet — reading it would look "off" every day and dump the whole
+    // book daily. Use the last regime that actually exists. A genuinely missing prior
+    // regime (e.g. first managed day) is treated as NOT off, so we never force-
+    // liquidate on absent data — only on a confirmed index-uptrend break.
+    let sepaRegimeOff = false;
+    if (SEPA_CONFIG.SEPA_ONLY) {
+        const regimeDateId = (await CalendarService.getPrevTradingDateId(dateId)) || dateId;
+        const regimeSnap = await db.collection('regime').doc(regimeDateId).get();
+        const rd: any = regimeSnap.exists ? regimeSnap.data() : null;
+        const rm: any = rd?.metrics;
+        if (rm) {
+            const indexUp = Number(rm.close) > Number(rm.ema200) && Number(rm.ema200Slope ?? 0) > 0 && rd?.marketState !== 'BEAR';
+            sepaRegimeOff = !indexUp;
+        }
+    }
+
     for (const doc of positionsSnap.docs) {
         const pos = doc.data() as PaperPosition;
         const symbol = pos.symbol;
@@ -39,6 +57,41 @@ export async function doManageTrades(dateId: string, jobId: string) {
         const currentClose = Number(currentBar.close);
         const currentHigh = Number(currentBar.high);
         const currentLow = Number(currentBar.low);
+
+        // SEPA percent-based exit: 7% hard-stop floor, arm a 20%-below-highest-close
+        // trailing lock (never below the 50-SMA) once up LOCK_AT_PCT, ratcheting up
+        // only; plus a regime-off liquidation that dumps every SEPA position when the
+        // index breaks its uptrend. Bypasses the ATR/target/time/partial logic below.
+        if (pos.strategy === 'SepaBreakoutEOD') {
+            const entry = pos.avgEntryPrice;
+            const hh = Math.max(pos.sepaHH ?? entry, currentClose);
+            const gain = entry > 0 ? currentClose / entry - 1 : 0;
+            const lockActive = (pos.sepaLockActive || false) || gain >= SEPA_CONFIG.LOCK_AT_PCT;
+
+            let stop = entry * (1 - SEPA_CONFIG.HARD_STOP_PCT);
+            if (lockActive) {
+                let trail = hh * (1 - SEPA_CONFIG.TRAIL_PCT);
+                const featSnap = await db.collection('features').doc(symbol).collection('days').doc(dateId).get();
+                const sma50 = featSnap.exists ? Number((featSnap.data() as any)?.sma50) : NaN;
+                if (Number.isFinite(sma50) && sma50 > 0) trail = Math.max(trail, sma50);
+                stop = Math.max(stop, trail);
+            }
+            stop = Math.max(stop, pos.stopPrice ?? stop); // ratchet up only
+
+            await doc.ref.update({
+                sepaHH: hh,
+                sepaLockActive: lockActive,
+                stopPrice: stop,
+                lastUpdatedAt: admin.firestore.Timestamp.now(),
+            });
+
+            let sepaExit = false;
+            let sepaType: PaperOrder['exitType'] = undefined;
+            if (sepaRegimeOff) { sepaExit = true; sepaType = 'EXIT_THESIS'; }
+            else if (currentClose <= stop) { sepaExit = true; sepaType = 'EXIT_STOP'; }
+            if (sepaExit) await queueExitOrder(db, pos, doc.ref.path, sepaType!, dateId, jobId);
+            continue;
+        }
 
         const atrAtEntry = pos.atrAtEntry || 1.0;
         const priceDiff = pos.direction === 'BUY'

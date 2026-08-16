@@ -76,8 +76,10 @@ async function doComputeFeatures(jobId, symbol, runDate) {
     //    reader. In REPLAY it is served from an in-memory cache (one Firestore read
     //    per symbol for the whole run); in live it runs the identical bounded scan.
     //    200 trading days gives indicator stability; the current closed bar is the
-    //    signal bar (signals fire for NEXT_OPEN entry).
-    const bars = await (0, barCache_1.getWindowOnOrBefore)(db, symbol, dateId, 200);
+    //    signal bar (signals fire for NEXT_OPEN entry). SEPA needs a longer window
+    //    (52-week high + 200-SMA slope), so widen it only when SEPA_ONLY is on.
+    const win = runtime_1.SEPA_CONFIG.SEPA_ONLY ? runtime_1.SEPA_CONFIG.FEATURE_WINDOW : 200;
+    const bars = await (0, barCache_1.getWindowOnOrBefore)(db, symbol, dateId, win);
     if (bars.length < 25) {
         const errorMsg = `[Features Fail] Insufficient data for ${symbol}. Found ${bars.length} bars. Needs 25.`;
         console.error(errorMsg);
@@ -114,6 +116,25 @@ async function doComputeFeatures(jobId, symbol, runDate) {
     // 3. Advanced Market Structure (Swing H/L and S/R)
     const swings = calculateSwings(bars, 3); // 3-bar fractal
     const srZones = identifySRZones(swings);
+    // SEPA (Minervini) fields — computed only when enabled so default behaviour is unchanged.
+    let sepaFields = {};
+    if (runtime_1.SEPA_CONFIG.SEPA_ONLY) {
+        const avg = (arr) => (arr.length > 0 ? arr.reduce((a, b) => a + b, 0) / arr.length : currentClose);
+        const sma = (n) => avg(closes.length >= n ? closes.slice(-n) : closes);
+        const sma50 = sma(50);
+        const sma150 = sma(150);
+        const sma200 = sma(200);
+        // 200-SMA slope: compare the current 200-SMA to the 200-SMA some bars ago.
+        const lb = runtime_1.SEPA_CONFIG.SMA200_SLOPE_LOOKBACK;
+        let sma200Rising = false;
+        if (closes.length >= 200 + lb) {
+            const past200 = avg(closes.slice(-(200 + lb), -lb));
+            sma200Rising = sma200 > past200;
+        }
+        const high252 = Math.max(...closes.slice(-252));
+        const ret126 = closes.length >= 127 ? (closes[closes.length - 1] / closes[closes.length - 127]) - 1 : 0;
+        sepaFields = { sma50, sma150, sma200, sma200Rising, high252, ret126 };
+    }
     // 4. Refined Trend State
     let trendState = 'RANGE';
     const lastSwingHigh = swings.highs.length > 0 ? swings.highs[swings.highs.length - 1].price : 0;
@@ -126,46 +147,31 @@ async function doComputeFeatures(jobId, symbol, runDate) {
     else if (ema20 < ema50 && currentClose < ema20 && lastSwingHigh < prevSwingHigh && lastSwingLow < prevSwingLow) {
         trendState = 'DOWN';
     }
-    const featureDoc = {
-        ema20,
+    const featureDoc = Object.assign({ ema20,
         ema50,
         ema200,
         rsi14,
         atr14,
         atrp,
-        atrpMa100,
-        atrPct: atrp,
-        bbMid: bb.middle,
-        bbLower: bb.lower,
-        bbUpper: bb.upper,
+        atrpMa100, atrPct: atrp, bbMid: bb.middle, bbLower: bb.lower, bbUpper: bb.upper, 
         // V2.4: Rolling 20-day high/low for breadth computation
-        high20: Math.max(...closes.slice(-20)),
-        low20: Math.min(...closes.slice(-20)),
-        volSma20: bars.slice(-20).reduce((a, b) => a + (b.volume || 0), 0) / Math.min(20, bars.length),
-        trendState,
-        computedAt: firestore_1.Timestamp.now(),
-        swing: {
+        high20: Math.max(...closes.slice(-20)), low20: Math.min(...closes.slice(-20)), volSma20: bars.slice(-20).reduce((a, b) => a + (b.volume || 0), 0) / Math.min(20, bars.length), trendState, computedAt: firestore_1.Timestamp.now(), swing: {
             lastSwingHigh,
             lastSwingLow
-        },
-        srZones,
-        returns: {
+        }, srZones, returns: {
             ret1d: closes.length >= 2 ? (closes[closes.length - 1] / closes[closes.length - 2]) - 1 : 0,
             ret5d: closes.length >= 6 ? (closes[closes.length - 1] / closes[closes.length - 6]) - 1 : 0,
             ret20d: closes.length >= 21 ? (closes[closes.length - 1] / closes[closes.length - 21]) - 1 : 0,
             ret60d: closes.length >= 61 ? (closes[closes.length - 1] / closes[closes.length - 61]) - 1 : 0, // V2.2
-        },
-        barsCount: bars.length,
+        }, barsCount: bars.length, 
         // V2.2: Computed liquidity bucket from median traded value
-        liquidity: computeLiquidity(bars),
+        liquidity: computeLiquidity(bars), 
         // V2.2: Volume Dry-Up flag
-        vduActive: computeVDU(bars),
+        vduActive: computeVDU(bars), 
         // V2.2: Gap risk score (0-100 percentile)
-        gapRiskScore: computeGapRiskScore(bars, atr14),
+        gapRiskScore: computeGapRiskScore(bars, atr14), 
         // rsScore is null here — filled by RS ranking pass after all features are done
-        rsScore: undefined,
-        patterns: [],
-    };
+        rsScore: undefined, patterns: [] }, sepaFields);
     await db.collection('features').doc(symbol).collection('days').doc(dateId).set(featureDoc);
     await logger_1.logger.info(`Features computed for ${symbol}: Trend=${trendState}, RSI=${rsi14.toFixed(2)}`, 'Features', { jobId, symbol });
 }

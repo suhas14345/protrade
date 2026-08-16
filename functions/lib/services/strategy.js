@@ -335,6 +335,89 @@ async function doRiskApproval(signal, account, regime, openPositions, sessionApp
     };
 }
 /**
+ * SEPA (Minervini) faithful entry evaluator. Runs ONLY when SEPA_CONFIG.SEPA_ONLY
+ * is true and fully replaces the multi-strategy logic. Pillars: index-regime gate,
+ * trend template (close>50>150>200 SMA, 200 rising), within HI_PROX of the 52-week
+ * high, RS leadership (top RS_TOP by 126-day momentum), 7% hard stop, risk-based
+ * sizing, and a tight equity-curve throttle. Writes an APPROVED SepaBreakoutEOD
+ * signal; the percent lock/trail exit and regime-off liquidation live in tradeManager.
+ */
+async function evaluateSepaSignal(db, jobId, symbol, dateId, features, regime, account, openPositions) {
+    var _a;
+    // 1. Index-regime gate — only buy leaders while the index is in a confirmed uptrend.
+    const m = regime.metrics;
+    const indexUp = !!m && Number(m.close) > Number(m.ema200) && Number((_a = m.ema200Slope) !== null && _a !== void 0 ? _a : 0) > 0 && regime.marketState !== 'BEAR';
+    if (!indexUp)
+        return;
+    // 2. Equity-curve throttle — no new buys once drawdown-from-peak exceeds the halt.
+    const peak = account.peakEquity || account.equity;
+    const drawdownPct = peak > 0 ? (peak - account.equity) / peak : 0;
+    if (drawdownPct >= runtime_1.SEPA_CONFIG.THROTTLE_HALT_PCT)
+        return;
+    // 3. Portfolio cap (final selection of the strongest leaders is enforced in doPlaceOrders).
+    if (openPositions.length >= runtime_1.SEPA_CONFIG.MAX_POS)
+        return;
+    // 4. Feature availability.
+    const sma50 = Number(features.sma50);
+    const sma150 = Number(features.sma150);
+    const sma200 = Number(features.sma200);
+    const high252 = Number(features.high252);
+    const rsRank126 = Number(features.rsRank126);
+    if (![sma50, sma150, sma200, high252, rsRank126].every(Number.isFinite))
+        return;
+    const bars = await getRecentBarsOnOrBefore(db, symbol, dateId, 1);
+    if (bars.length === 0)
+        return;
+    const close = Number(bars[bars.length - 1].close);
+    if (!Number.isFinite(close) || close <= 0)
+        return;
+    // 5. Trend template + near-52w-high + RS leadership.
+    const trendTemplate = close > sma50 && sma50 > sma150 && sma150 > sma200 && features.sma200Rising === true;
+    const nearHigh = close >= high252 * (1 - runtime_1.SEPA_CONFIG.HI_PROX);
+    const rsLeader = rsRank126 <= runtime_1.SEPA_CONFIG.RS_TOP;
+    if (!(trendTemplate && nearHigh && rsLeader))
+        return;
+    // 6. Sizing — risk RISK_PCT of equity against the 7% hard stop, throttled by the
+    //    drawdown-multiplier ladder.
+    const { multiplier: ddMult, shouldHalt } = computeDrawdownMultiplier(account);
+    if (shouldHalt)
+        return;
+    const stopDistance = close * runtime_1.SEPA_CONFIG.HARD_STOP_PCT;
+    const riskAmount = account.equity * runtime_1.SEPA_CONFIG.RISK_PCT * ddMult;
+    const sizedQty = Math.floor(riskAmount / stopDistance);
+    if (sizedQty <= 0)
+        return;
+    // 7. Build the APPROVED signal. The 7% hard stop is expressed as atrRef*stopAtrMult
+    //    so the existing fill path sets position.stopPrice = fill - stopDistance; a huge
+    //    targetAtrMult means no fixed target (the position rides the trailing lock).
+    const signal = {
+        symbol,
+        direction: 'BUY',
+        strategy: 'SepaBreakoutEOD',
+        score: 100,
+        features,
+        entryPlan: { type: 'NEXT_OPEN' },
+        indicativeStopPrice: close - stopDistance,
+        indicativeTargets: [],
+        indicativeRr: 0,
+        checklist: { regime: true, trendTemplate: true, nearHigh: true, rsLeader: true },
+        reasons: {
+            marketState: regime.marketState,
+            rsRank126,
+            pctFrom52wHigh: (((close - high252) / high252) * 100).toFixed(1) + '%',
+            drawdownPct: (drawdownPct * 100).toFixed(1) + '%',
+        },
+        status: 'APPROVED',
+        atrRef: stopDistance,
+        stopAtrMult: 1,
+        targetAtrMult: 1000,
+        riskApproval: { status: 'APPROVED', sizedQty, riskAmount },
+    };
+    const signalId = `${symbol}_${dateId}_SepaBreakoutEOD`;
+    await db.collection('signals').doc(dateId).collection('items').doc(signalId).set(signal);
+    await logger_1.logger.info(`[Strategy] SEPA APPROVED ${symbol} rank126=${rsRank126} qty=${sizedQty}`, 'Strategy', { jobId, symbol, dateId });
+}
+/**
  * Evaluate strategies and generate signals for a symbol.
  */
 async function doEvaluateSignals(jobId, symbol, runDate, forceRegime, universeId = 'nifty500') {
@@ -368,6 +451,12 @@ async function doEvaluateSignals(jobId, symbol, runDate, forceRegime, universeId
         const regime = regimeSnap.data();
         const account = accountSnap.data();
         const openPositions = openPositionsSnap.docs.map(d => d.data());
+        // SEPA faithful port: when enabled, run ONLY the SEPA evaluator and skip the
+        // entire multi-strategy path below (it does its own regime/RS/stop gating).
+        if (runtime_1.SEPA_CONFIG.SEPA_ONLY) {
+            await evaluateSepaSignal(db, jobId, symbol, dateId, features, regime, account, openPositions);
+            return;
+        }
         // V2.4: Feature validation — fail-closed if critical indicators missing
         if (!Number.isFinite(Number(features.ema20)) || !Number.isFinite(Number(features.atr14)) || Number(features.atr14) <= 0) {
             status = 'SKIPPED';

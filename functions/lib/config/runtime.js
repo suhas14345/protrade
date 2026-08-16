@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.SECURITY_CONFIG = exports.REGIME_RSI_THRESHOLDS = exports.BEAR_STRATEGY_CONFIG = exports.RS_STRATEGY_THRESHOLDS = exports.STRATEGY_MIN_SCORES = exports.REGIME_HARDENING = exports.DATA_VALIDATION = exports.INDIAN_FEE_CONFIG = exports.MARKET_HOURS = exports.ORCH_CONFIG = exports.GAP_STRESS_CONFIG = exports.VOL_TARGET_CONFIG = exports.SHORT_CONFIG = exports.ADV_LIMITS = exports.EVENT_CONFIG = exports.EXIT_PROFILES = exports.RISK_LIMITS = exports.SLIPPAGE_CONFIG = exports.DRAWDOWN_CONFIG = exports.GAP_RISK_CONFIG = exports.VDU_CONFIG = exports.RS_CONFIG = exports.CORR_CONFIG = exports.STRATEGY_V11 = exports.RUNTIME_CONFIG = void 0;
+exports.SECURITY_CONFIG = exports.REGIME_RSI_THRESHOLDS = exports.BEAR_STRATEGY_CONFIG = exports.RS_STRATEGY_THRESHOLDS = exports.STRATEGY_MIN_SCORES = exports.REGIME_HARDENING = exports.DATA_VALIDATION = exports.INDIAN_FEE_CONFIG = exports.MARKET_HOURS = exports.ORCH_CONFIG = exports.GAP_STRESS_CONFIG = exports.VOL_TARGET_CONFIG = exports.SHORT_CONFIG = exports.ADV_LIMITS = exports.EVENT_CONFIG = exports.EXIT_PROFILES = exports.RISK_LIMITS = exports.SLIPPAGE_CONFIG = exports.DRAWDOWN_CONFIG = exports.GAP_RISK_CONFIG = exports.VDU_CONFIG = exports.RS_CONFIG = exports.CORR_CONFIG = exports.STRATEGY_V11 = exports.SEPA_CONFIG = exports.RUNTIME_CONFIG = void 0;
 exports.RUNTIME_CONFIG = {
     TRADING_ENABLED: true,
     PAPER_ONLY: true,
@@ -10,6 +10,24 @@ exports.RUNTIME_CONFIG = {
     MODE: 'PAPER_LIVE',
     EXIT_EXECUTION_MODEL: 'NEXT_OPEN',
     KILL_SWITCH: false, // V3: Emergency halt — blocks ALL new entries when true
+};
+// SEPA (Minervini-style) faithful port — isolated, flag-gated.
+// When SEPA_ONLY is true the signal engine runs ONLY the SEPA strategy and the
+// existing strategies are bypassed; defaults OFF so production behaviour is
+// unchanged. Toggle for backtests via env: SEPA_ONLY=1.
+exports.SEPA_CONFIG = {
+    SEPA_ONLY: process.env.SEPA_ONLY === '1',
+    FEATURE_WINDOW: 260, // trailing bars needed for SMA150/200 + 52w-high + 200-slope
+    RS_TOP: 40, // RS leadership: only the top-N by 126d momentum qualify
+    RS_LOOKBACK: 126, // momentum lookback (trading days)
+    HI_PROX: 0.15, // entry must be within 15% of the 52-week high
+    HARD_STOP_PCT: 0.07, // 7% initial hard stop
+    LOCK_AT_PCT: 0.15, // arm the trailing lock once up this much
+    TRAIL_PCT: 0.20, // trail 20% below the highest close once locked
+    RISK_PCT: 0.0125, // risk 1.25% of equity per trade
+    MAX_POS: 10, // max concurrent SEPA positions (take the strongest leaders)
+    SMA200_SLOPE_LOOKBACK: 20, // bars back used to confirm the 200-SMA is rising
+    THROTTLE_HALT_PCT: 0.06, // equity-curve throttle: no new buys beyond this drawdown-from-peak
 };
 exports.STRATEGY_V11 = {
     EMA_TOUCH_ATR_MULT: 0.3,
@@ -148,6 +166,19 @@ exports.EXIT_PROFILES = {
         partialProfitAtr: 2.5,
         partialFraction: 0.33,
     },
+    // SEPA uses percent-based stop/lock/trail handled directly in tradeManager;
+    // these ATR fields are unused for SEPA but present so profile lookups never fall
+    // back to PullbackEOD. timeStopDays huge + no partial = ride the trailing stop.
+    SepaBreakoutEOD: {
+        stopAtrMult: 1.0,
+        targetAtrMult: 1000,
+        timeStopDays: 100000,
+        useTrailingStop: false,
+        trailingActivationAtr: 0,
+        trailingStopAtr: 0,
+        partialProfitAtr: 100000,
+        partialFraction: 0,
+    },
 };
 // V2.3: Event calendar configuration
 exports.EVENT_CONFIG = {
@@ -237,6 +268,7 @@ exports.STRATEGY_MIN_SCORES = {
     ShortBounceEOD: 65,
     BearBounceEOD: 55,
     RSLeaderEOD: 65,
+    SepaBreakoutEOD: 0, // SEPA gate does its own filtering; no score floor
 };
 // V3.1: Per-strategy RS thresholds (min/max). Replaces one-size-fits-all RS gate in risk approval.
 // Shorts want WEAK stocks (low RS). Bear bounces don't filter on RS. Leaders want HIGH RS.
@@ -247,6 +279,7 @@ exports.RS_STRATEGY_THRESHOLDS = {
     ShortBounceEOD: { min: 0, max: 50 }, // Only short weak stocks
     BearBounceEOD: { min: 0, max: 100 }, // No RS filter — deeply oversold
     RSLeaderEOD: { min: 80, max: 100 }, // Only the strongest
+    SepaBreakoutEOD: { min: 0, max: 100 }, // SEPA uses its own 126d rank gate
 };
 // V3.1: Bear-specific strategy thresholds
 exports.BEAR_STRATEGY_CONFIG = {

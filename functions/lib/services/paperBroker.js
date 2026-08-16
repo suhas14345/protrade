@@ -101,9 +101,27 @@ async function doPlaceOrders(dateId, jobId) {
     }
     const signalsSnap = await db.collection('signals').doc(dateId).collection('items')
         .where('status', '==', 'APPROVED').get();
+    // SEPA: only the strongest leaders get orders. Rank the day's approved signals by
+    // 126-day momentum rank and keep just enough to fill the remaining position slots
+    // (MAX_POS minus currently-open positions). The rest are left APPROVED-but-unfilled.
+    let allowedIds = null;
+    if (runtime_1.SEPA_CONFIG.SEPA_ONLY) {
+        const openSnap = await db.collection('portfolio').doc('default').collection('positions')
+            .where('status', '==', 'OPEN').get();
+        const slots = Math.max(0, runtime_1.SEPA_CONFIG.MAX_POS - openSnap.size);
+        const ranked = signalsSnap.docs
+            .filter(d => { var _a; return !((_a = d.data().execution) === null || _a === void 0 ? void 0 : _a.status); })
+            .map(d => { var _a, _b; return ({ id: d.id, rank: Number((_b = (_a = d.data().features) === null || _a === void 0 ? void 0 : _a.rsRank126) !== null && _b !== void 0 ? _b : Number.MAX_SAFE_INTEGER) }); })
+            .sort((a, b) => a.rank - b.rank)
+            .slice(0, slots)
+            .map(x => x.id);
+        allowedIds = new Set(ranked);
+    }
     for (const doc of signalsSnap.docs) {
         const signal = doc.data();
         if ((_a = signal.execution) === null || _a === void 0 ? void 0 : _a.status)
+            continue;
+        if (allowedIds && !allowedIds.has(doc.id))
             continue;
         const atrRef = signal.atrRef || ((_b = signal.features) === null || _b === void 0 ? void 0 : _b.atr14) || 0;
         const stopMult = signal.stopAtrMult || 2.0;

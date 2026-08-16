@@ -1,7 +1,7 @@
 import * as admin from 'firebase-admin';
 import { Signal, PaperOrder, PaperFill, PaperPosition, PaperTrade } from '../models';
 import { checkSafety } from './safety';
-import { SLIPPAGE_CONFIG, INDIAN_FEE_CONFIG, ADV_LIMITS } from '../config/runtime';
+import { SLIPPAGE_CONFIG, INDIAN_FEE_CONFIG, ADV_LIMITS, SEPA_CONFIG } from '../config/runtime';
 import { Timestamp } from 'firebase-admin/firestore';
 import { CalendarService } from './calendar';
 import { computeExitPnl } from './portfolioEquity';
@@ -79,9 +79,27 @@ export async function doPlaceOrders(dateId: string, jobId?: string) {
   const signalsSnap = await db.collection('signals').doc(dateId).collection('items')
     .where('status', '==', 'APPROVED').get();
 
+  // SEPA: only the strongest leaders get orders. Rank the day's approved signals by
+  // 126-day momentum rank and keep just enough to fill the remaining position slots
+  // (MAX_POS minus currently-open positions). The rest are left APPROVED-but-unfilled.
+  let allowedIds: Set<string> | null = null;
+  if (SEPA_CONFIG.SEPA_ONLY) {
+    const openSnap = await db.collection('portfolio').doc('default').collection('positions')
+      .where('status', '==', 'OPEN').get();
+    const slots = Math.max(0, SEPA_CONFIG.MAX_POS - openSnap.size);
+    const ranked = signalsSnap.docs
+      .filter(d => !(d.data() as Signal).execution?.status)
+      .map(d => ({ id: d.id, rank: Number((d.data() as Signal).features?.rsRank126 ?? Number.MAX_SAFE_INTEGER) }))
+      .sort((a, b) => a.rank - b.rank)
+      .slice(0, slots)
+      .map(x => x.id);
+    allowedIds = new Set(ranked);
+  }
+
   for (const doc of signalsSnap.docs) {
     const signal = doc.data() as Signal;
     if (signal.execution?.status) continue;
+    if (allowedIds && !allowedIds.has(doc.id)) continue;
 
     const atrRef = signal.atrRef || signal.features?.atr14 || 0;
     const stopMult = signal.stopAtrMult || 2.0;

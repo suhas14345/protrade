@@ -55,12 +55,30 @@ function getExitProfile(strategy) {
  * Manage existing OPEN positions with V2.3 per-strategy exit profiles
  */
 async function doManageTrades(dateId, jobId) {
+    var _a, _b, _c, _d;
     const db = getDb();
     const positionsSnap = await db.collection('portfolio').doc('default').collection('positions')
         .where('status', '==', 'OPEN')
         .get();
     if (positionsSnap.empty)
         return;
+    // SEPA regime-off liquidation reads the PREVIOUS trading day's regime: within
+    // a day's pipeline doManageTrades runs BEFORE doComputeRegime, so regime/{today}
+    // does not exist yet — reading it would look "off" every day and dump the whole
+    // book daily. Use the last regime that actually exists. A genuinely missing prior
+    // regime (e.g. first managed day) is treated as NOT off, so we never force-
+    // liquidate on absent data — only on a confirmed index-uptrend break.
+    let sepaRegimeOff = false;
+    if (runtime_1.SEPA_CONFIG.SEPA_ONLY) {
+        const regimeDateId = (await calendar_1.CalendarService.getPrevTradingDateId(dateId)) || dateId;
+        const regimeSnap = await db.collection('regime').doc(regimeDateId).get();
+        const rd = regimeSnap.exists ? regimeSnap.data() : null;
+        const rm = rd === null || rd === void 0 ? void 0 : rd.metrics;
+        if (rm) {
+            const indexUp = Number(rm.close) > Number(rm.ema200) && Number((_a = rm.ema200Slope) !== null && _a !== void 0 ? _a : 0) > 0 && (rd === null || rd === void 0 ? void 0 : rd.marketState) !== 'BEAR';
+            sepaRegimeOff = !indexUp;
+        }
+    }
     for (const doc of positionsSnap.docs) {
         const pos = doc.data();
         const symbol = pos.symbol;
@@ -71,6 +89,45 @@ async function doManageTrades(dateId, jobId) {
         const currentClose = Number(currentBar.close);
         const currentHigh = Number(currentBar.high);
         const currentLow = Number(currentBar.low);
+        // SEPA percent-based exit: 7% hard-stop floor, arm a 20%-below-highest-close
+        // trailing lock (never below the 50-SMA) once up LOCK_AT_PCT, ratcheting up
+        // only; plus a regime-off liquidation that dumps every SEPA position when the
+        // index breaks its uptrend. Bypasses the ATR/target/time/partial logic below.
+        if (pos.strategy === 'SepaBreakoutEOD') {
+            const entry = pos.avgEntryPrice;
+            const hh = Math.max((_b = pos.sepaHH) !== null && _b !== void 0 ? _b : entry, currentClose);
+            const gain = entry > 0 ? currentClose / entry - 1 : 0;
+            const lockActive = (pos.sepaLockActive || false) || gain >= runtime_1.SEPA_CONFIG.LOCK_AT_PCT;
+            let stop = entry * (1 - runtime_1.SEPA_CONFIG.HARD_STOP_PCT);
+            if (lockActive) {
+                let trail = hh * (1 - runtime_1.SEPA_CONFIG.TRAIL_PCT);
+                const featSnap = await db.collection('features').doc(symbol).collection('days').doc(dateId).get();
+                const sma50 = featSnap.exists ? Number((_c = featSnap.data()) === null || _c === void 0 ? void 0 : _c.sma50) : NaN;
+                if (Number.isFinite(sma50) && sma50 > 0)
+                    trail = Math.max(trail, sma50);
+                stop = Math.max(stop, trail);
+            }
+            stop = Math.max(stop, (_d = pos.stopPrice) !== null && _d !== void 0 ? _d : stop); // ratchet up only
+            await doc.ref.update({
+                sepaHH: hh,
+                sepaLockActive: lockActive,
+                stopPrice: stop,
+                lastUpdatedAt: admin.firestore.Timestamp.now(),
+            });
+            let sepaExit = false;
+            let sepaType = undefined;
+            if (sepaRegimeOff) {
+                sepaExit = true;
+                sepaType = 'EXIT_THESIS';
+            }
+            else if (currentClose <= stop) {
+                sepaExit = true;
+                sepaType = 'EXIT_STOP';
+            }
+            if (sepaExit)
+                await queueExitOrder(db, pos, doc.ref.path, sepaType, dateId, jobId);
+            continue;
+        }
         const atrAtEntry = pos.atrAtEntry || 1.0;
         const priceDiff = pos.direction === 'BUY'
             ? (currentHigh - pos.avgEntryPrice)

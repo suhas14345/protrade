@@ -3,7 +3,7 @@ import * as admin from 'firebase-admin';
 import { Timestamp } from 'firebase-admin/firestore';
 import { Features, Bar } from '../models';
 import { logger } from './logger';
-import { VDU_CONFIG, GAP_RISK_CONFIG } from '../config/runtime';
+import { VDU_CONFIG, GAP_RISK_CONFIG, SEPA_CONFIG } from '../config/runtime';
 import { getWindowOnOrBefore } from './barCache';
 
 // Lazy load technicalindicators inside functions to avoid deployment timeouts
@@ -46,8 +46,10 @@ export async function doComputeFeatures(jobId: string, symbol: string, runDate: 
   //    reader. In REPLAY it is served from an in-memory cache (one Firestore read
   //    per symbol for the whole run); in live it runs the identical bounded scan.
   //    200 trading days gives indicator stability; the current closed bar is the
-  //    signal bar (signals fire for NEXT_OPEN entry).
-  const bars = await getWindowOnOrBefore(db, symbol, dateId, 200);
+  //    signal bar (signals fire for NEXT_OPEN entry). SEPA needs a longer window
+  //    (52-week high + 200-SMA slope), so widen it only when SEPA_ONLY is on.
+  const win = SEPA_CONFIG.SEPA_ONLY ? SEPA_CONFIG.FEATURE_WINDOW : 200;
+  const bars = await getWindowOnOrBefore(db, symbol, dateId, win);
 
   if (bars.length < 25) {
     const errorMsg = `[Features Fail] Insufficient data for ${symbol}. Found ${bars.length} bars. Needs 25.`;
@@ -92,6 +94,26 @@ export async function doComputeFeatures(jobId: string, symbol: string, runDate: 
   // 3. Advanced Market Structure (Swing H/L and S/R)
   const swings = calculateSwings(bars, 3); // 3-bar fractal
   const srZones = identifySRZones(swings);
+
+  // SEPA (Minervini) fields — computed only when enabled so default behaviour is unchanged.
+  let sepaFields: Partial<Features> = {};
+  if (SEPA_CONFIG.SEPA_ONLY) {
+    const avg = (arr: number[]) => (arr.length > 0 ? arr.reduce((a, b) => a + b, 0) / arr.length : currentClose);
+    const sma = (n: number) => avg(closes.length >= n ? closes.slice(-n) : closes);
+    const sma50 = sma(50);
+    const sma150 = sma(150);
+    const sma200 = sma(200);
+    // 200-SMA slope: compare the current 200-SMA to the 200-SMA some bars ago.
+    const lb = SEPA_CONFIG.SMA200_SLOPE_LOOKBACK;
+    let sma200Rising = false;
+    if (closes.length >= 200 + lb) {
+      const past200 = avg(closes.slice(-(200 + lb), -lb));
+      sma200Rising = sma200 > past200;
+    }
+    const high252 = Math.max(...closes.slice(-252));
+    const ret126 = closes.length >= 127 ? (closes[closes.length - 1] / closes[closes.length - 127]) - 1 : 0;
+    sepaFields = { sma50, sma150, sma200, sma200Rising, high252, ret126 };
+  }
 
   // 4. Refined Trend State
   let trendState: 'UP' | 'DOWN' | 'RANGE' = 'RANGE';
@@ -145,6 +167,7 @@ export async function doComputeFeatures(jobId: string, symbol: string, runDate: 
     // rsScore is null here — filled by RS ranking pass after all features are done
     rsScore: undefined,
     patterns: [],
+    ...sepaFields,
   };
 
   await db.collection('features').doc(symbol).collection('days').doc(dateId).set(featureDoc);

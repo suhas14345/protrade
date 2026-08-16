@@ -1,6 +1,6 @@
 import * as functionsV1 from 'firebase-functions';
 import * as admin from 'firebase-admin';
-import { RS_CONFIG } from '../config/runtime';
+import { RS_CONFIG, SEPA_CONFIG } from '../config/runtime';
 import { logger } from './logger';
 
 const getDb = () => {
@@ -41,7 +41,7 @@ export async function doComputeRsRanking(dateId: string, jobId?: string, univers
 
   // Fetch all features in parallel (chunked to avoid firestore query limits)
   const CHUNK_SIZE = 50;
-  const symbolData: Array<{ symbol: string; ret20d: number; ret60d: number }> = [];
+  const symbolData: Array<{ symbol: string; ret20d: number; ret60d: number; ret126: number }> = [];
 
   for (let i = 0; i < symbols.length; i += CHUNK_SIZE) {
     const chunk = symbols.slice(i, i + CHUNK_SIZE);
@@ -55,8 +55,9 @@ export async function doComputeRsRanking(dateId: string, jobId?: string, univers
       const data = snap.data() as any;
       const ret20d = Number(data?.returns?.ret20d ?? 0);
       const ret60d = Number(data?.returns?.ret60d ?? 0);
+      const ret126 = Number(data?.ret126 ?? 0);
       if (Number.isFinite(ret20d) && Number.isFinite(ret60d)) {
-        symbolData.push({ symbol: chunk[j], ret20d, ret60d });
+        symbolData.push({ symbol: chunk[j], ret20d, ret60d, ret126 });
       }
     }
   }
@@ -93,7 +94,21 @@ export async function doComputeRsRanking(dateId: string, jobId?: string, univers
     await batch.commit();
   }
 
-  // 4. Compute universe median returns and write to regime doc
+  // SEPA leadership: rank by 126-day momentum (1 = strongest) so the SEPA gate can
+  // select the top-N leaders. Only computed when SEPA_ONLY is on.
+  if (SEPA_CONFIG.SEPA_ONLY) {
+    const byMom = [...symbolData].sort((a, b) => b.ret126 - a.ret126);
+    for (let i = 0; i < byMom.length; i += batchSize) {
+      const batch = db.batch();
+      const chunk = byMom.slice(i, i + batchSize);
+      for (let j = 0; j < chunk.length; j++) {
+        const rsRank126 = i + j + 1; // 1-based; 1 = strongest momentum
+        const ref = db.collection('features').doc(chunk[j].symbol).collection('days').doc(dateId);
+        batch.update(ref, { rsRank126 });
+      }
+      await batch.commit();
+    }
+  }
   const ret20dValues = composites.map(c => c.ret20d).sort((a, b) => a - b);
   const ret60dValues = composites.map(c => c.ret60d).sort((a, b) => a - b);
   const midIdx = Math.floor(ret20dValues.length / 2);

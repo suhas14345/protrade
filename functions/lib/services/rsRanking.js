@@ -58,7 +58,7 @@ const getDb = () => {
  * This enables the strategy engine to filter: only trade rsScore >= MIN_RS_SCORE.
  */
 async function doComputeRsRanking(dateId, jobId, universeId = 'nifty500') {
-    var _a, _b, _c, _d, _e, _f;
+    var _a, _b, _c, _d, _e, _f, _g;
     const db = getDb();
     await logger_1.logger.info(`[RSRank] Computing RS scores for ${dateId}`, 'RSRank', { dateId, jobId });
     // 1. Load all feature docs for this dateId
@@ -85,8 +85,9 @@ async function doComputeRsRanking(dateId, jobId, universeId = 'nifty500') {
             const data = snap.data();
             const ret20d = Number((_b = (_a = data === null || data === void 0 ? void 0 : data.returns) === null || _a === void 0 ? void 0 : _a.ret20d) !== null && _b !== void 0 ? _b : 0);
             const ret60d = Number((_d = (_c = data === null || data === void 0 ? void 0 : data.returns) === null || _c === void 0 ? void 0 : _c.ret60d) !== null && _d !== void 0 ? _d : 0);
+            const ret126 = Number((_e = data === null || data === void 0 ? void 0 : data.ret126) !== null && _e !== void 0 ? _e : 0);
             if (Number.isFinite(ret20d) && Number.isFinite(ret60d)) {
-                symbolData.push({ symbol: chunk[j], ret20d, ret60d });
+                symbolData.push({ symbol: chunk[j], ret20d, ret60d, ret126 });
             }
         }
     }
@@ -116,12 +117,26 @@ async function doComputeRsRanking(dateId, jobId, universeId = 'nifty500') {
         }
         await batch.commit();
     }
-    // 4. Compute universe median returns and write to regime doc
+    // SEPA leadership: rank by 126-day momentum (1 = strongest) so the SEPA gate can
+    // select the top-N leaders. Only computed when SEPA_ONLY is on.
+    if (runtime_1.SEPA_CONFIG.SEPA_ONLY) {
+        const byMom = [...symbolData].sort((a, b) => b.ret126 - a.ret126);
+        for (let i = 0; i < byMom.length; i += batchSize) {
+            const batch = db.batch();
+            const chunk = byMom.slice(i, i + batchSize);
+            for (let j = 0; j < chunk.length; j++) {
+                const rsRank126 = i + j + 1; // 1-based; 1 = strongest momentum
+                const ref = db.collection('features').doc(chunk[j].symbol).collection('days').doc(dateId);
+                batch.update(ref, { rsRank126 });
+            }
+            await batch.commit();
+        }
+    }
     const ret20dValues = composites.map(c => c.ret20d).sort((a, b) => a - b);
     const ret60dValues = composites.map(c => c.ret60d).sort((a, b) => a - b);
     const midIdx = Math.floor(ret20dValues.length / 2);
-    const universeMedianRet20d = (_e = ret20dValues[midIdx]) !== null && _e !== void 0 ? _e : 0;
-    const universeMedianRet60d = (_f = ret60dValues[midIdx]) !== null && _f !== void 0 ? _f : 0;
+    const universeMedianRet20d = (_f = ret20dValues[midIdx]) !== null && _f !== void 0 ? _f : 0;
+    const universeMedianRet60d = (_g = ret60dValues[midIdx]) !== null && _g !== void 0 ? _g : 0;
     await db.collection('regime').doc(dateId).update({
         'breadth.universeMedianRet20d': universeMedianRet20d,
         'breadth.universeMedianRet60d': universeMedianRet60d,
