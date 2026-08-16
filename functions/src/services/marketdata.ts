@@ -42,6 +42,24 @@ export function isMarketClosed(): boolean {
 
 
 let _kite: any = null;
+let _kiteRequestTail: Promise<void> = Promise.resolve();
+let _lastKiteRequestAt = 0;
+const KITE_MIN_REQUEST_INTERVAL_MS = 400;
+
+async function scheduleKiteRequest<T>(request: () => Promise<T>): Promise<T> {
+  const previous = _kiteRequestTail;
+  let release!: () => void;
+  _kiteRequestTail = new Promise<void>((resolve) => { release = resolve; });
+  await previous;
+  try {
+    const waitMs = Math.max(0, KITE_MIN_REQUEST_INTERVAL_MS - (Date.now() - _lastKiteRequestAt));
+    if (waitMs > 0) await new Promise(resolve => setTimeout(resolve, waitMs));
+    _lastKiteRequestAt = Date.now();
+    return await request();
+  } finally {
+    release();
+  }
+}
 const getKite = async (apiKey: string, accessToken: string) => {
   if (!_kite || _kite.access_token !== accessToken) {
     const { KiteConnect } = await import('kiteconnect');
@@ -370,7 +388,10 @@ async function fetchFromKite(symbol: string, runDate: string, apiKey: string, ac
 
   await logger.info(`Fetching data for ${symbol} from Kite: ${startDate.toISOString()} to ${endDate.toISOString()}`, 'MarketData', { jobId, symbol });
 
-  const results = await fetchWithRetry(() => kite.getHistoricalData(token, 'day', startDate, endDate), symbol) as Bar[];
+  const results = await fetchWithRetry(
+    () => scheduleKiteRequest(() => kite.getHistoricalData(token, 'day', startDate, endDate)),
+    symbol
+  ) as Bar[];
   
   await logger.info(`Raw result count for ${symbol}: ${results.length}`, 'MarketData', { jobId, symbol });
 
@@ -382,6 +403,18 @@ async function fetchFromKite(symbol: string, runDate: string, apiKey: string, ac
     volume: row.volume,
     timestamp: Timestamp.fromDate(row.date)
   }));
+}
+
+/** Fetch a bounded historical range for backfills without exposing Kite credentials. */
+export async function fetchHistoricalBars(
+  symbol: string,
+  startISO: string,
+  endISO: string,
+  apiKey: string,
+  accessToken: string,
+  instrumentToken?: number,
+): Promise<Bar[]> {
+  return fetchFromKite(symbol, endISO, apiKey, accessToken, instrumentToken, 'historical-backfill', new Date(startISO));
 }
 
 export async function updateKiteToken(req: any, res: any) {

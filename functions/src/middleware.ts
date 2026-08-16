@@ -15,6 +15,9 @@ const KNOWN_ACTIONS = new Set([
   'scheduledKiteRenew', 'scheduledEod', 'scheduledMorning',
   'startMorningExecution', 'getKiteSettings',
   'syncNseHolidays', 'syncCorporateEvents',
+  'backfillHistorical',
+  'resetTradingState',
+  'cleanupStale',
 ]);
 
 export function validateRequest(body: Record<string, unknown>): { valid: boolean; error?: string } {

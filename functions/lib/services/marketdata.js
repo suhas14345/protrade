@@ -37,6 +37,7 @@ exports.isMarketClosed = isMarketClosed;
 exports.getNSEInstrumentsMap = getNSEInstrumentsMap;
 exports.doFetchCandles = doFetchCandles;
 exports.fetchCandlesTask = fetchCandlesTask;
+exports.fetchHistoricalBars = fetchHistoricalBars;
 exports.updateKiteToken = updateKiteToken;
 exports.updateKiteCredentials = updateKiteCredentials;
 exports.checkKiteHealth = checkKiteHealth;
@@ -77,6 +78,25 @@ function isMarketClosed() {
     return timeMinutes >= safeMinutes;
 }
 let _kite = null;
+let _kiteRequestTail = Promise.resolve();
+let _lastKiteRequestAt = 0;
+const KITE_MIN_REQUEST_INTERVAL_MS = 400;
+async function scheduleKiteRequest(request) {
+    const previous = _kiteRequestTail;
+    let release;
+    _kiteRequestTail = new Promise((resolve) => { release = resolve; });
+    await previous;
+    try {
+        const waitMs = Math.max(0, KITE_MIN_REQUEST_INTERVAL_MS - (Date.now() - _lastKiteRequestAt));
+        if (waitMs > 0)
+            await new Promise(resolve => setTimeout(resolve, waitMs));
+        _lastKiteRequestAt = Date.now();
+        return await request();
+    }
+    finally {
+        release();
+    }
+}
 const getKite = async (apiKey, accessToken) => {
     if (!_kite || _kite.access_token !== accessToken) {
         const { KiteConnect } = await Promise.resolve().then(() => __importStar(require('kiteconnect')));
@@ -375,7 +395,7 @@ async function fetchFromKite(symbol, runDate, apiKey, accessToken, instrumentTok
         startDate.setDate(endDate.getDate() - 60);
     }
     await logger_1.logger.info(`Fetching data for ${symbol} from Kite: ${startDate.toISOString()} to ${endDate.toISOString()}`, 'MarketData', { jobId, symbol });
-    const results = await fetchWithRetry(() => kite.getHistoricalData(token, 'day', startDate, endDate), symbol);
+    const results = await fetchWithRetry(() => scheduleKiteRequest(() => kite.getHistoricalData(token, 'day', startDate, endDate)), symbol);
     await logger_1.logger.info(`Raw result count for ${symbol}: ${results.length}`, 'MarketData', { jobId, symbol });
     return results.map((row) => ({
         open: row.open,
@@ -385,6 +405,10 @@ async function fetchFromKite(symbol, runDate, apiKey, accessToken, instrumentTok
         volume: row.volume,
         timestamp: firestore_1.Timestamp.fromDate(row.date)
     }));
+}
+/** Fetch a bounded historical range for backfills without exposing Kite credentials. */
+async function fetchHistoricalBars(symbol, startISO, endISO, apiKey, accessToken, instrumentToken) {
+    return fetchFromKite(symbol, endISO, apiKey, accessToken, instrumentToken, 'historical-backfill', new Date(startISO));
 }
 async function updateKiteToken(req, res) {
     const db = getDb();
