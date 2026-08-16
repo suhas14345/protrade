@@ -164,8 +164,8 @@ export async function doComputeFeatures(jobId: string, symbol: string, runDate: 
     vduActive: computeVDU(bars),
     // V2.2: Gap risk score (0-100 percentile)
     gapRiskScore: computeGapRiskScore(bars, atr14),
-    // rsScore is null here — filled by RS ranking pass after all features are done
-    rsScore: undefined,
+    // rsScore is intentionally omitted here — filled by the RS ranking pass. Writing
+    // `undefined` would break the Firestore write when ignoreUndefinedProperties is off.
     patterns: [],
     ...sepaFields,
   };

@@ -170,8 +170,9 @@ async function doComputeFeatures(jobId, symbol, runDate) {
         vduActive: computeVDU(bars), 
         // V2.2: Gap risk score (0-100 percentile)
         gapRiskScore: computeGapRiskScore(bars, atr14), 
-        // rsScore is null here — filled by RS ranking pass after all features are done
-        rsScore: undefined, patterns: [] }, sepaFields);
+        // rsScore is intentionally omitted here — filled by the RS ranking pass. Writing
+        // `undefined` would break the Firestore write when ignoreUndefinedProperties is off.
+        patterns: [] }, sepaFields);
     await db.collection('features').doc(symbol).collection('days').doc(dateId).set(featureDoc);
     await logger_1.logger.info(`Features computed for ${symbol}: Trend=${trendState}, RSI=${rsi14.toFixed(2)}`, 'Features', { jobId, symbol });
 }

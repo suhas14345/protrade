@@ -20,6 +20,11 @@ jest.mock('../tasks', () => ({
         enqueueDispatch: jest.fn().mockResolvedValue(undefined),
     }
 }));
+// isMarketClosed() is wall-clock dependent (IST time-of-day); pin it so the
+// job-creation path is tested deterministically instead of by luck of the clock.
+jest.mock('../marketdata', () => ({
+    isMarketClosed: jest.fn(() => true),
+}));
 describe('Orchestrator Service', () => {
     let res;
     beforeEach(() => {

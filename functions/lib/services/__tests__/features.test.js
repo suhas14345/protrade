@@ -79,6 +79,29 @@ describe('Features Service', () => {
             barsCount: 30
         }));
     });
+    // Regression: features.ts used to write `rsScore: undefined`. Firestore rejects
+    // undefined values unless ignoreUndefinedProperties is set, and in the live SEPA
+    // init order it was not — so this aborted the FETCH stage and broke every EOD run.
+    it('regression: never writes an undefined field (rsScore omitted until RS pass)', async () => {
+        const { mockFirestore } = global;
+        const mockBars = Array.from({ length: 30 }, (_, i) => ({
+            close: 100 + i, high: 105 + i, low: 95 + i, volume: 1000 + i * 10,
+            timestamp: admin.firestore.Timestamp.now(),
+        }));
+        mockFirestore.get
+            .mockResolvedValueOnce({ exists: false })
+            .mockResolvedValueOnce({ exists: false })
+            .mockResolvedValueOnce({
+            empty: false,
+            size: 30,
+            docs: mockBars.map((b, i) => ({ data: () => b, id: `2026032${i % 10}` })),
+        });
+        await (0, features_1.doComputeFeatures)('test-job', 'REGRESS.NS', '2026-03-21');
+        const savedDoc = mockFirestore.set.mock.calls[mockFirestore.set.mock.calls.length - 1][0];
+        const undefinedFields = Object.keys(savedDoc).filter((k) => savedDoc[k] === undefined);
+        expect(undefinedFields).toEqual([]);
+        expect(Object.prototype.hasOwnProperty.call(savedDoc, 'rsScore')).toBe(false);
+    });
     it('should skip if insufficient bars are found', async () => {
         const { mockFirestore } = global;
         mockFirestore.get
