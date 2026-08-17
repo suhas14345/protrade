@@ -259,6 +259,11 @@ export interface PaperPosition {
   entryQty?: number;               // original entry quantity (constant; qty decrements on partials)
   exitPrice?: number;              // fill price of the closing exit
   exitDateId?: string;             // dateId of the closing exit
+
+  // Daily mark-to-market (written by persistOpenPositionMarks; reconciles to config/account)
+  currentPrice?: number;           // close the position was last marked to
+  unrealizedPnlPct?: number;       // unrealizedPnl / entry cost
+  markDateId?: string;             // dateId of the last mark-to-market
 }
 
 /**

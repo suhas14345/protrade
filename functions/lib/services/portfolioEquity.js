@@ -36,7 +36,9 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.computeExitPnl = computeExitPnl;
 exports.sumRealizedToDate = sumRealizedToDate;
 exports.lastCloseOnOrBefore = lastCloseOnOrBefore;
+exports.markPosition = markPosition;
 exports.computeOpenUnrealized = computeOpenUnrealized;
+exports.persistOpenPositionMarks = persistOpenPositionMarks;
 exports.recomputeAccountEquity = recomputeAccountEquity;
 /**
  * Single source of truth for account equity, drawdown, and realized-vol.
@@ -104,13 +106,31 @@ async function lastCloseOnOrBefore(db, symbol, dateId) {
     return bar ? Number(bar.close) : null;
 }
 /**
+ * Mark ONE open position to `close`, netting the still-unrealised share of its
+ * entry fee. This is the SINGLE formula shared by the account-equity roll-up
+ * (`computeOpenUnrealized`) and the per-position write-back
+ * (`persistOpenPositionMarks`), so a position doc's `unrealizedPnl` always
+ * reconciles to `config/account` to the paisa. Long/short is netted via price
+ * difference so that, when the position later closes, its realised record
+ * replaces exactly this unrealised amount.
+ */
+function markPosition(p, close) {
+    var _a, _b;
+    const gross = (p.direction === 'BUY' ? close - p.avgEntryPrice : p.avgEntryPrice - close) * p.qty;
+    const entryQty = (_a = p.entryQty) !== null && _a !== void 0 ? _a : p.qty;
+    const openEntryFeeShare = ((_b = p.entryFee) !== null && _b !== void 0 ? _b : 0) * (entryQty > 0 ? p.qty / entryQty : 0);
+    const unrealizedPnl = gross - openEntryFeeShare;
+    const cost = Math.abs(p.avgEntryPrice * p.qty);
+    const unrealizedPnlPct = cost > 0 ? unrealizedPnl / cost : 0;
+    return { unrealizedPnl, unrealizedPnlPct };
+}
+/**
  * Mark every currently-OPEN position to market at `dateId`'s close, netting the
  * still-unrealised share of its entry fee. Netting long/short via P&L (not signed
  * cash) is what makes the equity curve reconcile: when a position later closes,
  * its realised record replaces exactly this unrealised amount.
  */
 async function computeOpenUnrealized(db, dateId) {
-    var _a, _b;
     const snap = await db
         .collection('portfolio').doc('default').collection('positions')
         .where('status', '==', 'OPEN')
@@ -123,12 +143,41 @@ async function computeOpenUnrealized(db, dateId) {
         const close = await lastCloseOnOrBefore(db, p.symbol, dateId);
         if (close === null)
             continue;
-        const gross = (p.direction === 'BUY' ? close - p.avgEntryPrice : p.avgEntryPrice - close) * p.qty;
-        const entryQty = (_a = p.entryQty) !== null && _a !== void 0 ? _a : p.qty;
-        const openEntryFeeShare = ((_b = p.entryFee) !== null && _b !== void 0 ? _b : 0) * (entryQty > 0 ? p.qty / entryQty : 0);
-        total += gross - openEntryFeeShare;
+        total += markPosition(p, close).unrealizedPnl;
     }
     return total;
+}
+/**
+ * Persist each OPEN position's mark-to-market onto its own doc
+ * (`currentPrice`, `unrealizedPnl`, `unrealizedPnlPct`, `markDateId`,
+ * `lastUpdatedAt`) at `dateId`'s close. Uses the SAME `markPosition` formula and
+ * the SAME `lastCloseOnOrBefore` source as `computeOpenUnrealized`, so the sum of
+ * the per-position `unrealizedPnl` equals the account's `openUnrealized` exactly —
+ * no per-position/account drift. Skips a position whose symbol has no bar on/before
+ * `dateId` (so it is valued identically to the account roll-up, which also skips it).
+ */
+async function persistOpenPositionMarks(db, dateId) {
+    const snap = await db
+        .collection('portfolio').doc('default').collection('positions')
+        .where('status', '==', 'OPEN')
+        .get();
+    const now = admin.firestore.Timestamp.now();
+    for (const doc of snap.docs) {
+        const p = doc.data();
+        if (!p.qty || p.qty <= 0)
+            continue;
+        const close = await lastCloseOnOrBefore(db, p.symbol, dateId);
+        if (close === null)
+            continue;
+        const { unrealizedPnl, unrealizedPnlPct } = markPosition(p, close);
+        await doc.ref.update({
+            currentPrice: close,
+            unrealizedPnl,
+            unrealizedPnlPct,
+            markDateId: dateId,
+            lastUpdatedAt: now,
+        });
+    }
 }
 /** Simple period-over-period returns from an equity series (skips non-positive prevs). */
 function dailyReturns(equity) {
@@ -196,6 +245,9 @@ async function recomputeAccountEquity(db, dateId) {
     const portfolioRealizedVol = annualisedVol(dailyReturns(volWindow));
     const peakEquity = Math.max((_e = account.peakEquity) !== null && _e !== void 0 ? _e : equity, equity);
     await accountRef.update({ equity, peakEquity, equityEMA25, portfolioRealizedVol });
+    // Persist per-position marks with the SAME formula/close so position docs
+    // reconcile to config/account to the paisa.
+    await persistOpenPositionMarks(db, dateId);
     return { equity, peakEquity, equityEMA25, portfolioRealizedVol, realizedToDate, openUnrealized };
 }
 //# sourceMappingURL=portfolioEquity.js.map

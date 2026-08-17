@@ -118,4 +118,72 @@ describe('computeExitPnl', () => {
         expect(realizedPnl).toBeCloseTo(cashFlow, 10);
     });
 });
+/**
+ * Per-position mark-to-market. `markPosition` is the SINGLE formula shared by the
+ * account roll-up (`computeOpenUnrealized`) and the per-position write-back
+ * (`persistOpenPositionMarks`). These tests pin that a position doc's
+ * `unrealizedPnl` reconciles to the account to the paisa and that a later close
+ * replaces the mark exactly (regression: position docs used to read 0 while the
+ * account equity already reflected the mark, so the numbers disagreed).
+ */
+describe('markPosition', () => {
+    const pos = (o) => (Object.assign({ direction: 'BUY', avgEntryPrice: 100, qty: 10 }, o));
+    it('long: gross gain minus the unrealised entry-fee share', () => {
+        const { unrealizedPnl, unrealizedPnlPct } = (0, portfolioEquity_1.markPosition)(pos({ avgEntryPrice: 100, qty: 50, entryQty: 50, entryFee: 20 }), 110);
+        // (110-100)*50 - 20 = 480 ; pct = 480 / (100*50)
+        expect(unrealizedPnl).toBeCloseTo(480, 10);
+        expect(unrealizedPnlPct).toBeCloseTo(480 / 5000, 12);
+    });
+    it('short: gain when price falls', () => {
+        const { unrealizedPnl } = (0, portfolioEquity_1.markPosition)(pos({ direction: 'SELL', avgEntryPrice: 200, qty: 30, entryQty: 30, entryFee: 12 }), 180);
+        // (200-180)*30 - 12 = 588
+        expect(unrealizedPnl).toBeCloseTo(588, 10);
+    });
+    it('prorates the entry fee by remaining qty after a partial exit', () => {
+        // qty decremented to 40 of an original 100; only 40/100 of the entry fee is still open.
+        const { unrealizedPnl } = (0, portfolioEquity_1.markPosition)(pos({ avgEntryPrice: 100, qty: 40, entryQty: 100, entryFee: 50 }), 120);
+        // (120-100)*40 - 50*(40/100) = 800 - 20
+        expect(unrealizedPnl).toBeCloseTo(780, 10);
+    });
+    it('guards divide-by-zero on entry cost (pct = 0)', () => {
+        const { unrealizedPnl, unrealizedPnlPct } = (0, portfolioEquity_1.markPosition)(pos({ avgEntryPrice: 0, qty: 0, entryQty: 0, entryFee: 0 }), 100);
+        expect(unrealizedPnl).toBe(0);
+        expect(unrealizedPnlPct).toBe(0);
+    });
+    it('equals the realised P&L of an exit at the same close with zero exit fee', () => {
+        // Reconciliation guarantee: when a position closes, its realised record must
+        // replace exactly the mark. markPosition(close) === computeExitPnl(exit@close, exitFee=0).
+        const cases = [
+            { direction: 'BUY', avgEntryPrice: 125.97, qty: 599, entryFee: 29.04 },
+            { direction: 'SELL', avgEntryPrice: 250, qty: 12, entryFee: 6 },
+            { direction: 'BUY', avgEntryPrice: 100, qty: 40, entryFee: 50 },
+        ];
+        for (const c of cases) {
+            const close = 126.47;
+            const mark = (0, portfolioEquity_1.markPosition)(pos(Object.assign(Object.assign({}, c), { entryQty: c.qty })), close).unrealizedPnl;
+            const asExit = (0, portfolioEquity_1.computeExitPnl)({
+                direction: c.direction, avgEntryPrice: c.avgEntryPrice, exitPrice: close,
+                exitQty: c.qty, entryQty: c.qty, entryFee: c.entryFee, exitFee: 0,
+            }).realizedPnl;
+            expect(mark).toBeCloseTo(asExit, 10);
+        }
+    });
+    it('per-position marks sum to the account openUnrealized / equity identity', () => {
+        // The account roll-up is Σ markPosition over OPEN positions; equity is then
+        // initial + realizedToDate + Σ marks. Pin the arithmetic end-to-end.
+        const initialEquity = 500000;
+        const realizedToDate = 0;
+        const positions = [
+            { p: pos({ direction: 'BUY', avgEntryPrice: 125.97069599999999, qty: 599, entryQty: 599, entryFee: 29.04 }), close: 126.47 },
+            { p: pos({ direction: 'SELL', avgEntryPrice: 300, qty: 20, entryQty: 20, entryFee: 15 }), close: 291.5 },
+        ];
+        const openUnrealized = positions.reduce((s, x) => s + (0, portfolioEquity_1.markPosition)(x.p, x.close).unrealizedPnl, 0);
+        const equity = initialEquity + realizedToDate + openUnrealized;
+        // Hand-computed: leg1 = 599*(126.47-125.97069599999999)-29.04 ; leg2 = 20*(300-291.5)-15
+        const leg1 = 599 * (126.47 - 125.97069599999999) - 29.04;
+        const leg2 = 20 * (300 - 291.5) - 15;
+        expect(openUnrealized).toBeCloseTo(leg1 + leg2, 8);
+        expect(equity).toBeCloseTo(initialEquity + leg1 + leg2, 8);
+    });
+});
 //# sourceMappingURL=portfolioEquity.test.js.map
