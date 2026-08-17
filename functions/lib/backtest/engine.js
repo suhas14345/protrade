@@ -244,6 +244,7 @@ async function loadClosedTrades(db) {
             pnl: t.realizedPnl,
             rMultiple: t.rMultiple,
             exitReason: t.exitReason,
+            strategy: t.strategy,
         };
         return ct;
     });

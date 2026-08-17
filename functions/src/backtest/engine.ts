@@ -257,6 +257,7 @@ async function loadClosedTrades(db: FirebaseFirestore.Firestore): Promise<Closed
       pnl: t.realizedPnl,
       rMultiple: t.rMultiple,
       exitReason: t.exitReason,
+      strategy: t.strategy,
     };
     return ct;
   });

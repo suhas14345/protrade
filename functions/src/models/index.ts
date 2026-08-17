@@ -128,7 +128,7 @@ export interface Regime {
 export interface Signal {
   symbol: string;
   direction: 'BUY' | 'SELL';
-  strategy: 'PullbackEOD' | 'BreakoutCloseEOD' | 'ShortBounceEOD' | 'MeanReversionEOD' | 'BearBounceEOD' | 'RSLeaderEOD' | 'SepaBreakoutEOD';
+  strategy: 'PullbackEOD' | 'BreakoutCloseEOD' | 'ShortBounceEOD' | 'MeanReversionEOD' | 'BearBounceEOD' | 'RSLeaderEOD' | 'SepaBreakoutEOD' | 'MetalsRotation';
   score: number;
   entryPlan: {
     type: 'NEXT_OPEN';

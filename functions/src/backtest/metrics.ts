@@ -24,6 +24,8 @@ export interface ClosedTrade {
   /** Realised return in R-multiples if a risk amount was known, else undefined. */
   rMultiple?: number;
   exitReason?: string;
+  /** Originating strategy tag, used for per-strategy P&L attribution. */
+  strategy?: string;
 }
 
 /** One point on the daily equity curve. */

@@ -2,8 +2,8 @@ import * as functionsV1 from 'firebase-functions';
 import * as admin from 'firebase-admin';
 import { PaperPosition, PaperOrder } from '../models';
 import { CalendarService } from './calendar';
-import { EXIT_PROFILES, SEPA_CONFIG } from '../config/runtime';
-import { getBarOn } from './barCache';
+import { EXIT_PROFILES, SEPA_CONFIG, METALS_CONFIG } from '../config/runtime';
+import { getBarOn, getWindowOnOrBefore } from './barCache';
 
 const getDb = () => {
     if (admin.apps.length === 0) admin.initializeApp();
@@ -57,6 +57,36 @@ export async function doManageTrades(dateId: string, jobId: string) {
         const currentClose = Number(currentBar.close);
         const currentHigh = Number(currentBar.high);
         const currentLow = Number(currentBar.low);
+
+        // Metals rotation exit: pure trend-following. Hold while close is above the
+        // 200-SMA; liquidate (EXIT_THESIS) the moment the trend gate breaks. A wide
+        // hard-stop floor (HARD_STOP_PCT below entry) is the only price stop — the
+        // trend gate, not a tight stop, is the primary exit. Bypasses the ATR logic.
+        if (pos.strategy === 'MetalsRotation') {
+            const entry = pos.avgEntryPrice;
+            const hardStop = entry * (1 - METALS_CONFIG.HARD_STOP_PCT);
+
+            const bars = await getWindowOnOrBefore(db, symbol, dateId, METALS_CONFIG.SMA_TREND);
+            const closes = bars.map((b) => Number(b.close)).filter((c) => Number.isFinite(c) && c > 0);
+            const haveSma = closes.length >= METALS_CONFIG.SMA_TREND;
+            const sma200 = haveSma
+                ? closes.slice(-METALS_CONFIG.SMA_TREND).reduce((a, b) => a + b, 0) / METALS_CONFIG.SMA_TREND
+                : NaN;
+
+            await doc.ref.update({
+                stopPrice: hardStop,
+                lastUpdatedAt: admin.firestore.Timestamp.now(),
+            });
+
+            let metalsExit = false;
+            let metalsType: PaperOrder['exitType'] = undefined;
+            // Trend-gate break only fires once we actually have a full 200-SMA, so we
+            // never liquidate on insufficient data — only on a confirmed break.
+            if (haveSma && currentClose < sma200) { metalsExit = true; metalsType = 'EXIT_THESIS'; }
+            else if (currentClose <= hardStop) { metalsExit = true; metalsType = 'EXIT_STOP'; }
+            if (metalsExit) await queueExitOrder(db, pos, doc.ref.path, metalsType!, dateId, jobId);
+            continue;
+        }
 
         // SEPA percent-based exit: 7% hard-stop floor, arm a 20%-below-highest-close
         // trailing lock (never below the 50-SMA) once up LOCK_AT_PCT, ratcheting up

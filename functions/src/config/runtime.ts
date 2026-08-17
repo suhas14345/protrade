@@ -9,12 +9,12 @@ export const RUNTIME_CONFIG = {
   KILL_SWITCH: false,                  // V3: Emergency halt — blocks ALL new entries when true
 };
 
-// SEPA (Minervini-style) faithful port — isolated, flag-gated.
-// When SEPA_ONLY is true the signal engine runs ONLY the SEPA strategy and the
-// existing strategies are bypassed; defaults OFF so production behaviour is
-// unchanged. Toggle for backtests via env: SEPA_ONLY=1.
+// SEPA (Minervini-style) faithful port. When SEPA_ONLY is true the signal engine
+// runs the SEPA strategy (alongside the metals sleeve) and the legacy multi-
+// strategy equity path is bypassed. This is now the LIVE daily configuration —
+// defaults ON. Set env SEPA_ONLY=0 to fall back to the legacy multi-strategy path.
 export const SEPA_CONFIG = {
-  SEPA_ONLY: process.env.SEPA_ONLY === '1',
+  SEPA_ONLY: process.env.SEPA_ONLY !== '0',
   FEATURE_WINDOW: 260,          // trailing bars needed for SMA150/200 + 52w-high + 200-slope
   RS_TOP: 40,                   // RS leadership: only the top-N by 126d momentum qualify
   RS_LOOKBACK: 126,             // momentum lookback (trading days)
@@ -26,6 +26,27 @@ export const SEPA_CONFIG = {
   MAX_POS: 10,                  // max concurrent SEPA positions (take the strongest leaders)
   SMA200_SLOPE_LOOKBACK: 20,    // bars back used to confirm the 200-SMA is rising
   THROTTLE_HALT_PCT: 0.06,      // equity-curve throttle: no new buys beyond this drawdown-from-peak
+};
+
+// Metals rotation sleeve — a small, self-contained trend-following ETF strategy
+// that runs ALONGSIDE SEPA (not exclusive). It trades only the whitelisted metal
+// ETFs (gold/silver), which are deliberately exempt from the equity liquidity/risk
+// gates that would otherwise exclude them. Now part of the LIVE daily configuration
+// — defaults ON. Set env METALS=0 to disable the sleeve. Sizing is deliberately
+// modest (ALLOC_PCT): a blind walk-forward showed the sleeve is a genuine, drawdown-
+// aware trend edge but earns single-digit CAGR long-run and trails gold buy&hold —
+// the huge in-sample result was the 2024-25 metals regime, not a durable edge.
+export const METALS_CONFIG = {
+  ENABLED: process.env.METALS !== '0',
+  SYMBOLS: ['GOLDBEES', 'SILVERBEES'],  // whitelisted metal ETFs (bare NSE symbols)
+  FEATURE_WINDOW: 360,          // trailing bars: 200-SMA + 126d momentum + 21d skip buffer
+  SMA_TREND: 200,               // trend gate: only hold while close > this SMA
+  MOM_LOOKBACK: 126,            // risk-adjusted momentum lookback (trading days)
+  MOM_SKIP: 21,                 // skip the most recent month (avoid 1m mean-reversion)
+  MIN_RA_MOM: 0,                // require positive risk-adjusted momentum to enter
+  MAX_POS: 2,                   // at most this many metal ETFs held concurrently
+  ALLOC_PCT: 0.30,             // sleeve capital budget as a fraction of account equity
+  HARD_STOP_PCT: 0.25,          // wide protective floor; the real exit is the trend gate
 };
 
 export const STRATEGY_V11 = {

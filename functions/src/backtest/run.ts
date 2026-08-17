@@ -30,6 +30,7 @@ import { seedBacktest } from './seed';
 import { runReplay } from './engine';
 import { computeMetrics, formatReport } from './metrics';
 import { loadRealBars } from './loadRealBars';
+import { METALS_CONFIG } from '../config/runtime';
 
 interface Args {
   start: string;
@@ -93,6 +94,9 @@ async function main(): Promise<void> {
       startISO: args.start,
       endISO: args.end,
       maxSymbols: args.symbols,
+      // Keep the metals sleeve ETFs in the universe even when the cap is small, but
+      // only when the sleeve is actually enabled — otherwise the default run is unchanged.
+      alwaysInclude: METALS_CONFIG.ENABLED ? METALS_CONFIG.SYMBOLS : undefined,
     });
     symbols = loaded.symbols;
     bars = loaded.bars;
@@ -132,6 +136,27 @@ async function main(): Promise<void> {
 
   const metrics = computeMetrics(curve, trades);
   console.log('\n' + formatReport(metrics));
+
+  // Per-strategy P&L attribution — group the closed trades by their strategy tag so
+  // a combined run (e.g. SEPA + MetalsRotation) shows each sleeve's contribution.
+  const byStrat = new Map<string, { n: number; wins: number; pnl: number; fees: number }>();
+  for (const t of trades) {
+    const key = t.strategy || 'UNTAGGED';
+    const g = byStrat.get(key) || { n: 0, wins: 0, pnl: 0, fees: 0 };
+    g.n += 1;
+    if (t.pnl > 0) g.wins += 1;
+    g.pnl += t.pnl;
+    g.fees += t.fees;
+    byStrat.set(key, g);
+  }
+  if (byStrat.size > 0) {
+    const inr = (v: number) => '₹' + Math.round(v).toLocaleString('en-IN');
+    console.log('\n=== Per-strategy attribution ===');
+    for (const [strat, g] of Array.from(byStrat.entries()).sort((a, b) => b[1].pnl - a[1].pnl)) {
+      const winPct = g.n > 0 ? ((g.wins / g.n) * 100).toFixed(1) : '0.0';
+      console.log(`  ${strat.padEnd(18)} trades=${String(g.n).padStart(4)}  win%=${winPct.padStart(5)}  net=${inr(g.pnl).padStart(14)}  fees=${inr(g.fees)}`);
+    }
+  }
 }
 
 main().then(() => process.exit(0)).catch((e) => {

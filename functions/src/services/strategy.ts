@@ -1,7 +1,7 @@
 import * as functionsV1 from 'firebase-functions';
 import * as admin from 'firebase-admin';
 import { Signal, Features, Regime, Bar, AccountConfig } from '../models';
-import { STRATEGY_V11, RISK_LIMITS, RS_CONFIG, VDU_CONFIG, GAP_RISK_CONFIG, DRAWDOWN_CONFIG, CORR_CONFIG, ADV_LIMITS, SHORT_CONFIG, VOL_TARGET_CONFIG, GAP_STRESS_CONFIG, EXIT_PROFILES, RUNTIME_CONFIG, STRATEGY_MIN_SCORES, REGIME_RSI_THRESHOLDS, RS_STRATEGY_THRESHOLDS, BEAR_STRATEGY_CONFIG, SEPA_CONFIG } from '../config/runtime';
+import { STRATEGY_V11, RISK_LIMITS, RS_CONFIG, VDU_CONFIG, GAP_RISK_CONFIG, DRAWDOWN_CONFIG, CORR_CONFIG, ADV_LIMITS, SHORT_CONFIG, VOL_TARGET_CONFIG, GAP_STRESS_CONFIG, EXIT_PROFILES, RUNTIME_CONFIG, STRATEGY_MIN_SCORES, REGIME_RSI_THRESHOLDS, RS_STRATEGY_THRESHOLDS, BEAR_STRATEGY_CONFIG, SEPA_CONFIG, METALS_CONFIG } from '../config/runtime';
 import { checkSafety } from './safety';
 import { CalendarService } from './calendar';
 import { EventCalendarService } from './eventCalendar';
@@ -420,6 +420,99 @@ async function evaluateSepaSignal(
 }
 
 /**
+ * Metals rotation sleeve evaluator. Runs (alongside SEPA) only for the whitelisted
+ * metal ETFs when METALS_CONFIG.ENABLED. It is a self-contained trend-following
+ * rule: hold the ETF only while it is above its 200-SMA AND its risk-adjusted
+ * momentum (skip-1m return / daily-return volatility) is positive. The ETFs are
+ * intentionally exempt from the equity liquidity/RS/sector gates. Sizing uses a
+ * fixed sleeve budget (ALLOC_PCT of equity, split across MAX_POS slots). The exit
+ * (trend-gate break + wide hard stop) lives in tradeManager, mirroring SEPA.
+ */
+async function evaluateMetalsSignal(
+  db: FirebaseFirestore.Firestore,
+  jobId: string,
+  symbol: string,
+  dateId: string,
+  account: AccountConfig,
+  openPositions: any[],
+): Promise<void> {
+  // 1. Already holding this ETF → nothing to do; the exit is managed in tradeManager.
+  if (openPositions.some((p) => p.symbol === symbol)) return;
+
+  // 2. Sleeve capacity — cap the number of concurrent metal positions.
+  const metalsHeld = openPositions.filter((p) => p.strategy === 'MetalsRotation').length;
+  if (metalsHeld >= METALS_CONFIG.MAX_POS) return;
+
+  // 3. Load a long trailing window and compute the trend gate + risk-adjusted momentum.
+  const need = METALS_CONFIG.SMA_TREND + METALS_CONFIG.MOM_LOOKBACK + METALS_CONFIG.MOM_SKIP + 5;
+  const bars = await getWindowOnOrBefore(db, symbol, dateId, METALS_CONFIG.FEATURE_WINDOW);
+  if (bars.length < need) return;
+  const closes = bars.map((b) => Number(b.close)).filter((c) => Number.isFinite(c) && c > 0);
+  if (closes.length < need) return;
+
+  const close = closes[closes.length - 1];
+
+  // Trend gate: close must be above the 200-SMA.
+  const smaWindow = closes.slice(-METALS_CONFIG.SMA_TREND);
+  const sma200 = smaWindow.reduce((a, b) => a + b, 0) / smaWindow.length;
+  if (!(close > sma200)) return;
+
+  // Risk-adjusted momentum: skip-1m lookback return divided by daily-return volatility.
+  const skip = METALS_CONFIG.MOM_SKIP;
+  const look = METALS_CONFIG.MOM_LOOKBACK;
+  const recent = closes[closes.length - 1 - skip];
+  const past = closes[closes.length - 1 - skip - look];
+  if (!(Number.isFinite(recent) && Number.isFinite(past) && past > 0)) return;
+  const ret = recent / past - 1;
+  // Daily log-ish simple returns over the lookback window (ending at the skip point).
+  const momSlice = closes.slice(closes.length - 1 - skip - look, closes.length - skip);
+  const rets: number[] = [];
+  for (let i = 1; i < momSlice.length; i++) {
+    if (momSlice[i - 1] > 0) rets.push(momSlice[i] / momSlice[i - 1] - 1);
+  }
+  if (rets.length < 20) return;
+  const mean = rets.reduce((a, b) => a + b, 0) / rets.length;
+  const variance = rets.reduce((a, b) => a + (b - mean) * (b - mean), 0) / rets.length;
+  const vol = Math.sqrt(variance);
+  if (!(vol > 0)) return;
+  const raMom = ret / vol;
+  if (!(raMom > METALS_CONFIG.MIN_RA_MOM)) return;
+
+  // 4. Sizing — equal slice of the sleeve budget. A wide hard stop is a protective
+  //    floor only; the trend gate in tradeManager is the primary exit.
+  const slotBudget = (account.equity * METALS_CONFIG.ALLOC_PCT) / METALS_CONFIG.MAX_POS;
+  const sizedQty = Math.floor(slotBudget / close);
+  if (sizedQty <= 0) return;
+  const stopDistance = close * METALS_CONFIG.HARD_STOP_PCT;
+
+  const signal: Signal = {
+    symbol,
+    direction: 'BUY',
+    strategy: 'MetalsRotation',
+    score: 100,
+    entryPlan: { type: 'NEXT_OPEN' },
+    indicativeStopPrice: close - stopDistance,
+    indicativeTargets: [],
+    indicativeRr: 0,
+    checklist: { trendGate: true, riskAdjMomentum: true },
+    reasons: {
+      raMom: raMom.toFixed(2),
+      ret: (ret * 100).toFixed(1) + '%',
+      pctAboveSma200: (((close - sma200) / sma200) * 100).toFixed(1) + '%',
+    },
+    status: 'APPROVED',
+    atrRef: stopDistance,
+    stopAtrMult: 1,
+    targetAtrMult: 1000,
+    riskApproval: { status: 'APPROVED', sizedQty, riskAmount: slotBudget },
+  };
+
+  const signalId = `${symbol}_${dateId}_MetalsRotation`;
+  await db.collection('signals').doc(dateId).collection('items').doc(signalId).set(signal);
+  await logger.info(`[Strategy] METALS APPROVED ${symbol} raMom=${raMom.toFixed(2)} qty=${sizedQty}`, 'Strategy', { jobId, symbol, dateId });
+}
+
+/**
  * Evaluate strategies and generate signals for a symbol.
  */
 export async function doEvaluateSignals(jobId: string, symbol: string, runDate: string, forceRegime?: string, universeId: string = 'nifty500') {
@@ -455,9 +548,19 @@ export async function doEvaluateSignals(jobId: string, symbol: string, runDate: 
     const account = accountSnap.data() as AccountConfig;
     const openPositions = openPositionsSnap.docs.map(d => d.data());
 
+    // Metals rotation sleeve: whitelisted metal ETFs are handled by their own
+    // evaluator and run ALONGSIDE SEPA. They are never routed through the SEPA
+    // breakout or the multi-strategy equity path (different gates entirely).
+    const isMetalsSymbol = METALS_CONFIG.SYMBOLS.includes(symbol);
+    if (METALS_CONFIG.ENABLED && isMetalsSymbol) {
+      await evaluateMetalsSignal(db, jobId, symbol, dateId, account, openPositions);
+      return;
+    }
+
     // SEPA faithful port: when enabled, run ONLY the SEPA evaluator and skip the
     // entire multi-strategy path below (it does its own regime/RS/stop gating).
     if (SEPA_CONFIG.SEPA_ONLY) {
+      if (isMetalsSymbol) return; // never SEPA-trade the metal ETFs
       await evaluateSepaSignal(db, jobId, symbol, dateId, features, regime, account, openPositions);
       return;
     }

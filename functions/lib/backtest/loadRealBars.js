@@ -103,7 +103,7 @@ function parseCsv(file, startId, endId) {
  * Throws if the index file is missing (the regime engine requires it).
  */
 function loadRealBars(opts) {
-    var _a;
+    var _a, _b;
     const startId = opts.startISO.replace(/-/g, '');
     const endId = opts.endISO.replace(/-/g, '');
     const minBars = (_a = opts.minBars) !== null && _a !== void 0 ? _a : 250;
@@ -137,6 +137,19 @@ function loadRealBars(opts) {
     for (const c of chosen) {
         bars[c.symbol] = c.series;
         symbols.push(c.symbol);
+    }
+    // Force-include any always-include symbols (e.g. metals ETFs) that the cap dropped,
+    // so a small dedicated sleeve is never squeezed out of the universe by the cap.
+    const force = new Set(((_b = opts.alwaysInclude) !== null && _b !== void 0 ? _b : []).map((s) => s.toUpperCase()));
+    if (force.size > 0) {
+        const already = new Set(symbols);
+        for (const c of candidates) {
+            if (force.has(c.symbol) && !already.has(c.symbol)) {
+                bars[c.symbol] = c.series;
+                symbols.push(c.symbol);
+                already.add(c.symbol);
+            }
+        }
     }
     symbols.sort();
     return { bars, symbols };

@@ -27,6 +27,8 @@ export interface LoadRealBarsOptions {
   maxSymbols?: number;
   /** Minimum bars a symbol must have in-range to be included. */
   minBars?: number;
+  /** Symbols to always include (bypasses the maxSymbols cap), e.g. the metals sleeve ETFs. */
+  alwaysInclude?: string[];
 }
 
 export interface LoadRealBarsResult {
@@ -127,6 +129,21 @@ export function loadRealBars(opts: LoadRealBarsOptions): LoadRealBarsResult {
     bars[c.symbol] = c.series;
     symbols.push(c.symbol);
   }
+
+  // Force-include any always-include symbols (e.g. metals ETFs) that the cap dropped,
+  // so a small dedicated sleeve is never squeezed out of the universe by the cap.
+  const force = new Set((opts.alwaysInclude ?? []).map((s) => s.toUpperCase()));
+  if (force.size > 0) {
+    const already = new Set(symbols);
+    for (const c of candidates) {
+      if (force.has(c.symbol) && !already.has(c.symbol)) {
+        bars[c.symbol] = c.series;
+        symbols.push(c.symbol);
+        already.add(c.symbol);
+      }
+    }
+  }
+
   symbols.sort();
   return { bars, symbols };
 }

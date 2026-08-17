@@ -82,13 +82,16 @@ export async function doPlaceOrders(dateId: string, jobId?: string) {
   // SEPA: only the strongest leaders get orders. Rank the day's approved signals by
   // 126-day momentum rank and keep just enough to fill the remaining position slots
   // (MAX_POS minus currently-open positions). The rest are left APPROVED-but-unfilled.
+  // The cap applies ONLY to SEPA signals — the metals sleeve manages its own slots in
+  // its evaluator, so metals signals are never ranked or dropped here.
   let allowedIds: Set<string> | null = null;
   if (SEPA_CONFIG.SEPA_ONLY) {
     const openSnap = await db.collection('portfolio').doc('default').collection('positions')
       .where('status', '==', 'OPEN').get();
-    const slots = Math.max(0, SEPA_CONFIG.MAX_POS - openSnap.size);
+    const openSepa = openSnap.docs.filter(d => (d.data() as PaperPosition).strategy === 'SepaBreakoutEOD').length;
+    const slots = Math.max(0, SEPA_CONFIG.MAX_POS - openSepa);
     const ranked = signalsSnap.docs
-      .filter(d => !(d.data() as Signal).execution?.status)
+      .filter(d => (d.data() as Signal).strategy === 'SepaBreakoutEOD' && !(d.data() as Signal).execution?.status)
       .map(d => ({ id: d.id, rank: Number((d.data() as Signal).features?.rsRank126 ?? Number.MAX_SAFE_INTEGER) }))
       .sort((a, b) => a.rank - b.rank)
       .slice(0, slots)
@@ -99,7 +102,8 @@ export async function doPlaceOrders(dateId: string, jobId?: string) {
   for (const doc of signalsSnap.docs) {
     const signal = doc.data() as Signal;
     if (signal.execution?.status) continue;
-    if (allowedIds && !allowedIds.has(doc.id)) continue;
+    // The SEPA leader cap only gates SEPA signals; metals (and any other) signals pass.
+    if (allowedIds && signal.strategy === 'SepaBreakoutEOD' && !allowedIds.has(doc.id)) continue;
 
     const atrRef = signal.atrRef || signal.features?.atr14 || 0;
     const stopMult = signal.stopAtrMult || 2.0;
