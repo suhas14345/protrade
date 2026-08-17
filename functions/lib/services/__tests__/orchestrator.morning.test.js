@@ -50,24 +50,45 @@ describe('Orchestrator — Morning Fill Pipeline', () => {
             // Verify doOpenFillSimulation was called (via processMorningSymbolTask)
             expect(doOpenFillSimulation).toHaveBeenCalledWith('job1', '2026-04-13', 'TCS.NS');
         });
-        it('does NOT call doOpenFillSimulation for normal EOD tasks', async () => {
+        it('folds the fill into EOD: calls doOpenFillSimulation after FETCH for EOD tasks', async () => {
             const req = {
                 body: { jobId: 'job1', date: '2026-04-13', symbol: 'TCS.NS', dateId: '20260413' }
             };
-            // Mock job check — return RUNNING EOD job
+            // Clean sequence (clearAllMocks does not drain the mockResolvedValueOnce queue)
+            mockFirestore.get.mockReset();
+            mockFirestore.get.mockResolvedValue({ exists: false, empty: true, size: 0, docs: [], data: () => ({}) });
             mockFirestore.get
+                // jobCheck → RUNNING EOD job
                 .mockResolvedValueOnce({ exists: true, data: () => ({ status: 'RUNNING', type: 'EOD_RUN', counts: { done: 0, total: 5, failed: 0 } }) })
-                // Idempotency sentinel (not exists → proceed)
-                .mockResolvedValueOnce({ exists: false })
-                // Feature fetch attempt (can fail, that's fine)
-                .mockResolvedValueOnce({ exists: false, data: () => ({}) });
-            // Allow create to succeed (idempotency sentinel)
-            mockFirestore.create.mockResolvedValueOnce(true);
+                // isStageCompleted(FETCH) → already done, so doFetchCandles is skipped
+                .mockResolvedValueOnce({ exists: true })
+                // isStageCompleted(FILL) → not done, so the fill runs
+                .mockResolvedValueOnce({ exists: false });
             try {
                 await (0, orchestrator_1.processSymbolTask)(req);
             }
             catch (_a) {
-                // May throw on missing data; the key assertion is below
+                // Later stages (features/signals) may throw on mocked data; the fill assertion is what matters.
+            }
+            // Fill runs right after FETCH, pricing prior-day orders at today's open.
+            expect(doOpenFillSimulation).toHaveBeenCalledWith('job1', '2026-04-13', 'TCS.NS');
+        });
+        it('does NOT fill for non-EOD tasks (e.g. deep sync)', async () => {
+            const req = {
+                body: { jobId: 'job1', date: '2026-04-13', symbol: 'TCS.NS', dateId: '20260413', forceDays: 90 }
+            };
+            mockFirestore.get.mockReset();
+            mockFirestore.get.mockResolvedValue({ exists: false, empty: true, size: 0, docs: [], data: () => ({}) });
+            mockFirestore.get
+                // jobCheck → RUNNING DEEP_SYNC job (data-only; must not fill)
+                .mockResolvedValueOnce({ exists: true, data: () => ({ status: 'RUNNING', type: 'DEEP_SYNC', counts: { done: 0, total: 5, failed: 0 } }) })
+                // isStageCompleted(FETCH) → already done, so doFetchCandles is skipped
+                .mockResolvedValueOnce({ exists: true });
+            try {
+                await (0, orchestrator_1.processSymbolTask)(req);
+            }
+            catch (_a) {
+                // Later stages may throw on mocked data; the fill assertion is what matters.
             }
             expect(doOpenFillSimulation).not.toHaveBeenCalled();
         });

@@ -426,7 +426,7 @@ async function runMorningLogic(targetDate, targetJobId, targetUniverse = 'nifty5
  * Task Handler: Process a single symbol (Redundancy Removed Gap B1)
  */
 async function processSymbolTask(req) {
-    var _a, _b, _c, _d, _e;
+    var _a, _b, _c, _d, _e, _f;
     // Route morning fill tasks to the dedicated handler
     if (((_a = req.body) === null || _a === void 0 ? void 0 : _a.taskSubType) === 'morning') {
         return processMorningSymbolTask(req);
@@ -453,6 +453,18 @@ async function processSymbolTask(req) {
             const { doFetchCandles } = await Promise.resolve().then(() => __importStar(require('./marketdata')));
             await doFetchCandles(jobId, symbol, date, undefined, forceDays);
             await markStageCompleted(db, jobId, symbol, 'FETCH');
+        }
+        // 1b. Fill prior-day orders at today's open. Runs here (after today's bar is fetched)
+        // instead of a 09:15 job, which fired before the day's bar existed and left orders unfilled.
+        if (((_d = jobCheck.data()) === null || _d === void 0 ? void 0 : _d.type) === 'EOD_RUN' && !await isStageCompleted(db, jobId, symbol, 'FILL')) {
+            try {
+                const { doOpenFillSimulation } = await Promise.resolve().then(() => __importStar(require('./paperBroker')));
+                await doOpenFillSimulation(jobId, date, symbol);
+                await markStageCompleted(db, jobId, symbol, 'FILL');
+            }
+            catch (fillErr) {
+                await logger_1.logger.warn(`[Orchestrator] Fill for ${symbol} failed (non-blocking): ${fillErr.message}`, 'Orchestrator', { jobId, symbol });
+            }
         }
         // 2. Features (with idempotency)
         if (!await isStageCompleted(db, jobId, symbol, 'FEATURES')) {
@@ -493,7 +505,7 @@ async function processSymbolTask(req) {
         const jobSnap = await jobRef.get();
         const jobData = jobSnap.data();
         if (jobData && jobData.status === 'RUNNING') {
-            const failPct = (((_d = jobData.counts) === null || _d === void 0 ? void 0 : _d.failed) || 0) / (((_e = jobData.counts) === null || _e === void 0 ? void 0 : _e.total) || 1);
+            const failPct = (((_e = jobData.counts) === null || _e === void 0 ? void 0 : _e.failed) || 0) / (((_f = jobData.counts) === null || _f === void 0 ? void 0 : _f.total) || 1);
             if (failPct > runtime_1.ORCH_CONFIG.MAX_FAILURE_PCT) {
                 await logger_1.logger.error(`[Orchestrator] ABORTING job ${jobId}: ${(failPct * 100).toFixed(0)}% symbols failed (threshold: ${runtime_1.ORCH_CONFIG.MAX_FAILURE_PCT * 100}%)`, 'Orchestrator', { jobId });
                 await (0, alerting_1.raiseAlert)(alerting_1.AlertType.JOB_FAILED, 'CRITICAL', `Job ${jobId} aborted: ${(failPct * 100).toFixed(0)}% symbol failure rate`, { jobId, failPct });

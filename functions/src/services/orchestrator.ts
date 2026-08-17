@@ -440,6 +440,18 @@ export async function processSymbolTask(req: any) {
       await markStageCompleted(db, jobId, symbol, 'FETCH');
     }
 
+    // 1b. Fill prior-day orders at today's open. Runs here (after today's bar is fetched)
+    // instead of a 09:15 job, which fired before the day's bar existed and left orders unfilled.
+    if (jobCheck.data()?.type === 'EOD_RUN' && !await isStageCompleted(db, jobId, symbol, 'FILL')) {
+      try {
+        const { doOpenFillSimulation } = await import('./paperBroker');
+        await doOpenFillSimulation(jobId, date, symbol);
+        await markStageCompleted(db, jobId, symbol, 'FILL');
+      } catch (fillErr: any) {
+        await logger.warn(`[Orchestrator] Fill for ${symbol} failed (non-blocking): ${fillErr.message}`, 'Orchestrator', { jobId, symbol });
+      }
+    }
+
     // 2. Features (with idempotency)
     if (!await isStageCompleted(db, jobId, symbol, 'FEATURES')) {
       const { doComputeFeatures } = await import('./features');
