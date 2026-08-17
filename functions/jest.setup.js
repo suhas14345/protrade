@@ -1,3 +1,8 @@
+// Pin strategy flags to the legacy multi-strategy path so tests are deterministic
+// regardless of the production defaults (SEPA_ONLY/METALS now default ON in runtime.ts).
+process.env.SEPA_ONLY = '0';
+process.env.METALS = '0';
+
 const mockFirestore = {
   settings: jest.fn(),
   collection: jest.fn().mockReturnThis(),
