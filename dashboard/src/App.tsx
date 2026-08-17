@@ -512,7 +512,8 @@ function App() {
           <section className="stats-grid" style={{ gridArea: 'stats' }}>
             <div className="card">
               <div className="stat-label">Total Portfolio Equity</div>
-              <div className="stat-value">₹{(stats.equity + positions.reduce((a,p)=>a+(p.unrealizedPnl||0),0)).toLocaleString()}</div>
+              {/* config/account.equity already = initial + realized + open MTM; do NOT re-add unrealizedPnl (double-count) */}
+              <div className="stat-value">₹{stats.equity.toLocaleString(undefined, { maximumFractionDigits: 2 })}</div>
             </div>
             <div className="card">
               <div className="stat-label">Realized PnL</div>
