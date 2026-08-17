@@ -84,9 +84,10 @@ exports.gateway = functions.runWith(v1Options).https.onRequest(async (req, res) 
     // Normalize: strip "Task" suffix from taskType to match gateway cases
     const normalizedTaskType = (taskType === null || taskType === void 0 ? void 0 : taskType.replace(/Task$/, '')) || undefined;
     const type = action || normalizedTaskType || taskType;
-    // V3.0: Request validation
+    // V3.0: Request validation (validate the resolved action from query OR body —
+    // GET links like downloadReport pass the action in the query string).
     if (type && !taskType) {
-        const validation = validateRequest(req.body || {});
+        const validation = validateRequest(Object.assign(Object.assign({}, req.query), req.body));
         if (!validation.valid) {
             res.status(400).send({ error: validation.error });
             return;
@@ -308,7 +309,7 @@ exports.gateway = functions.runWith(v1Options).https.onRequest(async (req, res) 
                 }
                 console.log(`[Scheduler] Starting scheduled EOD for ${todayEod}`);
                 const { doStartEodRun } = await Promise.resolve().then(() => __importStar(require('./services/orchestrator')));
-                await doStartEodRun({ body: { date: todayEod, universe: 'nifty50', force: true }, query: {} }, res);
+                await doStartEodRun({ body: { date: todayEod, universe: 'nifty200', force: true }, query: {} }, res);
                 break;
             }
             case 'scheduledMorning': {
@@ -332,7 +333,7 @@ exports.gateway = functions.runWith(v1Options).https.onRequest(async (req, res) 
                 }
                 console.log(`[Scheduler] Starting morning fill simulation for ${morningDate}`);
                 const { doStartMorningExecution } = await Promise.resolve().then(() => __importStar(require('./services/orchestrator')));
-                await doStartMorningExecution({ query: { date: morningDate, universe: 'nifty500' } }, res);
+                await doStartMorningExecution({ query: { date: morningDate, universe: 'nifty200' } }, res);
                 break;
             }
             case 'startMorningExecution': {
@@ -496,7 +497,7 @@ exports.scheduledEod = functions
         console.warn('[Scheduler] Native EOD event sync failed:', error);
     }
     const { doStartEodRun } = await Promise.resolve().then(() => __importStar(require('./services/orchestrator')));
-    await doStartEodRun({ body: { date, universe: 'nifty50', force: true }, query: {} }, scheduledResponse());
+    await doStartEodRun({ body: { date, universe: 'nifty200', force: true }, query: {} }, scheduledResponse());
     return null;
 });
 /** Native morning fill schedule; supersedes the manually-created gateway scheduler job. */
@@ -518,7 +519,7 @@ exports.scheduledMorning = functions
         return null;
     }
     const { doStartMorningExecution } = await Promise.resolve().then(() => __importStar(require('./services/orchestrator')));
-    await doStartMorningExecution({ query: { date, universe: 'nifty500' } }, scheduledResponse());
+    await doStartMorningExecution({ query: { date, universe: 'nifty200' } }, scheduledResponse());
     return null;
 });
 //# sourceMappingURL=index.js.map

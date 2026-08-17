@@ -48,9 +48,10 @@ export const gateway = functions.runWith(v1Options).https.onRequest(async (req, 
     const normalizedTaskType = taskType?.replace(/Task$/, '') || undefined;
     const type = action || normalizedTaskType || taskType;
 
-    // V3.0: Request validation
+    // V3.0: Request validation (validate the resolved action from query OR body —
+    // GET links like downloadReport pass the action in the query string).
     if (type && !taskType) {
-      const validation = validateRequest(req.body || {});
+      const validation = validateRequest({ ...req.query, ...req.body });
       if (!validation.valid) {
         res.status(400).send({ error: validation.error });
         return;
@@ -277,7 +278,7 @@ export const gateway = functions.runWith(v1Options).https.onRequest(async (req, 
                 }
                 console.log(`[Scheduler] Starting scheduled EOD for ${todayEod}`);
                 const { doStartEodRun } = await import('./services/orchestrator');
-                await doStartEodRun({ body: { date: todayEod, universe: 'nifty50', force: true }, query: {} }, res);
+                await doStartEodRun({ body: { date: todayEod, universe: 'nifty200', force: true }, query: {} }, res);
                 break;
             }
             case 'scheduledMorning': {
@@ -301,7 +302,7 @@ export const gateway = functions.runWith(v1Options).https.onRequest(async (req, 
                 }
                 console.log(`[Scheduler] Starting morning fill simulation for ${morningDate}`);
                 const { doStartMorningExecution } = await import('./services/orchestrator');
-                await doStartMorningExecution({ query: { date: morningDate, universe: 'nifty500' } }, res);
+                await doStartMorningExecution({ query: { date: morningDate, universe: 'nifty200' } }, res);
                 break;
             }
             case 'startMorningExecution': {
@@ -475,7 +476,7 @@ export const scheduledEod = functions
             console.warn('[Scheduler] Native EOD event sync failed:', error);
         }
         const { doStartEodRun } = await import('./services/orchestrator');
-        await doStartEodRun({ body: { date, universe: 'nifty50', force: true }, query: {} }, scheduledResponse());
+        await doStartEodRun({ body: { date, universe: 'nifty200', force: true }, query: {} }, scheduledResponse());
         return null;
     });
 
@@ -498,6 +499,6 @@ export const scheduledMorning = functions
             return null;
         }
         const { doStartMorningExecution } = await import('./services/orchestrator');
-        await doStartMorningExecution({ query: { date, universe: 'nifty500' } }, scheduledResponse());
+        await doStartMorningExecution({ query: { date, universe: 'nifty200' } }, scheduledResponse());
         return null;
     });
