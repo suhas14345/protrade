@@ -1,8 +1,20 @@
 ================================================================================
-PROTRADE ALPHA — SYSTEM BLUEPRINT V3.1
-Long + Short Equities • EOD Swing • 500+ Symbols • Paper-First • Firestore
-6 Strategies • Bear Market Capable • Automated via Cloud Scheduler
+PROTRADE ALPHA — SYSTEM BLUEPRINT
+EOD Swing • Paper-First • Firestore • Automated via Cloud Scheduler
 ================================================================================
+
+>>> CURRENT LIVE CONFIG (read this first) ------------------------------------
+    The system today runs TWO strategies: SEPA (SepaBreakoutEOD, equities) + a
+    Metals rotation sleeve (MetalsRotation on GOLDBEES/SILVERBEES). See
+    STRATEGIES.md. The 6-strategy / 13-gate engine described in sections 6–8
+    below is the LEGACY path — it still exists in strategy.ts but is GATED OFF
+    (SEPA_CONFIG.SEPA_ONLY, default ON). Treat sections 6–8 as historical.
+
+    Hunt universe = nifty200 (EOD + morning). History-fill universe = nifty500
+    (superset). Next-open fills run INSIDE the evening EOD (the per-symbol FILL
+    stage), not a pre-open 09:15 job. See CONTEXT.md for live state/schedules.
+    Sections 5 and 10 (data pipeline + Firestore schema) remain accurate.
+------------------------------------------------------------------------------
 
 
 0) SYSTEM OVERVIEW
@@ -34,23 +46,25 @@ Scope:
 
 1) HIGH-LEVEL SYSTEM FLOW
 -------------------------
-Daily EOD pipeline (after 15:45 IST market close):
-  A) Fetch latest daily bars for universe            (FETCH stage)
-  B) Compute features per symbol                     (FEATURES stage)
-  C) Compute RS ranking across all symbols            (RS_RANK stage)
-  D) Detect market regime + breadth                   (REGIME stage)
-  E) Evaluate signals — 6 strategies per symbol       (SIGNALS stage)
-  F) Risk approval — 13 gates per signal              (RISK stage)
-  G) Compute correlation top-N                        (CORR stage)
-  H) Create paper orders for next-open                (ORDERS stage)
+Daily EOD pipeline (after market close, ~16:30 IST):
+  Per symbol (fan-out via Cloud Tasks):
+    A) Fetch latest daily bar                          (FETCH stage)
+    B) Fill prior-day ACCEPTED orders at today's open  (FILL stage — EOD_RUN only)
+    C) Compute features                                (FEATURES stage)
+    D) Evaluate signals                                (SIGNALS stage)
+  Finalize (once all symbols report in):
+    E) RS ranking across the universe                  (RS_RANK stage)
+    F) Correlation top-N                               (CORR stage)
+    G) Create paper orders for next-open               (ORDERS stage)
 
-Next morning pipeline (after market open):
-  I)  Simulate fills for NEXT_OPEN orders (slippage + gaps)
-  J)  Create positions from filled orders
-  K)  Trade manager: update stops, check exits, close positions
+Position management (daily): trade manager marks P&L, trails/hard-stops, and
+closes positions; exits also fill at the next open via the FILL stage.
 
 Key concept:
-  - Orchestrator enforces strict stage barriers with fan-out/fan-in.
+  - Next-open fills are folded INTO the EOD run (step B): the day's bar only
+    exists after the fetch, so filling here (evening) — not at a pre-open 09:15
+    job — is what makes fills actually land. getBarOn is exact-date match.
+  - Orchestrator fans out per-symbol work and finalizes on fan-in.
   - Every stage is idempotent and resumable via sentinel docs.
 
 

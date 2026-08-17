@@ -1,4 +1,4 @@
-# Troubleshooting Guide — ProTrade Alpha V3.1
+# Troubleshooting Guide — ProTrade Alpha
 
 Common issues and their solutions.
 
@@ -40,8 +40,8 @@ Common issues and their solutions.
 
 ### "Universe is empty" Warning
 - **Symptom**: Logs show "universe is empty" or 0 symbols evaluated.
-- **Cause**: Universe collection `universes/nifty500/members` not seeded, or path mismatch.
-- **Fix**: Run `{"action":"seedUniverse","universe":"nifty500"}` via gateway.
+- **Cause**: Universe collection `universes/nifty200/members` (hunt) or `universes/nifty500/members` (fill) not seeded, or a path mismatch.
+- **Fix**: Reseed the members subcollection (`universes/{id}/members/{SYM}.NS`) from `ind_nifty{200,500}list.csv`. Confirm the member count matches the CSV.
 
 ### "DATA_STALE" Error
 - **Symptom**: Signal evaluation throws "Last bar date does not match run date".
@@ -67,12 +67,14 @@ Common issues and their solutions.
 
 ### No Signals Generated (0 of N)
 - **Symptom**: EOD run completes but 0 signals.
-- **Cause**: Legitimate in bear markets if no strategy gates are met. Check:
-  1. Regime state (TRANSITION blocks all entries)
-  2. RSI fail-closed (missing RSI → all rejected)
-  3. VDU gate (PullbackEOD requires VDU active)
-  4. Kill switch active
-- **Fix**: Check logs for rejection reasons. Each gate failure is logged.
+- **Cause**: Legitimate when no setup qualifies. For the live SEPA + Metals config, check:
+  1. Index gate — SEPA needs Nifty above its EMA200 with a rising slope and regime ≠ BEAR.
+  2. RS leadership — only the top‑40 by 126‑day momentum (`rsRank126 ≤ 40`) qualify for SEPA.
+  3. Near‑high gate — SEPA entries must be within 15% of the 52‑week high.
+  4. Equity‑curve throttle — no new SEPA buys past 6% drawdown‑from‑peak.
+  5. Metals — trend gate (close > 200‑SMA) and positive risk‑adjusted momentum.
+  6. Kill switch active.
+- **Fix**: Check logs for rejection reasons; each gate failure is logged.
 
 ---
 

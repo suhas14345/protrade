@@ -1,59 +1,95 @@
-# System Context — ProTrade Alpha V3.1
+# Live System State & Setup — ProTrade Alpha
 
-## Current State
+Current operational state of the production system and how it's wired. For architecture see
+[blueprint.md](blueprint.md); for agent context see [AGENTS.md](AGENTS.md).
 
-| Component | Status | Notes |
-|-----------|--------|-------|
-| Gateway (index.ts) | ✅ Live | 24+ actions, single HTTPS endpoint |
-| Orchestrator | ✅ Live | Stage barriers, idempotency, 30min timeout |
-| Market Data (Kite) | ✅ Live | Kite Connect primary, session management |
-| Features Pipeline | ✅ Live | EMA, RSI, ATR, BB, VDU, gap risk, liquidity |
-| RS Ranking | ✅ Live | 0-99 percentile across universe |
-| Regime Detection | ✅ Live | 5 states, 3-bar hysteresis, breadth confirm |
-| Strategy Engine | ✅ Live | 6 strategies (bull + bear + neutral) |
-| Risk Pipeline | ✅ Live | 13 gates, fail-closed correlation |
-| Paper Broker | ✅ Live | Slippage model, Indian fees, gap-through-stop |
-| Dashboard | ✅ Live | 4 tabs (Dashboard, History, Logs, Settings) |
-| Settings Tab | ✅ Live | Kite credentials, auto-renewal test |
-| Scheduler Actions | ✅ Deployed | scheduledKiteRenew, scheduledEod in gateway |
-| Cloud Scheduler | ⚠️ Not Created | Jobs need manual setup in GCP Console |
-| Kite Auto-Renewal | ⚠️ TOTP Issue | Correct TOTP secret (base32 seed) needed |
-| Tests | ✅ 86 pass | 10 suites, all green |
+_Last verified: 2026‑08‑17._
 
 ## Deployment
 
-- **Project**: suhas-ag
-- **Region**: us-central1
-- **Gateway**: `https://us-central1-suhas-ag.cloudfunctions.net/gateway`
-- **Dashboard**: `https://suhas-ag.web.app`
-- **Node runtime**: 20
+| | |
+|---|---|
+| GCP project | `suhas-ag` |
+| Region | `us-central1` |
+| Node runtime | 20 |
+| Gateway | `https://us-central1-suhas-ag.cloudfunctions.net/gateway` |
+| Dashboard | `https://suhas-ag.web.app` |
+| Deployed functions | `gateway`, `taskDispatcher`, `processSymbolTask`, `orchestrateEodTask`, `orchestrateDeepSyncTask` |
 
-## Architecture
+Runtime flags (`config/runtime.ts`): `MODE=PAPER_LIVE`, `PAPER_ONLY=true`, `TRADING_ENABLED=true`,
+`KILL_SWITCH=false`.
 
-- Firebase Cloud Functions gen1 (single `gateway` HTTPS function, 540s timeout)
-- Firestore for all persistent state
-- React + Vite SPA on Firebase Hosting
-- Kite Connect for market data and broker API
-- Cloud Scheduler (HTTP POST to gateway) for daily automation
+## Strategies (live)
 
-## Known Issues
+- **SEPA** (`SepaBreakoutEOD`) — Minervini‑style trend breakout. `SEPA_CONFIG.SEPA_ONLY` is ON
+  (env `SEPA_ONLY=0` falls back to the dormant legacy 6‑strategy engine). `MAX_POS=10` leaders.
+- **Metals rotation** (`MetalsRotation`) — `GOLDBEES` / `SILVERBEES` momentum sleeve.
+  `METALS_CONFIG.ENABLED` ON, `MAX_POS=2`, `ALLOC_PCT=0.30`.
 
-1. **Cloud Scheduler not created** — Two cron jobs needed in GCP Console:
-   - `kite-auto-renew`: `30 8 * * 1-5` Asia/Kolkata → `{"action":"scheduledKiteRenew"}`
-   - `daily-eod`: `45 15 * * 1-5` Asia/Kolkata → `{"action":"scheduledEod"}`
+See [STRATEGIES.md](STRATEGIES.md) for the full gate/exit specification.
 
-2. **Kite TOTP secret** — Auto-renewal fails. User must provide the base32 seed string from Kite's 2FA setup (not the 6-digit code). Account may be locked after failed attempts.
+## Universes
 
-3. **No gcloud CLI** — Cannot create scheduler jobs programmatically; must use GCP Console.
+| Universe | Members | Role |
+|----------|---------|------|
+| `nifty200` | 200 | **Hunt** universe — EOD + morning evaluate signals here |
+| `nifty500` | 504 | **History‑fill** universe — daily strict‑delta top‑up (superset of nifty200) |
+| `nifty50` | 52 | Legacy set (incl. metals ETFs); no longer the hunt universe |
 
-4. **Calendar collection** — `CalendarService.syncFromIndexData()` not yet seeded; fallback to numeric date subtraction (fragile for weekends/holidays).
+`nifty200` is a verified **complete subset** of `nifty500`, so filling 500 keeps every hunt
+symbol current. Members: `universes/{id}/members/{SYM.NS}`. Metals bars are stored under
+`barsD/GOLDBEES` and `barsD/SILVERBEES` (no `.NS`).
 
-5. **Node 20 deprecation** — Runtime deprecates 2026-04-30; plan upgrade.
+## Cloud Scheduler jobs (weekdays, Asia/Kolkata)
 
-## Critical Build Requirement
+| Job | Schedule | Body | State |
+|-----|----------|------|-------|
+| `kite-auto-renew` | `30 8 * * 1-5` | `{"action":"scheduledKiteRenew"}` | ENABLED |
+| `eod-scan` | `30 16 * * 1-5` | `{"action":"scheduledEod"}` | ENABLED |
+| `history-fill-500` | `30 18 * * 1-5` | `{"action":"startDeepSync","universe":"nifty500","days":0}` | ENABLED |
+| `stale-cleanup` | `0 2 * * *` | `{"action":"cleanupStale"}` | ENABLED |
+| `morning-fill` | `15 9 * * 1-5` | `{"action":"scheduledMorning"}` | **PAUSED** (retired) |
 
-`firebase.json` has NO `predeploy` hook. Always run:
-```bash
-cd functions && npm run build && cd .. && firebase deploy --only functions
+`history-fill-500` uses `days=0` = **strict delta** (fetches each symbol from its last stored
+bar → today), so it self‑heals gaps of any length instead of a fixed 5‑day window. It runs at
+18:30 (after the 16:30 EOD) to avoid the single‑running‑job 409.
+
+## Daily cycle
+
 ```
-Forgetting `npm run build` deploys stale JavaScript.
+08:30  kite-auto-renew   → refresh Kite session
+16:30  eod-scan (nifty200):
+         per symbol: FETCH today's bar
+                   → FILL  prior‑day ACCEPTED orders at today's OPEN   ← next‑open fills land here
+                   → FEATURES → SIGNALS
+         finalize: RS_RANK → CORR → ORDERS (create tomorrow's orders)
+18:30  history-fill-500  → strict‑delta top‑up of all 504 (covers nifty200 too)
+02:00  stale-cleanup     → retention
+```
+
+Fills are **inside** the EOD run because the day's bar only exists after the fetch; the old
+09:15 morning job ran before the bar was available and left orders stranded `ACCEPTED`.
+
+## Data coverage
+
+- Equities: ~2019‑01 → present (~7.6 yr daily bars).
+- `GOLDBEES`: ~2015‑01 → present; `SILVERBEES`: ~2022‑02 → present (real ETF‑age limits).
+- 494/498 nifty500 non‑subset symbols current; 4 fail Kite instrument‑token resolution
+  (`AKZOINDIA`, `GSPL`, `GUJGASLTD`, `JBCHEPHARM`) — renamed/mismatched tickers, non‑nifty200.
+
+## Auth for admin/REST scripts
+
+Firestore & Cloud Scheduler REST calls need a Google OAuth access token minted from the local
+Firebase CLI credentials (`~/.config/configstore/firebase-tools.json`, `tokens.refresh_token`)
+against `https://oauth2.googleapis.com/token`. Tokens last ~1 hour. **Never commit or log** the
+client secret, refresh token, or any Kite credential/TOTP seed.
+
+## Critical build requirement
+
+`firebase.json` has **no** `predeploy` hook — always:
+
+```bash
+cd functions && npm run build && cd .. && firebase deploy --only functions --project suhas-ag
+```
+
+Forgetting `npm run build` ships stale JavaScript.

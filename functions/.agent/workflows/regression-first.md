@@ -45,7 +45,7 @@ This workflow MUST be followed BEFORE and AFTER every code change or deployment 
 
 4. **Verify Deployment & KITE Health**
    - Run `firebase functions:log --project suhas-ag -n 20` and confirm no cold-start errors.
-   - Run `Invoke-WebRequest -Uri "https://us-central1-suhas-ag.cloudfunctions.net/checkKiteHealth"` and confirm `{"status": "ACTIVE"}`.
+   - POST `{"action":"systemHealth"}` to the gateway and confirm Kite session is `ACTIVE` and data is fresh.
 
 5. **Trigger a Job and Monitor (Mandatory Checks)**
    - Trigger a small test run (Nifty50) from the dashboard.
@@ -63,6 +63,7 @@ This workflow MUST be followed BEFORE and AFTER every code change or deployment 
    - Verify no 429 rate limit errors from Kite API.
 
 7. **Scheduling & Sign-Off**
-   - **Rule: Morning Run Schedule** - Verify Cloud Scheduler matches the desired morning execution time (e.g. 09:15 IST).
+   - **Rule: Next-Open Fills** - Fills run INSIDE the EOD (`processSymbolTask` FILL stage), not a pre-open job. Confirm prior-day `ACCEPTED` orders flip to `FILLED` during the EOD run. The 09:15 `morning-fill` scheduler is PAUSED/retired — do not re-enable it.
+   - **Rule: Schedules** - Confirm Cloud Scheduler jobs are intact: `eod-scan` 16:30, `history-fill-500` 18:30 (nifty500, days=0 strict-delta), `kite-auto-renew` 08:30, `stale-cleanup` 02:00 (all Asia/Kolkata).
    - Job must reach `status: DONE` for the change to be considered safe.
    - If any check fails, roll back and diagnose before re-attempting.

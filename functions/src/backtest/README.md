@@ -44,7 +44,7 @@ respond correctly during replay. **Consider applying the same fix to live.**
 ## Running (Increment 1 — synthetic validation, no credentials)
 
 ```powershell
-cd c:\openapi\protrade\functions
+cd functions
 npm run build
 # In another terminal: start the Firestore emulator
 firebase emulators:start --only firestore    # or: npm run serve

@@ -1,213 +1,85 @@
-# ProTrade | Strategy Deep Dive (V3.1)
+# Strategies — ProTrade Alpha
 
-6 strategies across bull, range, and bear markets. All EOD — evaluate at close, enter at next open.
+The live daily configuration runs **two strategies together**: **SEPA** (equities) and a
+**Metals rotation** sleeve (2 ETFs). A legacy 6‑strategy engine remains in `strategy.ts` but is
+**dormant** — gated off by `SEPA_CONFIG.SEPA_ONLY` (default ON). All entries are decided at the
+close (EOD) and filled at the **next open** during the following evening's EOD `FILL` stage.
 
----
-
-## Market Regime Gating
-
-| Regime | Condition | Strategies Allowed | Risk Mult |
-|--------|-----------|-------------------|-----------|
-| **TREND** | EMA slopes up, breadth >55% | Pullback, Breakout, RSLeader | 1.0 |
-| **RANGE** | Flat EMAs, mixed breadth | Pullback, MeanReversion, RSLeader | 0.5 |
-| **BEAR** | EMA slopes down, breadth <35% | Short, BearBounce, MeanReversion(tight), RSLeader | 0.5 |
-| **HIGH_VOL** | Extreme volatility/VIX spike | Short, BearBounce | 0.25 |
-| **TRANSITION** | Regime change in progress | **None** (3-bar hysteresis cooldown) | 0.0 |
+Config lives in [functions/src/config/runtime.ts](functions/src/config/runtime.ts)
+(`SEPA_CONFIG`, `METALS_CONFIG`); evaluators in
+[functions/src/services/strategy.ts](functions/src/services/strategy.ts).
 
 ---
 
-## 1. PullbackEOD (BUY)
+## 1. SEPA — `SepaBreakoutEOD` (BUY, equities)
 
-**Concept**: Buy high-quality uptrends during temporary retracements.
+A faithful port of Minervini‑style **trend‑template + relative‑strength leadership**. Hunts the
+`nifty200` universe; only the strongest leaders near new highs get bought.
+
+**Index filter (market gate):** Nifty close > its EMA200, EMA200 slope > 0, and regime ≠ `BEAR`.
 
 | Gate | Condition |
 |------|-----------|
-| Regime | TREND or RANGE |
-| Trend | EMA20 > EMA50 |
-| EMA touch | Close within 0.3×ATR of EMA20, or inside EMA20-50 band |
-| RSI | Regime-aware range (TREND: 38-58, RANGE: 40-55) |
-| VDU | Volume Dry-Up must be active (hard gate) |
-| Events | No earnings within 5 days, no corporate actions |
-| RS | ≥ 60 (filter weak stocks) |
+| Trend template | `close > SMA50 > SMA150 > SMA200` **and** SMA200 rising (slope over last 20 bars) |
+| Near 52‑week high | `close ≥ high252 × (1 − 0.15)` — within **15%** of the 52‑week high |
+| RS leadership | `rsRank126 ≤ 40` — top‑40 by 126‑day momentum (`RS_TOP`) |
+| Feature window | ≥ 260 trailing bars (for SMA150/200, 52w‑high, 200‑slope) |
 
-- **Entry**: NEXT_OPEN
-- **Stop**: 2.0 × ATR below entry
-- **Target**: 3.0 × ATR above entry
-- **Max hold**: 7 days, trailing stop enabled
-- **Min score**: 55
-    *   **Target**: `Entry + (3.0 * ATR14)`.
+**Sizing & risk**
 
----
+- Risk **1.25%** of equity per trade (`RISK_PCT`), initial **hard stop 7%** (`HARD_STOP_PCT`).
+- Once up **15%** (`LOCK_AT_PCT`), arm a trailing lock **20%** below the highest close (`TRAIL_PCT`).
+- Max **10** concurrent SEPA positions (`MAX_POS`) — the strongest leaders win the slots.
+- **Equity‑curve throttle:** no new buys once drawdown‑from‑peak exceeds **6%** (`THROTTLE_HALT_PCT`).
 
-## 3. Long Strategy: Breakout Close EOD
-**Concept**: Riding momentum when a stock clears a high-conviction resistance level.
-
-*   **Setup Conditions**:
-    *   **Regime**: Must be `TREND`.
-    *   **Trend Alignment**: EMA20 > EMA50.
-    *   **20-Day High**: Today's Close > High of previous 20 trading days.
-    *   **Volume Confirm (v1.1)**: Volume must be **>= 1.2x SMA20 Volume**.
-*   **Execution**:
-    *   **Entry**: `NEXT_OPEN`.
-    *   **Stop Loss**: `Entry - (2.0 * ATR14)`.
-    *   **Target**: `Entry + (3.0 * ATR14)`.
+Exits (trend/stop/trail) are managed in `tradeManager.ts`.
 
 ---
 
-## 2. BreakoutCloseEOD (BUY)
+## 2. Metals rotation — `MetalsRotation` (BUY, ETFs)
 
-**Concept**: Catch breakouts from consolidation in strong trends.
+A small, self‑contained trend‑follower on the whitelisted metal ETFs **`GOLDBEES`** and
+**`SILVERBEES`**. It runs **alongside** SEPA and is deliberately **exempt** from the equity
+liquidity/RS/sector gates. Metals bars are stored under `barsD/GOLDBEES` / `barsD/SILVERBEES`
+(bare symbols, no `.NS`) and are appended to the daily dispatch regardless of universe.
 
 | Gate | Condition |
 |------|-----------|
-| Regime | TREND only |
-| Trend | EMA20 > EMA50 |
-| Breakout | Close > 20-day high |
-| Volume | Above 20-day SMA |
-| Consolidation | ≥5 of last 10 bars with range < 80% of average (V3.0) |
-| Events | No earnings/corporate actions |
-| RS | ≥ 70 |
+| Not already held | skip if an open position exists for the ETF |
+| Sleeve capacity | hold at most **2** metal ETFs (`MAX_POS`) |
+| Trend gate | `close > 200‑SMA` (`SMA_TREND`) |
+| Risk‑adjusted momentum | skip‑1‑month 126‑day return ÷ daily‑return volatility **> 0** (`MOM_LOOKBACK=126`, `MOM_SKIP=21`, `MIN_RA_MOM=0`) |
+| Feature window | ≥ 360 trailing bars |
 
-- **Entry**: NEXT_OPEN
-- **Stop**: 2.5 × ATR
-- **Target**: 4.0 × ATR
-- **Max hold**: 10 days, trailing stop
-- **Min score**: 60
+**Sizing & risk**
 
----
+- Sleeve budget **30%** of equity (`ALLOC_PCT`), split across the 2 slots.
+- Wide protective floor **25%** hard stop (`HARD_STOP_PCT`) — the real exit is the trend‑gate break.
 
-## 3. MeanReversionEOD (BUY)
-
-**Concept**: Buy extreme oversold conditions expecting a snap-back.
-
-### RANGE mode
-| Gate | Condition |
-|------|-----------|
-| Regime | RANGE |
-| Oversold | Close < Bollinger lower band, RSI < 30 |
-| Liquidity | Bucket A or B |
-| Trend neutral | \|EMA20 - EMA50\| / close < 1% |
-
-### BEAR mode (V3.1 — tighter)
-| Gate | Condition |
-|------|-----------|
-| Regime | BEAR |
-| Deep oversold | RSI < 25 (stricter than RANGE's 30) |
-| Liquidity | Bucket A only |
-| Below BB | Close < Bollinger lower band |
-
-- **Entry**: NEXT_OPEN
-- **Stop**: 1.5 × ATR · **Target**: 2.0 × ATR · **Max hold**: 5 days
-- **Min score**: 50, RS threshold: 30-100
+> **Honest note (from a blind walk‑forward):** the sleeve is a genuine, drawdown‑aware trend
+> edge but earns single‑digit long‑run CAGR and trails gold buy‑and‑hold. The large in‑sample
+> result came from the 2024–25 metals regime, not a durable edge. It's kept small on purpose.
 
 ---
 
-## 4. ShortBounceEOD (SELL)
-
-**Concept**: Sell the rip during confirmed downtrends (paper research mode).
-
-| Gate | Condition |
-|------|-----------|
-| Regime | BEAR or HIGH_VOL |
-| Config | SHORT_CONFIG.ENABLED = true |
-| Trend | EMA20 < EMA50 |
-| Bounce | ATR-normalized EMA touch |
-| RSI | 45-65 (overbought in downtrend) |
-| Liquidity | Bucket A only |
-| F&O ban | Symbol not in F&O ban list |
-| Max shorts | ≤ 2 concurrent |
-
-- **Entry**: NEXT_OPEN
-- **Stop**: 1.5 × ATR above · **Target**: 2.0 × ATR below · **Max hold**: 5 days
-- **Min score**: 65, RS threshold: 0-50 (only short weak stocks)
-
-> **Note**: Futures plumbing (lot sizes, expiry, F&O fees) not implemented. PnL approximate.
-
----
-
-## 5. BearBounceEOD (BUY) — V3.1
-
-**Concept**: Buy capitulation bounces — deeply oversold with selling climax exhaustion.
-
-| Gate | Condition |
-|------|-----------|
-| Regime | BEAR or HIGH_VOL |
-| Deep oversold | RSI < 25 |
-| Below BB | Close < Bollinger lower band |
-| Volume spike | Volume > 1.5× 20-day SMA (capitulation) |
-| Liquidity | Bucket A or B |
-
-- **Entry**: NEXT_OPEN
-- **Stop**: 1.5 × ATR · **Target**: 1.5 × ATR · **Max hold**: 3 days
-- **Min score**: 55, RS: 0-100 (no RS filter — oversold stocks have weak RS)
-
----
-
-## 6. RSLeaderEOD (BUY) — V3.1
-
-**Concept**: Buy stocks with exceptional relative strength — first to rally on turn.
-
-| Gate | Condition |
-|------|-----------|
-| Regime | Any (designed for bear markets) |
-| Uptrend | EMA20 > EMA50 (uptrend despite market) |
-| RS | ≥ 80 (top quintile) |
-| RSI | 40-65 (healthy pullback) |
-| EMA touch | ATR-normalized |
-| Liquidity | Bucket A; or B in non-BEAR |
-
-- **Entry**: NEXT_OPEN
-- **Stop**: 2.5 × ATR · **Target**: 4.0 × ATR · Trailing stop
-- **Min score**: 65, RS: 80-100
-
----
-
-## 13-Gate Risk Pipeline
-
-Every signal passes `doRiskApproval` before becoming an order:
-
-1. **Regime gate** — tradeAllowed, TRANSITION blocks all
-2. **Feature validation** — EMA20, ATR14 finite and positive
-3. **RSI fail-closed** — reject if unavailable
-4. **Kill switch** — RUNTIME_CONFIG.KILL_SWITCH
-5. **Event calendar** — earnings, corporate actions, F&O bans (strategy-aware)
-6. **RS filter** — per-strategy min/max thresholds
-7. **Gap risk** — reject if gapRiskScore ≥ 0.8
-8. **Drawdown** — halt at 20% DD; scale from 5%
-9. **Vol-targeting** — target 12% annual portfolio vol
-10. **ADV cap** — max 2% daily volume; ₹2Cr absolute
-11. **Gap stress** — worst-case overnight loss
-12. **Portfolio limits** — max positions, sector caps, heat
-13. **Correlation cluster** — max 2/cluster (fail-closed)
-
----
-
-## Dynamic Scoring
-
-| Modifier | Points | Condition |
-|----------|--------|-----------|
-| RS boost | +5 | rsScore ≥ 80 |
-| VDU boost | +5 | VDU active + Pullback/RSLeader |
-| Liquidity penalty | -5 | Bucket C |
-| BEAR short bonus | +5 | ShortBounce in BEAR |
-| BEAR leader bonus | +5 | RSLeader in BEAR |
-| BEAR long penalty | -5 | Generic longs in BEAR |
-| Inverse RS (shorts) | +5 | ShortBounce with RS ≤ 20 |
-
-Signal must exceed `max(strategyMinScore, regime.minSignalScore)`.
-
----
-
-## Signal → Position Flow
+## Signal → position flow
 
 ```
-Day N (15:45 IST):  EOD run → signals → risk approval → paper orders (ACCEPTED)
-Day N+1 (09:20 IST): doOpenFillSimulation() → fill at open + slippage → active position
+Day D (16:30 IST)  EOD hunt on nifty200 (+ metals): signals → APPROVED → paperOrders/{D} (ACCEPTED)
+Day D+1 (16:30)    EOD FILL stage: fills paperOrders/{D} at D+1's OPEN (+ slippage, clamped to [low,high])
+                   → position OPEN in portfolio/default/positions
+Daily              tradeManager marks P&L, applies trailing/hard stops and trend‑gate exits
 ```
 
-## 7. Technical Indicators Used (v1.1)
-*   **EMA (20, 50)**: Trend and ATR-normalized buy-zone detection.
-*   **RSI (14)**: Momentum and overextension gating.
-*   **ATR (14)**: Volatility-adjusted risk, stops, targets, and touch proximity.
-*   **Bollinger Bands**: Mean reversion boundaries.
-*   **Volume SMA (20)**: Breakout confirmation threshold.
+The fill runs **inside the next EOD** (after that day's bar is fetched), not at a pre‑open 09:15
+job — see [CONTEXT.md](CONTEXT.md).
+
+---
+
+## Legacy engine (dormant)
+
+With `SEPA_ONLY=0`, `strategy.ts` instead runs the older six‑strategy, regime‑gated engine
+(`PullbackEOD`, `BreakoutCloseEOD`, `MeanReversionEOD`, `ShortBounceEOD`, `BearBounceEOD`,
+`RSLeaderEOD`) behind a 13‑gate risk pipeline. It is **not** used in production and is retained
+only for research/backtests. Its detailed gate specification lives in the git history of this
+file (pre‑SEPA revisions) and in [blueprint.md](blueprint.md).
