@@ -39,6 +39,7 @@ exports.lastCloseOnOrBefore = lastCloseOnOrBefore;
 exports.markPosition = markPosition;
 exports.computeOpenUnrealized = computeOpenUnrealized;
 exports.persistOpenPositionMarks = persistOpenPositionMarks;
+exports.resolveInitialEquity = resolveInitialEquity;
 exports.recomputeAccountEquity = recomputeAccountEquity;
 /**
  * Single source of truth for account equity, drawdown, and realized-vol.
@@ -198,6 +199,21 @@ function annualisedVol(returns) {
     return Math.sqrt(variance) * Math.sqrt(252);
 }
 /**
+ * Resolve the IMMUTABLE equity anchor (deposited capital). Uses `initialEquity` when
+ * present; otherwise backfills a STABLE baseline once as `equity − realized − openUnrealized`
+ * and flags it for persistence. It deliberately NEVER falls back to `peakEquity`/`equity`
+ * as a live anchor — those move every run, so anchoring on them re-adds P&L each EOD and
+ * drifts equity up by ~openUnrealized per run (the bug this guards against).
+ */
+function resolveInitialEquity(account, realizedToDate, openUnrealized) {
+    const existing = account.initialEquity;
+    if (existing !== undefined && existing !== null && Number.isFinite(Number(existing))) {
+        return { initial: Number(existing), backfill: false };
+    }
+    const initial = (Number(account.equity) || 0) - realizedToDate - openUnrealized;
+    return { initial, backfill: true };
+}
+/**
  * Recompute account equity from authoritative state at `dateId`, persist a daily
  * equity snapshot, refresh peak / EMA / realised-vol, and write them back to
  * `config/account`. Returns the update, or null if there is no account config.
@@ -206,17 +222,22 @@ function annualisedVol(returns) {
  * fields with the same derived values.
  */
 async function recomputeAccountEquity(db, dateId) {
-    var _a, _b, _c, _d, _e;
+    var _a, _b;
     const accountRef = db.collection('config').doc('account');
     const accountSnap = await accountRef.get();
     if (!accountSnap.exists)
         return null;
     const account = accountSnap.data();
-    // Anchor for the derivation. Falls back to the seed value if an older account
-    // doc predates the initialEquity field.
-    const initial = (_c = (_b = (_a = account.initialEquity) !== null && _a !== void 0 ? _a : account.peakEquity) !== null && _b !== void 0 ? _b : account.equity) !== null && _c !== void 0 ? _c : 1000000;
     const realizedToDate = await sumRealizedToDate(db, dateId);
     const openUnrealized = await computeOpenUnrealized(db, dateId);
+    // Anchor = deposited capital, IMMUTABLE. It must NEVER be peakEquity or equity:
+    // those move every run, so anchoring on them re-adds realised+unrealised P&L each
+    // EOD and inflates equity unboundedly. See resolveInitialEquity.
+    const anchor = resolveInitialEquity(account, realizedToDate, openUnrealized);
+    const initial = anchor.initial;
+    if (anchor.backfill) {
+        await accountRef.set({ initialEquity: initial }, { merge: true });
+    }
     const equity = initial + realizedToDate + openUnrealized;
     // Persist today's equity snapshot (idempotent per dateId).
     await db.collection('stats').doc('equityCurve').collection('days').doc(dateId).set({
@@ -236,14 +257,14 @@ async function recomputeAccountEquity(db, dateId) {
         .get();
     const series = snapshots.docs.map((d) => d.data().equity);
     const emaWindow = series.slice(-period);
-    let equityEMA25 = (_d = emaWindow[0]) !== null && _d !== void 0 ? _d : equity;
+    let equityEMA25 = (_a = emaWindow[0]) !== null && _a !== void 0 ? _a : equity;
     const k = 2 / (period + 1);
     for (let i = 1; i < emaWindow.length; i++) {
         equityEMA25 = emaWindow[i] * k + equityEMA25 * (1 - k);
     }
     const volWindow = series.slice(-VOL_LOOKBACK_POINTS);
     const portfolioRealizedVol = annualisedVol(dailyReturns(volWindow));
-    const peakEquity = Math.max((_e = account.peakEquity) !== null && _e !== void 0 ? _e : equity, equity);
+    const peakEquity = Math.max((_b = account.peakEquity) !== null && _b !== void 0 ? _b : equity, equity);
     await accountRef.update({ equity, peakEquity, equityEMA25, portfolioRealizedVol });
     // Persist per-position marks with the SAME formula/close so position docs
     // reconcile to config/account to the paisa.

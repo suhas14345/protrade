@@ -106,4 +106,54 @@ describe('PaperBroker — doOpenFillSimulation', () => {
         expect(calendar_1.CalendarService.getPrevTradingDateId).toHaveBeenCalledWith('20260413');
     });
 });
+/**
+ * SEPA buying-power gate. Regression for the capital gap: SEPA sized off TOTAL
+ * equity with no gross-exposure cap, so SEPA (≤ 10 × ~17.9%) + metals (30%) could
+ * jointly deploy ~208% of equity. The gate caps SEPA gross to its BOOK_PCT book so
+ * SEPA + metals can never exceed 100% of equity.
+ */
+describe('capSepaQtyToBook (SEPA buying-power gate)', () => {
+    it('returns the desired qty when the whole order fits in the book', () => {
+        // book 350k, nothing deployed, order 100 @ 1000 = 100k ≤ 350k
+        expect((0, paperBroker_1.capSepaQtyToBook)(100, 1000, 0, 350000)).toBe(100);
+    });
+    it('scales the order down to the remaining book', () => {
+        // remaining = 350k - 300k = 50k ; at 1000/share → 50 shares (< desired 100)
+        expect((0, paperBroker_1.capSepaQtyToBook)(100, 1000, 300000, 350000)).toBe(50);
+    });
+    it('returns 0 when the book is full', () => {
+        expect((0, paperBroker_1.capSepaQtyToBook)(100, 1000, 350000, 350000)).toBe(0);
+        expect((0, paperBroker_1.capSepaQtyToBook)(100, 1000, 400000, 350000)).toBe(0);
+    });
+    it('floors fractional share capacity (never over-commits by rounding)', () => {
+        // remaining 50,900 / 1000 = 50.9 → 50
+        expect((0, paperBroker_1.capSepaQtyToBook)(100, 1000, 299100, 350000)).toBe(50);
+    });
+    it('does not gate when priceRef is unknown (0)', () => {
+        expect((0, paperBroker_1.capSepaQtyToBook)(100, 0, 0, 350000)).toBe(100);
+    });
+    it('invariant: sequentially placed SEPA orders never exceed the book', () => {
+        const equity = 500000;
+        const sepaBook = equity * 0.70; // 350k SEPA book
+        const price = 125;
+        const desiredPerOrder = 700; // 700 * 125 = 87,500 ≈ 17.5% each
+        let deployed = 0;
+        let placed = 0;
+        for (let i = 0; i < 10; i++) {
+            const qty = (0, paperBroker_1.capSepaQtyToBook)(desiredPerOrder, price, deployed, sepaBook);
+            if (qty <= 0)
+                continue;
+            deployed += qty * price;
+            placed++;
+        }
+        // Never breaches the book...
+        expect(deployed).toBeLessThanOrEqual(sepaBook + 1e-6);
+        // ...and with metals at 30%, combined stays within 100% of equity.
+        const metalsBook = equity * 0.30;
+        expect(deployed + metalsBook).toBeLessThanOrEqual(equity + 1e-6);
+        // ~4 fully-funded positions fit in the 70% book (not 10 leveraged ones).
+        expect(placed).toBeGreaterThanOrEqual(3);
+        expect(placed).toBeLessThanOrEqual(4);
+    });
+});
 //# sourceMappingURL=paperBroker.test.js.map

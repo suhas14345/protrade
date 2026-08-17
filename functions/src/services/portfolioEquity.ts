@@ -193,6 +193,26 @@ export interface EquityUpdate {
 }
 
 /**
+ * Resolve the IMMUTABLE equity anchor (deposited capital). Uses `initialEquity` when
+ * present; otherwise backfills a STABLE baseline once as `equity − realized − openUnrealized`
+ * and flags it for persistence. It deliberately NEVER falls back to `peakEquity`/`equity`
+ * as a live anchor — those move every run, so anchoring on them re-adds P&L each EOD and
+ * drifts equity up by ~openUnrealized per run (the bug this guards against).
+ */
+export function resolveInitialEquity(
+  account: { initialEquity?: number | null; equity?: number | null },
+  realizedToDate: number,
+  openUnrealized: number
+): { initial: number; backfill: boolean } {
+  const existing = account.initialEquity;
+  if (existing !== undefined && existing !== null && Number.isFinite(Number(existing))) {
+    return { initial: Number(existing), backfill: false };
+  }
+  const initial = (Number(account.equity) || 0) - realizedToDate - openUnrealized;
+  return { initial, backfill: true };
+}
+
+/**
  * Recompute account equity from authoritative state at `dateId`, persist a daily
  * equity snapshot, refresh peak / EMA / realised-vol, and write them back to
  * `config/account`. Returns the update, or null if there is no account config.
@@ -210,12 +230,19 @@ export async function recomputeAccountEquity(
   const account = accountSnap.data() as {
     initialEquity?: number; equity?: number; peakEquity?: number;
   };
-  // Anchor for the derivation. Falls back to the seed value if an older account
-  // doc predates the initialEquity field.
-  const initial = account.initialEquity ?? account.peakEquity ?? account.equity ?? 1_000_000;
 
   const realizedToDate = await sumRealizedToDate(db, dateId);
   const openUnrealized = await computeOpenUnrealized(db, dateId);
+
+  // Anchor = deposited capital, IMMUTABLE. It must NEVER be peakEquity or equity:
+  // those move every run, so anchoring on them re-adds realised+unrealised P&L each
+  // EOD and inflates equity unboundedly. See resolveInitialEquity.
+  const anchor = resolveInitialEquity(account, realizedToDate, openUnrealized);
+  const initial = anchor.initial;
+  if (anchor.backfill) {
+    await accountRef.set({ initialEquity: initial }, { merge: true });
+  }
+
   const equity = initial + realizedToDate + openUnrealized;
 
   // Persist today's equity snapshot (idempotent per dateId).

@@ -65,6 +65,7 @@ async function runResetTradingState(opts) {
     await db.collection('config').doc('account').set({
         equity: opts.equity,
         peakEquity: opts.equity,
+        initialEquity: opts.equity, // immutable anchor — equity is derived off THIS, never peakEquity
         baseRiskPct: 0.005,
         maxOpenRiskR: 6,
         maxPositions: 10,
