@@ -3,7 +3,7 @@ import { Timestamp } from 'firebase-admin/firestore';
 import { taskClient } from './tasks';
 import { CalendarService } from './calendar';
 import { logger } from './logger';
-import { ORCH_CONFIG, MARKET_HOURS, RUNTIME_CONFIG } from '../config/runtime';
+import { ORCH_CONFIG, MARKET_HOURS, RUNTIME_CONFIG, METALS_CONFIG } from '../config/runtime';
 import { isMarketClosed } from './marketdata';
 import { raiseAlert, AlertType } from './alerting';
 
@@ -335,6 +335,10 @@ export async function runEodLogic(targetDate: string, targetJobId: string, targe
 
   const universeSnap = await db.collection('universes').doc(targetUniverse).collection('members').get();
   const symbols: string[] = universeSnap.docs.map((d: any) => d.id).filter((s: string) => s !== '^NSEI');
+  // Metals sleeve ETFs are always part of the daily run, independent of universe membership.
+  if (METALS_CONFIG.ENABLED) {
+    for (const m of METALS_CONFIG.SYMBOLS) if (!symbols.includes(m)) symbols.push(m);
+  }
   
   await db.collection('jobs').doc(targetJobId).update({ 'counts.total': symbols.length, stage: 'FETCH' });
 
@@ -384,6 +388,10 @@ export async function runMorningLogic(targetDate: string, targetJobId: string, t
   const db = getDb();
   const universeSnap = await db.collection('universes').doc(targetUniverse).collection('members').get();
   const symbols = universeSnap.docs.map(d => d.id);
+  // Metals sleeve ETFs are always part of the morning fill run too.
+  if (METALS_CONFIG.ENABLED) {
+    for (const m of METALS_CONFIG.SYMBOLS) if (!symbols.includes(m)) symbols.push(m);
+  }
   
   await db.collection('jobs').doc(targetJobId).update({ 'counts.total': symbols.length, stage: 'ORDERS' });
 

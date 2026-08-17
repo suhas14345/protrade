@@ -353,6 +353,12 @@ async function runEodLogic(targetDate, targetJobId, targetUniverse = 'nifty50', 
     }
     const universeSnap = await db.collection('universes').doc(targetUniverse).collection('members').get();
     const symbols = universeSnap.docs.map((d) => d.id).filter((s) => s !== '^NSEI');
+    // Metals sleeve ETFs are always part of the daily run, independent of universe membership.
+    if (runtime_1.METALS_CONFIG.ENABLED) {
+        for (const m of runtime_1.METALS_CONFIG.SYMBOLS)
+            if (!symbols.includes(m))
+                symbols.push(m);
+    }
     await db.collection('jobs').doc(targetJobId).update({ 'counts.total': symbols.length, stage: 'FETCH' });
     try {
         // 2. Risk-First: Manage Trades (Gap B3)
@@ -398,6 +404,12 @@ async function runMorningLogic(targetDate, targetJobId, targetUniverse = 'nifty5
     const db = getDb();
     const universeSnap = await db.collection('universes').doc(targetUniverse).collection('members').get();
     const symbols = universeSnap.docs.map(d => d.id);
+    // Metals sleeve ETFs are always part of the morning fill run too.
+    if (runtime_1.METALS_CONFIG.ENABLED) {
+        for (const m of runtime_1.METALS_CONFIG.SYMBOLS)
+            if (!symbols.includes(m))
+                symbols.push(m);
+    }
     await db.collection('jobs').doc(targetJobId).update({ 'counts.total': symbols.length, stage: 'ORDERS' });
     try {
         for (const symbol of symbols) {
