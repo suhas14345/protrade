@@ -63,6 +63,18 @@ function computeFeeEstimate(fillPrice: number, fillQty: number, side: 'BUY' | 'S
 }
 
 /**
+ * SEPA buying-power gate (pure): the largest quantity ≤ `desiredQty` that keeps
+ * gross deployed SEPA capital within `book`. Returns 0 when the book is full, and
+ * `desiredQty` unchanged when `priceRef` is unknown (0). Keeps the two strategies
+ * from jointly committing more than 100% of equity.
+ */
+export function capSepaQtyToBook(desiredQty: number, priceRef: number, deployed: number, book: number): number {
+  if (!(priceRef > 0)) return desiredQty;
+  const affordable = Math.max(0, Math.floor((book - deployed) / priceRef));
+  return Math.min(desiredQty, affordable);
+}
+
+/**
  * Paper Broker: Places orders for APPROVED signals.
  */
 export async function doPlaceOrders(dateId: string, jobId?: string) {
@@ -85,10 +97,21 @@ export async function doPlaceOrders(dateId: string, jobId?: string) {
   // The cap applies ONLY to SEPA signals — the metals sleeve manages its own slots in
   // its evaluator, so metals signals are never ranked or dropped here.
   let allowedIds: Set<string> | null = null;
+  let sepaBook = Number.POSITIVE_INFINITY;   // gross-capital cap for the SEPA book (INR)
+  let sepaDeployed = 0;                        // capital already committed to open SEPA positions (INR, at cost)
   if (SEPA_CONFIG.SEPA_ONLY) {
     const openSnap = await db.collection('portfolio').doc('default').collection('positions')
       .where('status', '==', 'OPEN').get();
-    const openSepa = openSnap.docs.filter(d => (d.data() as PaperPosition).strategy === 'SepaBreakoutEOD').length;
+    const sepaPositions = openSnap.docs.filter(d => (d.data() as PaperPosition).strategy === 'SepaBreakoutEOD');
+    const openSepa = sepaPositions.length;
+    // Gross capital already tied up in open SEPA positions (at entry cost).
+    sepaDeployed = sepaPositions.reduce((s, d) => {
+      const p = d.data() as PaperPosition;
+      return s + Math.abs(Number(p.avgEntryPrice) * Number(p.qty));
+    }, 0);
+    const accountSnap = await db.collection('config').doc('account').get();
+    const equity = Number((accountSnap.data() as any)?.equity) || 0;
+    sepaBook = equity * SEPA_CONFIG.BOOK_PCT;
     const slots = Math.max(0, SEPA_CONFIG.MAX_POS - openSepa);
     const ranked = signalsSnap.docs
       .filter(d => (d.data() as Signal).strategy === 'SepaBreakoutEOD' && !(d.data() as Signal).execution?.status)
@@ -107,16 +130,36 @@ export async function doPlaceOrders(dateId: string, jobId?: string) {
 
     const atrRef = signal.atrRef || signal.features?.atr14 || 0;
     const stopMult = signal.stopAtrMult || 2.0;
+    const originalQty = signal.riskApproval?.sizedQty || 0;
+    let sizedQty = originalQty;
+    let riskAmount = signal.riskApproval?.riskAmount || 0;
+
+    // SEPA buying-power gate: cap gross deployed capital to the SEPA book so SEPA and
+    // the metals sleeve never jointly commit > 100% of equity. priceRef reconstructs
+    // the decision close from the SEPA stop (atrRef = close * HARD_STOP_PCT). Scale the
+    // order down to the remaining book; skip (leave APPROVED-unfilled) if none is left.
+    if (SEPA_CONFIG.SEPA_ONLY && signal.strategy === 'SepaBreakoutEOD') {
+      const priceRef = SEPA_CONFIG.HARD_STOP_PCT > 0 ? atrRef / SEPA_CONFIG.HARD_STOP_PCT : 0;
+      if (priceRef > 0) {
+        sizedQty = capSepaQtyToBook(sizedQty, priceRef, sepaDeployed, sepaBook);
+        if (sizedQty <= 0) {
+          await logger.info(`[PaperBroker] SEPA ${signal.symbol} unfunded — book full (deployed ${sepaDeployed.toFixed(0)}/${sepaBook.toFixed(0)})`, 'PaperBroker', { jobId, symbol: signal.symbol });
+          continue;
+        }
+        if (sizedQty < originalQty && originalQty > 0) riskAmount = riskAmount * (sizedQty / originalQty);
+        sepaDeployed += sizedQty * priceRef;
+      }
+    }
 
     const orderId = doc.id;
     const order: PaperOrder = {
       symbol: signal.symbol,
       side: signal.direction,
       orderType: 'ENTRY',
-      intendedQty: signal.riskApproval?.sizedQty || 0,
+      intendedQty: sizedQty,
       intendedEntryRef: 'OPEN',
       createdFromSignalId: doc.id,
-      risk: { plannedR: 1.0, riskAmount: signal.riskApproval?.riskAmount || 0, stopDistance: atrRef * stopMult },
+      risk: { plannedR: 1.0, riskAmount, stopDistance: atrRef * stopMult },
       status: 'ACCEPTED'
     };
 

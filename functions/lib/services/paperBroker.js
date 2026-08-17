@@ -33,6 +33,7 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.capSepaQtyToBook = capSepaQtyToBook;
 exports.doPlaceOrders = doPlaceOrders;
 exports.doOpenFillSimulation = doOpenFillSimulation;
 const admin = __importStar(require("firebase-admin"));
@@ -88,10 +89,22 @@ function computeFeeEstimate(fillPrice, fillQty, side) {
     return Math.round((brokerage + exchangeTxn + sebiTurnover + stampDuty + stt + gst) * 100) / 100;
 }
 /**
+ * SEPA buying-power gate (pure): the largest quantity ≤ `desiredQty` that keeps
+ * gross deployed SEPA capital within `book`. Returns 0 when the book is full, and
+ * `desiredQty` unchanged when `priceRef` is unknown (0). Keeps the two strategies
+ * from jointly committing more than 100% of equity.
+ */
+function capSepaQtyToBook(desiredQty, priceRef, deployed, book) {
+    if (!(priceRef > 0))
+        return desiredQty;
+    const affordable = Math.max(0, Math.floor((book - deployed) / priceRef));
+    return Math.min(desiredQty, affordable);
+}
+/**
  * Paper Broker: Places orders for APPROVED signals.
  */
 async function doPlaceOrders(dateId, jobId) {
-    var _a, _b, _c, _d;
+    var _a, _b, _c, _d, _e;
     const db = getDb();
     await logger_1.logger.info(`[PaperBroker] Placing orders for ${dateId}`, 'PaperBroker', { dateId, jobId });
     (0, safety_1.checkSafety)();
@@ -107,10 +120,21 @@ async function doPlaceOrders(dateId, jobId) {
     // The cap applies ONLY to SEPA signals — the metals sleeve manages its own slots in
     // its evaluator, so metals signals are never ranked or dropped here.
     let allowedIds = null;
+    let sepaBook = Number.POSITIVE_INFINITY; // gross-capital cap for the SEPA book (INR)
+    let sepaDeployed = 0; // capital already committed to open SEPA positions (INR, at cost)
     if (runtime_1.SEPA_CONFIG.SEPA_ONLY) {
         const openSnap = await db.collection('portfolio').doc('default').collection('positions')
             .where('status', '==', 'OPEN').get();
-        const openSepa = openSnap.docs.filter(d => d.data().strategy === 'SepaBreakoutEOD').length;
+        const sepaPositions = openSnap.docs.filter(d => d.data().strategy === 'SepaBreakoutEOD');
+        const openSepa = sepaPositions.length;
+        // Gross capital already tied up in open SEPA positions (at entry cost).
+        sepaDeployed = sepaPositions.reduce((s, d) => {
+            const p = d.data();
+            return s + Math.abs(Number(p.avgEntryPrice) * Number(p.qty));
+        }, 0);
+        const accountSnap = await db.collection('config').doc('account').get();
+        const equity = Number((_a = accountSnap.data()) === null || _a === void 0 ? void 0 : _a.equity) || 0;
+        sepaBook = equity * runtime_1.SEPA_CONFIG.BOOK_PCT;
         const slots = Math.max(0, runtime_1.SEPA_CONFIG.MAX_POS - openSepa);
         const ranked = signalsSnap.docs
             .filter(d => { var _a; return d.data().strategy === 'SepaBreakoutEOD' && !((_a = d.data().execution) === null || _a === void 0 ? void 0 : _a.status); })
@@ -122,22 +146,42 @@ async function doPlaceOrders(dateId, jobId) {
     }
     for (const doc of signalsSnap.docs) {
         const signal = doc.data();
-        if ((_a = signal.execution) === null || _a === void 0 ? void 0 : _a.status)
+        if ((_b = signal.execution) === null || _b === void 0 ? void 0 : _b.status)
             continue;
         // The SEPA leader cap only gates SEPA signals; metals (and any other) signals pass.
         if (allowedIds && signal.strategy === 'SepaBreakoutEOD' && !allowedIds.has(doc.id))
             continue;
-        const atrRef = signal.atrRef || ((_b = signal.features) === null || _b === void 0 ? void 0 : _b.atr14) || 0;
+        const atrRef = signal.atrRef || ((_c = signal.features) === null || _c === void 0 ? void 0 : _c.atr14) || 0;
         const stopMult = signal.stopAtrMult || 2.0;
+        const originalQty = ((_d = signal.riskApproval) === null || _d === void 0 ? void 0 : _d.sizedQty) || 0;
+        let sizedQty = originalQty;
+        let riskAmount = ((_e = signal.riskApproval) === null || _e === void 0 ? void 0 : _e.riskAmount) || 0;
+        // SEPA buying-power gate: cap gross deployed capital to the SEPA book so SEPA and
+        // the metals sleeve never jointly commit > 100% of equity. priceRef reconstructs
+        // the decision close from the SEPA stop (atrRef = close * HARD_STOP_PCT). Scale the
+        // order down to the remaining book; skip (leave APPROVED-unfilled) if none is left.
+        if (runtime_1.SEPA_CONFIG.SEPA_ONLY && signal.strategy === 'SepaBreakoutEOD') {
+            const priceRef = runtime_1.SEPA_CONFIG.HARD_STOP_PCT > 0 ? atrRef / runtime_1.SEPA_CONFIG.HARD_STOP_PCT : 0;
+            if (priceRef > 0) {
+                sizedQty = capSepaQtyToBook(sizedQty, priceRef, sepaDeployed, sepaBook);
+                if (sizedQty <= 0) {
+                    await logger_1.logger.info(`[PaperBroker] SEPA ${signal.symbol} unfunded — book full (deployed ${sepaDeployed.toFixed(0)}/${sepaBook.toFixed(0)})`, 'PaperBroker', { jobId, symbol: signal.symbol });
+                    continue;
+                }
+                if (sizedQty < originalQty && originalQty > 0)
+                    riskAmount = riskAmount * (sizedQty / originalQty);
+                sepaDeployed += sizedQty * priceRef;
+            }
+        }
         const orderId = doc.id;
         const order = {
             symbol: signal.symbol,
             side: signal.direction,
             orderType: 'ENTRY',
-            intendedQty: ((_c = signal.riskApproval) === null || _c === void 0 ? void 0 : _c.sizedQty) || 0,
+            intendedQty: sizedQty,
             intendedEntryRef: 'OPEN',
             createdFromSignalId: doc.id,
-            risk: { plannedR: 1.0, riskAmount: ((_d = signal.riskApproval) === null || _d === void 0 ? void 0 : _d.riskAmount) || 0, stopDistance: atrRef * stopMult },
+            risk: { plannedR: 1.0, riskAmount, stopDistance: atrRef * stopMult },
             status: 'ACCEPTED'
         };
         await db.collection('paperOrders').doc(dateId).collection('items').doc(orderId).set(order);

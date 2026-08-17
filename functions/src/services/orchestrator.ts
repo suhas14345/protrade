@@ -343,9 +343,10 @@ export async function runEodLogic(targetDate: string, targetJobId: string, targe
   await db.collection('jobs').doc(targetJobId).update({ 'counts.total': symbols.length, stage: 'FETCH' });
 
   try {
-    // 2. Risk-First: Manage Trades (Gap B3)
-    const { doManageTrades } = await import('./tradeManager');
-    await doManageTrades(dateId, targetJobId);
+    // Trade management (exits) is NOT run here: today's per-symbol bars are fetched
+    // asynchronously in the fan-out below, so at this point getBarOn(symbol, today)
+    // is null and every position would be skipped. It runs in the finalize step
+    // (checkAndFinalizeJob), after all bars are fetched, before placing new orders.
 
     // 3. Index Processing (Regime)
     const { doFetchCandles } = await import('./marketdata');
@@ -586,6 +587,22 @@ async function checkAndFinalizeJob(db: any, jobRef: any, jobId: string, dateId: 
     } catch (corrErr: any) {
       await logger.warn(`[Orchestrator] CorrTopN failed (non-blocking): ${corrErr.message}`, 'Orchestrator', { jobId });
       await auditLog(db, jobId, 'STAGE_FAILED', { stage: 'CORR', error: corrErr.message });
+    }
+
+    // Manage open positions against today's just-fetched close, then place orders.
+    // Runs here (finalize, after all per-symbol FETCH completed) so getBarOn(today)
+    // resolves — at the start of the EOD the bars don't exist yet. Covers every open
+    // position, not just dispatched symbols. Exits queue as next-open orders.
+    if (jobData.type === 'EOD_RUN') {
+      await jobRef.update({ stage: 'MANAGE' });
+      try {
+        const { doManageTrades } = await import('./tradeManager');
+        await doManageTrades(dateId, jobId);
+        await auditLog(db, jobId, 'STAGE_COMPLETE', { stage: 'MANAGE' });
+      } catch (mgErr: any) {
+        await logger.warn(`[Orchestrator] Trade management failed: ${mgErr.message}`, 'Orchestrator', { jobId });
+        await auditLog(db, jobId, 'STAGE_FAILED', { stage: 'MANAGE', error: mgErr.message });
+      }
     }
 
     // Orders

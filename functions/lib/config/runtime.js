@@ -28,6 +28,9 @@ exports.SEPA_CONFIG = {
     MAX_POS: 10, // max concurrent SEPA positions (take the strongest leaders)
     SMA200_SLOPE_LOOKBACK: 20, // bars back used to confirm the 200-SMA is rising
     THROTTLE_HALT_PCT: 0.06, // equity-curve throttle: no new buys beyond this drawdown-from-peak
+    BOOK_PCT: 0.70, // SEPA capital book: gross deployed capital capped at this fraction of
+    // equity (metals sleeve gets the rest via ALLOC_PCT). Prevents the two
+    // strategies from jointly committing > 100% of equity (implicit leverage).
 };
 // Metals rotation sleeve — a small, self-contained trend-following ETF strategy
 // that runs ALONGSIDE SEPA (not exclusive). It trades only the whitelisted metal
