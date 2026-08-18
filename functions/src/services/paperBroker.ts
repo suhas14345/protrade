@@ -134,18 +134,30 @@ export async function doPlaceOrders(dateId: string, jobId?: string) {
     equityBook = settledCash(accountSnap.data() as any) * SEPA_CONFIG.BOOK_PCT;
     // Per-strategy leader slots (each keeps its own MAX_POS); all strategies share the one book.
     allowedIds = new Set<string>();
+    // One entry per symbol across ALL equity strategies. Seed with symbols that already
+    // hold an open equity position, then let strategies claim leaders in priority order
+    // (SEPA first). Prevents SEPA and ATH from both ordering the same stock, which would
+    // double-charge the shared equity book and waste a leader slot on a dup the fill drops.
+    const claimedSymbols = new Set<string>(equityPositions.map(d => (d.data() as PaperPosition).symbol));
     for (const st of [
       { name: 'SepaBreakoutEOD', max: SEPA_CONFIG.MAX_POS },
       { name: 'ATHPullbackEOD', max: ATH_CONFIG.MAX_POS },
     ]) {
       const openCount = equityPositions.filter(d => (d.data() as PaperPosition).strategy === st.name).length;
       const slots = Math.max(0, st.max - openCount);
-      signalsSnap.docs
+      if (slots <= 0) continue;
+      const picks = signalsSnap.docs
         .filter(d => (d.data() as Signal).strategy === st.name && !(d.data() as Signal).execution?.status)
-        .map(d => ({ id: d.id, rank: Number((d.data() as Signal).features?.rsRank126 ?? Number.MAX_SAFE_INTEGER) }))
-        .sort((a, b) => a.rank - b.rank)
-        .slice(0, slots)
-        .forEach(x => allowedIds!.add(x.id));
+        .map(d => ({ id: d.id, symbol: (d.data() as Signal).symbol, rank: Number((d.data() as Signal).features?.rsRank126 ?? Number.MAX_SAFE_INTEGER) }))
+        .sort((a, b) => a.rank - b.rank);
+      let taken = 0;
+      for (const p of picks) {
+        if (taken >= slots) break;
+        if (claimedSymbols.has(p.symbol)) continue;
+        allowedIds.add(p.id);
+        claimedSymbols.add(p.symbol);
+        taken++;
+      }
     }
   }
 
@@ -262,6 +274,14 @@ export async function doOpenFillSimulation(jobId: string, runDate: string, symbo
       if (decision.action !== 'FILL') {
         const reason = decision.action === 'CANCEL_GAP_BELOW' ? 'GAP_BELOW_STOP' : 'NO_FILL_LIMIT';
         batch.update(doc.ref, { status: 'CANCELLED', rejectReason: reason });
+        // Terminalise the signal so it doesn't linger in ORDERED forever.
+        if (order.createdFromSignalId) {
+          batch.set(
+            db.collection('signals').doc(prevDateId).collection('items').doc(order.createdFromSignalId),
+            { status: 'CANCELLED', execution: { status: 'CANCELLED', orderId: doc.id } },
+            { merge: true },
+          );
+        }
         await logger.info(`[PaperBroker] LIMIT ${symbol} not filled (${reason})`, 'PaperBroker', { symbol, jobId });
         continue;
       }
@@ -272,6 +292,14 @@ export async function doOpenFillSimulation(jobId: string, runDate: string, symbo
     
     // V3.0: Fill price bounds — clamp to [bar.low, bar.high]
     fillPrice = Math.max(bar.low, Math.min(bar.high, fillPrice));
+
+    // A LIMIT buy must never pay more than its ceiling: slippage + the bar clamp above
+    // can push the fill past limitHi. Cap it back down (still ≥ bar.low, since we only
+    // reach here when bar.low ≤ limitHi). Keeps "limit" a real price ceiling.
+    if (order.orderType === 'ENTRY' && order.intendedEntryRef === 'LIMIT'
+        && order.side === 'BUY' && Number.isFinite(Number(order.limitHi))) {
+      fillPrice = Math.min(fillPrice, Number(order.limitHi));
+    }
     
     // V3.0: Gap-through-stop simulation — if open gaps past stop, fill at open (not stop)
     if (order.orderType === 'EXIT' || order.exitType) {
@@ -325,6 +353,7 @@ export async function doOpenFillSimulation(jobId: string, runDate: string, symbo
       const existingPos = await posDocRef.get();
       if (openedThisBatch || (existingPos.exists && (existingPos.data() as PaperPosition).status === 'OPEN')) {
         batch.update(doc.ref, { status: 'CANCELLED', rejectReason: 'POSITION_ALREADY_OPEN' });
+        batch.update(sigSnap.ref, { status: 'CANCELLED', execution: { status: 'CANCELLED', orderId: doc.id } });
         await logger.warn(`[PaperBroker] REJECTING stacked entry: ${symbol} already has an OPEN position`, 'PaperBroker', { symbol, jobId });
         continue;
       }

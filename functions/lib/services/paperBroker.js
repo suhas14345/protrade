@@ -155,18 +155,33 @@ async function doPlaceOrders(dateId, jobId) {
         equityBook = (0, portfolioEquity_1.settledCash)(accountSnap.data()) * runtime_1.SEPA_CONFIG.BOOK_PCT;
         // Per-strategy leader slots (each keeps its own MAX_POS); all strategies share the one book.
         allowedIds = new Set();
+        // One entry per symbol across ALL equity strategies. Seed with symbols that already
+        // hold an open equity position, then let strategies claim leaders in priority order
+        // (SEPA first). Prevents SEPA and ATH from both ordering the same stock, which would
+        // double-charge the shared equity book and waste a leader slot on a dup the fill drops.
+        const claimedSymbols = new Set(equityPositions.map(d => d.data().symbol));
         for (const st of [
             { name: 'SepaBreakoutEOD', max: runtime_1.SEPA_CONFIG.MAX_POS },
             { name: 'ATHPullbackEOD', max: runtime_1.ATH_CONFIG.MAX_POS },
         ]) {
             const openCount = equityPositions.filter(d => d.data().strategy === st.name).length;
             const slots = Math.max(0, st.max - openCount);
-            signalsSnap.docs
+            if (slots <= 0)
+                continue;
+            const picks = signalsSnap.docs
                 .filter(d => { var _a; return d.data().strategy === st.name && !((_a = d.data().execution) === null || _a === void 0 ? void 0 : _a.status); })
-                .map(d => { var _a, _b; return ({ id: d.id, rank: Number((_b = (_a = d.data().features) === null || _a === void 0 ? void 0 : _a.rsRank126) !== null && _b !== void 0 ? _b : Number.MAX_SAFE_INTEGER) }); })
-                .sort((a, b) => a.rank - b.rank)
-                .slice(0, slots)
-                .forEach(x => allowedIds.add(x.id));
+                .map(d => { var _a, _b; return ({ id: d.id, symbol: d.data().symbol, rank: Number((_b = (_a = d.data().features) === null || _a === void 0 ? void 0 : _a.rsRank126) !== null && _b !== void 0 ? _b : Number.MAX_SAFE_INTEGER) }); })
+                .sort((a, b) => a.rank - b.rank);
+            let taken = 0;
+            for (const p of picks) {
+                if (taken >= slots)
+                    break;
+                if (claimedSymbols.has(p.symbol))
+                    continue;
+                allowedIds.add(p.id);
+                claimedSymbols.add(p.symbol);
+                taken++;
+            }
         }
     }
     for (const doc of signalsSnap.docs) {
@@ -276,6 +291,10 @@ async function doOpenFillSimulation(jobId, runDate, symbol) {
             if (decision.action !== 'FILL') {
                 const reason = decision.action === 'CANCEL_GAP_BELOW' ? 'GAP_BELOW_STOP' : 'NO_FILL_LIMIT';
                 batch.update(doc.ref, { status: 'CANCELLED', rejectReason: reason });
+                // Terminalise the signal so it doesn't linger in ORDERED forever.
+                if (order.createdFromSignalId) {
+                    batch.set(db.collection('signals').doc(prevDateId).collection('items').doc(order.createdFromSignalId), { status: 'CANCELLED', execution: { status: 'CANCELLED', orderId: doc.id } }, { merge: true });
+                }
                 await logger_1.logger.info(`[PaperBroker] LIMIT ${symbol} not filled (${reason})`, 'PaperBroker', { symbol, jobId });
                 continue;
             }
@@ -284,6 +303,13 @@ async function doOpenFillSimulation(jobId, runDate, symbol) {
         let fillPrice = entryRef * slippageMult;
         // V3.0: Fill price bounds — clamp to [bar.low, bar.high]
         fillPrice = Math.max(bar.low, Math.min(bar.high, fillPrice));
+        // A LIMIT buy must never pay more than its ceiling: slippage + the bar clamp above
+        // can push the fill past limitHi. Cap it back down (still ≥ bar.low, since we only
+        // reach here when bar.low ≤ limitHi). Keeps "limit" a real price ceiling.
+        if (order.orderType === 'ENTRY' && order.intendedEntryRef === 'LIMIT'
+            && order.side === 'BUY' && Number.isFinite(Number(order.limitHi))) {
+            fillPrice = Math.min(fillPrice, Number(order.limitHi));
+        }
         // V3.0: Gap-through-stop simulation — if open gaps past stop, fill at open (not stop)
         if (order.orderType === 'EXIT' || order.exitType) {
             const posRef = db.collection('portfolio').doc('default').collection('positions').doc(symbol);
@@ -333,6 +359,7 @@ async function doOpenFillSimulation(jobId, runDate, symbol) {
             const existingPos = await posDocRef.get();
             if (openedThisBatch || (existingPos.exists && existingPos.data().status === 'OPEN')) {
                 batch.update(doc.ref, { status: 'CANCELLED', rejectReason: 'POSITION_ALREADY_OPEN' });
+                batch.update(sigSnap.ref, { status: 'CANCELLED', execution: { status: 'CANCELLED', orderId: doc.id } });
                 await logger_1.logger.warn(`[PaperBroker] REJECTING stacked entry: ${symbol} already has an OPEN position`, 'PaperBroker', { symbol, jobId });
                 continue;
             }
