@@ -55,7 +55,7 @@ function getExitProfile(strategy) {
  * Manage existing OPEN positions with V2.3 per-strategy exit profiles
  */
 async function doManageTrades(dateId, jobId) {
-    var _a, _b, _c, _d;
+    var _a, _b, _c, _d, _e, _f, _g;
     const db = getDb();
     const positionsSnap = await db.collection('portfolio').doc('default').collection('positions')
         .where('status', '==', 'OPEN')
@@ -159,6 +159,44 @@ async function doManageTrades(dateId, jobId) {
             }
             if (sepaExit)
                 await queueExitOrder(db, pos, doc.ref.path, sepaType, dateId, jobId);
+            continue;
+        }
+        // ATH-Pullback exit: same trailing-lock machinery as SEPA but with a wider 10%
+        // hard stop and 15% trail (a swing hold on a leader bought on a dip). Also dumps on
+        // the same index-uptrend-break (sepaRegimeOff) that liquidates SEPA leaders.
+        if (pos.strategy === 'ATHPullbackEOD') {
+            const entry = pos.avgEntryPrice;
+            const hh = Math.max((_e = pos.sepaHH) !== null && _e !== void 0 ? _e : entry, currentClose);
+            const gain = entry > 0 ? currentClose / entry - 1 : 0;
+            const lockActive = (pos.sepaLockActive || false) || gain >= runtime_1.ATH_CONFIG.LOCK_AT_PCT;
+            let stop = entry * (1 - runtime_1.ATH_CONFIG.HARD_STOP_PCT);
+            if (lockActive) {
+                let trail = hh * (1 - runtime_1.ATH_CONFIG.TRAIL_PCT);
+                const featSnap = await db.collection('features').doc(symbol).collection('days').doc(dateId).get();
+                const sma50 = featSnap.exists ? Number((_f = featSnap.data()) === null || _f === void 0 ? void 0 : _f.sma50) : NaN;
+                if (Number.isFinite(sma50) && sma50 > 0)
+                    trail = Math.max(trail, sma50);
+                stop = Math.max(stop, trail);
+            }
+            stop = Math.max(stop, (_g = pos.stopPrice) !== null && _g !== void 0 ? _g : stop); // ratchet up only
+            await doc.ref.update({
+                sepaHH: hh,
+                sepaLockActive: lockActive,
+                stopPrice: stop,
+                lastUpdatedAt: admin.firestore.Timestamp.now(),
+            });
+            let athExit = false;
+            let athType = undefined;
+            if (sepaRegimeOff) {
+                athExit = true;
+                athType = 'EXIT_THESIS';
+            }
+            else if (currentClose <= stop) {
+                athExit = true;
+                athType = 'EXIT_STOP';
+            }
+            if (athExit)
+                await queueExitOrder(db, pos, doc.ref.path, athType, dateId, jobId);
             continue;
         }
         const atrAtEntry = pos.atrAtEntry || 1.0;

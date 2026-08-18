@@ -1,7 +1,7 @@
 import * as functionsV1 from 'firebase-functions';
 import * as admin from 'firebase-admin';
 import { Signal, Features, Regime, Bar, AccountConfig } from '../models';
-import { STRATEGY_V11, RISK_LIMITS, RS_CONFIG, VDU_CONFIG, GAP_RISK_CONFIG, DRAWDOWN_CONFIG, CORR_CONFIG, ADV_LIMITS, SHORT_CONFIG, VOL_TARGET_CONFIG, GAP_STRESS_CONFIG, EXIT_PROFILES, RUNTIME_CONFIG, STRATEGY_MIN_SCORES, REGIME_RSI_THRESHOLDS, RS_STRATEGY_THRESHOLDS, BEAR_STRATEGY_CONFIG, SEPA_CONFIG, METALS_CONFIG } from '../config/runtime';
+import { STRATEGY_V11, RISK_LIMITS, RS_CONFIG, VDU_CONFIG, GAP_RISK_CONFIG, DRAWDOWN_CONFIG, CORR_CONFIG, ADV_LIMITS, SHORT_CONFIG, VOL_TARGET_CONFIG, GAP_STRESS_CONFIG, EXIT_PROFILES, RUNTIME_CONFIG, STRATEGY_MIN_SCORES, REGIME_RSI_THRESHOLDS, RS_STRATEGY_THRESHOLDS, BEAR_STRATEGY_CONFIG, SEPA_CONFIG, METALS_CONFIG, ATH_CONFIG } from '../config/runtime';
 import { checkSafety } from './safety';
 import { CalendarService } from './calendar';
 import { EventCalendarService } from './eventCalendar';
@@ -421,6 +421,105 @@ async function evaluateSepaSignal(
 }
 
 /**
+ * Pure ATH-Pullback entry gate: a market LEADER (long-term uptrend + RS) that has pulled
+ * back 3–15% off its 52-week high INTO the 50-SMA buy-zone on a healthy (not oversold /
+ * overbought) dip. Extracted so the entry rules are unit-testable in isolation.
+ */
+export function athPullbackSetup(f: {
+  sma50?: number; sma150?: number; sma200?: number; high252?: number;
+  rsRank126?: number; rsi14?: number; sma200Rising?: boolean;
+}, close: number): boolean {
+  const sma50 = Number(f.sma50), sma150 = Number(f.sma150), sma200 = Number(f.sma200);
+  const high252 = Number(f.high252), rsRank126 = Number(f.rsRank126), rsi14 = Number(f.rsi14);
+  if (![sma50, sma150, sma200, high252, rsRank126, rsi14, close].every(Number.isFinite)) return false;
+  if (!(close > 0)) return false;
+  const trendTemplate = close > sma50 && sma50 > sma150 && sma150 > sma200 && f.sma200Rising === true;
+  const rsLeader = rsRank126 <= ATH_CONFIG.RS_TOP;
+  const belowHigh = close <= high252 * (1 - ATH_CONFIG.HI_PROX_MIN) && close >= high252 * (1 - ATH_CONFIG.HI_PROX_MAX);
+  const dist50 = (close - sma50) / sma50;
+  const inZone = dist50 >= ATH_CONFIG.SUPPORT_BAND_LO && dist50 <= ATH_CONFIG.SUPPORT_BAND_HI;
+  const healthyRsi = rsi14 >= ATH_CONFIG.RSI_LO && rsi14 <= ATH_CONFIG.RSI_HI;
+  return trendTemplate && rsLeader && belowHigh && inZone && healthyRsi;
+}
+
+/**
+ * ATH-Pullback evaluator — the inverse trigger to SEPA. Buys a market LEADER that is
+ * near its all-time / 52-week high but has pulled back into a support buy-zone (near the
+ * 50-SMA), on an orderly dip (healthy RSI), with a wide ~10% swing stop. Models the
+ * advisory "buy-the-dip on a leader" calls. Writes an APPROVED ATHPullbackEOD signal;
+ * the final leader selection + shared-equity-book funds gate run in doPlaceOrders.
+ */
+async function evaluateAthSignal(
+  db: FirebaseFirestore.Firestore,
+  jobId: string,
+  symbol: string,
+  dateId: string,
+  features: Features,
+  regime: Regime,
+  account: AccountConfig,
+  openPositions: any[],
+): Promise<void> {
+  // 1. Index-regime gate — only buy leaders while the index is in a confirmed uptrend.
+  const m = regime.metrics;
+  const indexUp = !!m && Number(m.close) > Number(m.ema200) && Number(m.ema200Slope ?? 0) > 0 && regime.marketState !== 'BEAR';
+  if (!indexUp) return;
+
+  // 2. Equity-curve throttle (shared with SEPA) — no new buys past the drawdown halt.
+  const peak = account.peakEquity || account.equity;
+  const drawdownPct = peak > 0 ? (peak - account.equity) / peak : 0;
+  if (drawdownPct >= SEPA_CONFIG.THROTTLE_HALT_PCT) return;
+
+  // 3. Sleeve cap (final selection enforced in doPlaceOrders).
+  if (openPositions.filter((p) => p.strategy === 'ATHPullbackEOD').length >= ATH_CONFIG.MAX_POS) return;
+
+  const bars = await getRecentBarsOnOrBefore(db, symbol, dateId, 1);
+  if (bars.length === 0) return;
+  const close = Number(bars[bars.length - 1].close);
+
+  // 4. Entry gate (leadership + pullback into the 50-SMA buy-zone).
+  if (!athPullbackSetup(features, close)) return;
+
+  // 5. Sizing — risk RISK_PCT of equity against the 10% swing stop.
+  const { multiplier: ddMult, shouldHalt } = computeDrawdownMultiplier(account);
+  if (shouldHalt) return;
+  const stopDistance = close * ATH_CONFIG.HARD_STOP_PCT;
+  const riskAmount = account.equity * ATH_CONFIG.RISK_PCT * ddMult;
+  const sizedQty = Math.floor(riskAmount / stopDistance);
+  if (sizedQty <= 0) return;
+
+  const high252 = Number(features.high252);
+  const dist50 = (close - Number(features.sma50)) / Number(features.sma50);
+  const signal: Signal = {
+    symbol,
+    direction: 'BUY',
+    strategy: 'ATHPullbackEOD',
+    score: 100,
+    features,
+    entryPlan: { type: 'NEXT_OPEN' },
+    indicativeStopPrice: close - stopDistance,
+    indicativeTargets: [],
+    indicativeRr: 0,
+    checklist: { regime: true, trendTemplate: true, pullback: true, inZone: true, rsLeader: true },
+    reasons: {
+      marketState: regime.marketState,
+      rsRank126: Number(features.rsRank126),
+      pctFrom52wHigh: (((close - high252) / high252) * 100).toFixed(1) + '%',
+      distFrom50Sma: (dist50 * 100).toFixed(1) + '%',
+      rsi14: Number(features.rsi14).toFixed(1),
+    },
+    status: 'APPROVED',
+    atrRef: stopDistance,
+    stopAtrMult: 1,
+    targetAtrMult: 1000,
+    riskApproval: { status: 'APPROVED', sizedQty, riskAmount },
+  };
+
+  const signalId = `${symbol}_${dateId}_ATHPullbackEOD`;
+  await db.collection('signals').doc(dateId).collection('items').doc(signalId).set(signal);
+  await logger.info(`[Strategy] ATH APPROVED ${symbol} rank126=${Number(features.rsRank126)} dist50=${(dist50 * 100).toFixed(1)}% qty=${sizedQty}`, 'Strategy', { jobId, symbol, dateId });
+}
+
+/**
  * Metals rotation sleeve evaluator. Runs (alongside SEPA) only for the whitelisted
  * metal ETFs when METALS_CONFIG.ENABLED. It is a self-contained trend-following
  * rule: hold the ETF only while it is above its 200-SMA AND its risk-adjusted
@@ -562,8 +661,12 @@ export async function doEvaluateSignals(jobId: string, symbol: string, runDate: 
     // SEPA faithful port: when enabled, run ONLY the SEPA evaluator and skip the
     // entire multi-strategy path below (it does its own regime/RS/stop gating).
     if (SEPA_CONFIG.SEPA_ONLY) {
-      if (isMetalsSymbol) return; // never SEPA-trade the metal ETFs
+      if (isMetalsSymbol) return; // never trade the metal ETFs on the equity path
       await evaluateSepaSignal(db, jobId, symbol, dateId, features, regime, account, openPositions);
+      // ATH-Pullback runs ALONGSIDE SEPA on equities (inverse trigger, shared equity book).
+      if (ATH_CONFIG.ENABLED) {
+        await evaluateAthSignal(db, jobId, symbol, dateId, features, regime, account, openPositions);
+      }
       return;
     }
 

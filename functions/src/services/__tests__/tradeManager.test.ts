@@ -86,4 +86,36 @@ describe('doManageTrades — exits queue when today\'s bar is present', () => {
     );
     expect(exitWrites.length).toBe(0);
   });
+
+  function athPosition() {
+    const ref = { path: 'portfolio/default/positions/SANSERA.NS', update: jest.fn().mockResolvedValue(true) };
+    return {
+      ref,
+      data: () => ({
+        symbol: 'SANSERA.NS', strategy: 'ATHPullbackEOD', direction: 'BUY',
+        avgEntryPrice: 100, qty: 50, stopPrice: 90, status: 'OPEN', entryDateId: '20260101',
+      }),
+    };
+  }
+
+  it('queues an EXIT_STOP when an ATH-Pullback position closes below its 10% hard stop', async () => {
+    mockFirestore.get.mockResolvedValueOnce({ empty: false, docs: [athPosition()] });
+    (getBarOn as jest.Mock).mockResolvedValue({ close: 88, high: 89, low: 87 }); // < entry*0.90 = 90
+
+    await doManageTrades('20260817', 'job1');
+
+    const exitWrites = mockFirestore.set.mock.calls.filter((c: any[]) => c[0] && c[0].orderType === 'EXIT');
+    expect(exitWrites.length).toBe(1);
+    expect(exitWrites[0][0]).toMatchObject({ symbol: 'SANSERA.NS', orderType: 'EXIT', exitType: 'EXIT_STOP', side: 'SELL' });
+  });
+
+  it('holds an ATH-Pullback position that is above its stop and not yet locked', async () => {
+    mockFirestore.get.mockResolvedValueOnce({ empty: false, docs: [athPosition()] });
+    (getBarOn as jest.Mock).mockResolvedValue({ close: 105, high: 106, low: 104 }); // +5%, above stop, not locked
+
+    await doManageTrades('20260817', 'job1');
+
+    const exitWrites = mockFirestore.set.mock.calls.filter((c: any[]) => c[0] && c[0].orderType === 'EXIT');
+    expect(exitWrites.length).toBe(0);
+  });
 });

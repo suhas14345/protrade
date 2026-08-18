@@ -1,7 +1,7 @@
 import * as admin from 'firebase-admin';
 import { Signal, PaperOrder, PaperFill, PaperPosition, PaperTrade } from '../models';
 import { checkSafety } from './safety';
-import { SLIPPAGE_CONFIG, INDIAN_FEE_CONFIG, ADV_LIMITS, SEPA_CONFIG } from '../config/runtime';
+import { SLIPPAGE_CONFIG, INDIAN_FEE_CONFIG, ADV_LIMITS, SEPA_CONFIG, ATH_CONFIG, EQUITY_STRATEGIES } from '../config/runtime';
 import { Timestamp } from 'firebase-admin/firestore';
 import { CalendarService } from './calendar';
 import { computeExitPnl, settledCash } from './portfolioEquity';
@@ -97,37 +97,43 @@ export async function doPlaceOrders(dateId: string, jobId?: string) {
   // The cap applies ONLY to SEPA signals — the metals sleeve manages its own slots in
   // its evaluator, so metals signals are never ranked or dropped here.
   let allowedIds: Set<string> | null = null;
-  let sepaBook = Number.POSITIVE_INFINITY;   // gross-capital cap for the SEPA book (INR)
-  let sepaDeployed = 0;                        // capital already committed to open SEPA positions (INR, at cost)
+  let equityBook = Number.POSITIVE_INFINITY;   // SHARED gross-capital cap for all equity strategies (INR)
+  let equityDeployed = 0;                        // capital already committed to open equity positions (INR, at cost)
+  const EQUITY = new Set(EQUITY_STRATEGIES);
   if (SEPA_CONFIG.SEPA_ONLY) {
     const openSnap = await db.collection('portfolio').doc('default').collection('positions')
       .where('status', '==', 'OPEN').get();
-    const sepaPositions = openSnap.docs.filter(d => (d.data() as PaperPosition).strategy === 'SepaBreakoutEOD');
-    const openSepa = sepaPositions.length;
-    // Gross capital already tied up in open SEPA positions (at entry cost).
-    sepaDeployed = sepaPositions.reduce((s, d) => {
+    const equityPositions = openSnap.docs.filter(d => EQUITY.has((d.data() as PaperPosition).strategy || ''));
+    // Gross capital tied up in open equity positions (at entry cost) — SHARED across SEPA + ATH.
+    equityDeployed = equityPositions.reduce((s, d) => {
       const p = d.data() as PaperPosition;
       return s + Math.abs(Number(p.avgEntryPrice) * Number(p.qty));
     }, 0);
     const accountSnap = await db.collection('config').doc('account').get();
-    // Strict funds: buying power is SETTLED CASH (initial + realised), NOT equity —
-    // equity includes unrealised gains, which are not cash available to deploy.
-    sepaBook = settledCash(accountSnap.data() as any) * SEPA_CONFIG.BOOK_PCT;
-    const slots = Math.max(0, SEPA_CONFIG.MAX_POS - openSepa);
-    const ranked = signalsSnap.docs
-      .filter(d => (d.data() as Signal).strategy === 'SepaBreakoutEOD' && !(d.data() as Signal).execution?.status)
-      .map(d => ({ id: d.id, rank: Number((d.data() as Signal).features?.rsRank126 ?? Number.MAX_SAFE_INTEGER) }))
-      .sort((a, b) => a.rank - b.rank)
-      .slice(0, slots)
-      .map(x => x.id);
-    allowedIds = new Set(ranked);
+    // Strict funds: buying power is SETTLED CASH (initial + realised), NOT equity.
+    equityBook = settledCash(accountSnap.data() as any) * SEPA_CONFIG.BOOK_PCT;
+    // Per-strategy leader slots (each keeps its own MAX_POS); all strategies share the one book.
+    allowedIds = new Set<string>();
+    for (const st of [
+      { name: 'SepaBreakoutEOD', max: SEPA_CONFIG.MAX_POS },
+      { name: 'ATHPullbackEOD', max: ATH_CONFIG.MAX_POS },
+    ]) {
+      const openCount = equityPositions.filter(d => (d.data() as PaperPosition).strategy === st.name).length;
+      const slots = Math.max(0, st.max - openCount);
+      signalsSnap.docs
+        .filter(d => (d.data() as Signal).strategy === st.name && !(d.data() as Signal).execution?.status)
+        .map(d => ({ id: d.id, rank: Number((d.data() as Signal).features?.rsRank126 ?? Number.MAX_SAFE_INTEGER) }))
+        .sort((a, b) => a.rank - b.rank)
+        .slice(0, slots)
+        .forEach(x => allowedIds!.add(x.id));
+    }
   }
 
   for (const doc of signalsSnap.docs) {
     const signal = doc.data() as Signal;
     if (signal.execution?.status) continue;
-    // The SEPA leader cap only gates SEPA signals; metals (and any other) signals pass.
-    if (allowedIds && signal.strategy === 'SepaBreakoutEOD' && !allowedIds.has(doc.id)) continue;
+    // The leader cap gates equity strategies (SEPA + ATH); metals and others pass through.
+    if (allowedIds && EQUITY.has(signal.strategy) && !allowedIds.has(doc.id)) continue;
 
     const atrRef = signal.atrRef || signal.features?.atr14 || 0;
     const stopMult = signal.stopAtrMult || 2.0;
@@ -135,20 +141,21 @@ export async function doPlaceOrders(dateId: string, jobId?: string) {
     let sizedQty = originalQty;
     let riskAmount = signal.riskApproval?.riskAmount || 0;
 
-    // SEPA buying-power gate: cap gross deployed capital to the SEPA book so SEPA and
-    // the metals sleeve never jointly commit > 100% of equity. priceRef reconstructs
-    // the decision close from the SEPA stop (atrRef = close * HARD_STOP_PCT). Scale the
-    // order down to the remaining book; skip (leave APPROVED-unfilled) if none is left.
-    if (SEPA_CONFIG.SEPA_ONLY && signal.strategy === 'SepaBreakoutEOD') {
-      const priceRef = SEPA_CONFIG.HARD_STOP_PCT > 0 ? atrRef / SEPA_CONFIG.HARD_STOP_PCT : 0;
+    // Buying-power gate: cap the COMBINED gross deployed capital of all equity strategies
+    // to the shared equity book (settled cash × BOOK_PCT) so equities + metals never exceed
+    // 100% of equity. priceRef reconstructs the decision close from the strategy's own hard
+    // stop (atrRef = close × HARD_STOP_PCT).
+    if (SEPA_CONFIG.SEPA_ONLY && EQUITY.has(signal.strategy)) {
+      const hardStopPct = signal.strategy === 'ATHPullbackEOD' ? ATH_CONFIG.HARD_STOP_PCT : SEPA_CONFIG.HARD_STOP_PCT;
+      const priceRef = hardStopPct > 0 ? atrRef / hardStopPct : 0;
       if (priceRef > 0) {
-        sizedQty = capSepaQtyToBook(sizedQty, priceRef, sepaDeployed, sepaBook);
+        sizedQty = capSepaQtyToBook(sizedQty, priceRef, equityDeployed, equityBook);
         if (sizedQty <= 0) {
-          await logger.info(`[PaperBroker] SEPA ${signal.symbol} unfunded — book full (deployed ${sepaDeployed.toFixed(0)}/${sepaBook.toFixed(0)})`, 'PaperBroker', { jobId, symbol: signal.symbol });
+          await logger.info(`[PaperBroker] ${signal.strategy} ${signal.symbol} unfunded — equity book full (deployed ${equityDeployed.toFixed(0)}/${equityBook.toFixed(0)})`, 'PaperBroker', { jobId, symbol: signal.symbol });
           continue;
         }
         if (sizedQty < originalQty && originalQty > 0) riskAmount = riskAmount * (sizedQty / originalQty);
-        sepaDeployed += sizedQty * priceRef;
+        equityDeployed += sizedQty * priceRef;
       }
     }
 

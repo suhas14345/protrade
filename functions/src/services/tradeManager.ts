@@ -2,7 +2,7 @@ import * as functionsV1 from 'firebase-functions';
 import * as admin from 'firebase-admin';
 import { PaperPosition, PaperOrder } from '../models';
 import { CalendarService } from './calendar';
-import { EXIT_PROFILES, SEPA_CONFIG, METALS_CONFIG } from '../config/runtime';
+import { EXIT_PROFILES, SEPA_CONFIG, METALS_CONFIG, ATH_CONFIG } from '../config/runtime';
 import { getBarOn, getWindowOnOrBefore } from './barCache';
 
 const getDb = () => {
@@ -120,6 +120,40 @@ export async function doManageTrades(dateId: string, jobId: string) {
             if (sepaRegimeOff) { sepaExit = true; sepaType = 'EXIT_THESIS'; }
             else if (currentClose <= stop) { sepaExit = true; sepaType = 'EXIT_STOP'; }
             if (sepaExit) await queueExitOrder(db, pos, doc.ref.path, sepaType!, dateId, jobId);
+            continue;
+        }
+
+        // ATH-Pullback exit: same trailing-lock machinery as SEPA but with a wider 10%
+        // hard stop and 15% trail (a swing hold on a leader bought on a dip). Also dumps on
+        // the same index-uptrend-break (sepaRegimeOff) that liquidates SEPA leaders.
+        if (pos.strategy === 'ATHPullbackEOD') {
+            const entry = pos.avgEntryPrice;
+            const hh = Math.max(pos.sepaHH ?? entry, currentClose);
+            const gain = entry > 0 ? currentClose / entry - 1 : 0;
+            const lockActive = (pos.sepaLockActive || false) || gain >= ATH_CONFIG.LOCK_AT_PCT;
+
+            let stop = entry * (1 - ATH_CONFIG.HARD_STOP_PCT);
+            if (lockActive) {
+                let trail = hh * (1 - ATH_CONFIG.TRAIL_PCT);
+                const featSnap = await db.collection('features').doc(symbol).collection('days').doc(dateId).get();
+                const sma50 = featSnap.exists ? Number((featSnap.data() as any)?.sma50) : NaN;
+                if (Number.isFinite(sma50) && sma50 > 0) trail = Math.max(trail, sma50);
+                stop = Math.max(stop, trail);
+            }
+            stop = Math.max(stop, pos.stopPrice ?? stop); // ratchet up only
+
+            await doc.ref.update({
+                sepaHH: hh,
+                sepaLockActive: lockActive,
+                stopPrice: stop,
+                lastUpdatedAt: admin.firestore.Timestamp.now(),
+            });
+
+            let athExit = false;
+            let athType: PaperOrder['exitType'] = undefined;
+            if (sepaRegimeOff) { athExit = true; athType = 'EXIT_THESIS'; }
+            else if (currentClose <= stop) { athExit = true; athType = 'EXIT_STOP'; }
+            if (athExit) await queueExitOrder(db, pos, doc.ref.path, athType!, dateId, jobId);
             continue;
         }
 

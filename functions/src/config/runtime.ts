@@ -52,6 +52,32 @@ export const METALS_CONFIG = {
   HARD_STOP_PCT: 0.25,          // wide protective floor; the real exit is the trend gate
 };
 
+// ATH-Pullback sleeve — buys market LEADERS near all-time highs on an orderly PULLBACK
+// into support (the inverse trigger to SEPA's breakout). Modelled on advisory swing calls
+// (leader near highs, buy-a-dip zone, ~10% stop below support). Runs ALONGSIDE SEPA on
+// equities and SHARES the equity capital book (SEPA_CONFIG.BOOK_PCT). Default ON; ATH=0 to disable.
+export const ATH_CONFIG = {
+  ENABLED: process.env.ATH !== '0',
+  FEATURE_WINDOW: 260,          // trailing bars: SMA150/200 + 52w-high
+  HI_PROX_MIN: 0.03,            // pulled back at least 3% from the 52-week high (a real dip)
+  HI_PROX_MAX: 0.15,            // ...but no more than 15% below it (still a leader near highs)
+  RS_TOP: 60,                   // RS leadership (looser than SEPA's 40)
+  SMA_SUPPORT: 50,              // pullback reference MA (the buy-zone anchor)
+  SUPPORT_BAND_LO: -0.03,       // close may sit up to 3% BELOW the 50-SMA (the dip)...
+  SUPPORT_BAND_HI: 0.06,        // ...to 6% above it (support holding) — the buy zone
+  RSI_LO: 40,                   // healthy-pullback RSI band (avoid oversold breakdown / overbought)
+  RSI_HI: 58,
+  HARD_STOP_PCT: 0.10,          // 10% swing stop (matches the reference calls)
+  LOCK_AT_PCT: 0.10,            // arm the trailing lock once up this much
+  TRAIL_PCT: 0.15,              // trail 15% below the highest close once locked
+  RISK_PCT: 0.01,               // risk 1% of equity per trade
+  MAX_POS: 5,                   // max concurrent ATH-pullback positions
+};
+
+// Equity strategies share ONE capital book (SEPA_CONFIG.BOOK_PCT); metals gets the rest.
+// The buying-power gate caps their COMBINED gross deployed capital to that book.
+export const EQUITY_STRATEGIES = ['SepaBreakoutEOD', 'ATHPullbackEOD'];
+
 export const STRATEGY_V11 = {
   EMA_TOUCH_ATR_MULT: 0.3,
   BREAKOUT_VOL_MULT: 1.2,
