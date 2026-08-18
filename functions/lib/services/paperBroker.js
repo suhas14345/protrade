@@ -246,6 +246,15 @@ async function doOpenFillSimulation(jobId, runDate, symbol) {
     if (!bar)
         return;
     const batch = db.batch();
+    // Batch-local guard: this function processes ALL of one symbol's orders (across
+    // every strategy) in a single uncommitted batch. The committed-state check below
+    // cannot see a position established earlier in THIS batch, so two ENTRY orders for
+    // the same symbol on the same day (e.g. a SEPA and an ATH signal that both picked
+    // the same stock) would each write a BUY fill and overwrite the one symbol-keyed
+    // position doc — orphaning the first entry's shares (cash out, never tracked/sold)
+    // and breaking the independent cash-flow reconciliation. Once we open a position
+    // for this symbol in this batch, reject any further ENTRY for it.
+    let openedThisBatch = false;
     for (const doc of ordersSnap.docs) {
         const order = doc.data();
         // V2.2: Fetch regime and liquidity bucket for dynamic slippage
@@ -322,7 +331,7 @@ async function doOpenFillSimulation(jobId, runDate, symbol) {
             // broke the independent cash-flow audit). Reject the stacked entry instead.
             const posDocRef = db.collection('portfolio').doc('default').collection('positions').doc(symbol);
             const existingPos = await posDocRef.get();
-            if (existingPos.exists && existingPos.data().status === 'OPEN') {
+            if (openedThisBatch || (existingPos.exists && existingPos.data().status === 'OPEN')) {
                 batch.update(doc.ref, { status: 'CANCELLED', rejectReason: 'POSITION_ALREADY_OPEN' });
                 await logger_1.logger.warn(`[PaperBroker] REJECTING stacked entry: ${symbol} already has an OPEN position`, 'PaperBroker', { symbol, jobId });
                 continue;
@@ -348,6 +357,7 @@ async function doOpenFillSimulation(jobId, runDate, symbol) {
                 entryQty: order.intendedQty,
             };
             batch.set(db.collection('portfolio').doc('default').collection('positions').doc(symbol), position);
+            openedThisBatch = true;
             batch.update(sigSnap.ref, {
                 status: 'IN_TRADE', stopPrice: finalStop, targets: [finalTarget], rr: (signal.targetAtrMult || 3.0) / (signal.stopAtrMult || 2.0),
                 execution: { status: 'FILLED', orderId: doc.id, fillId, entryPrice: fillPrice, entryDateId: dateId }
