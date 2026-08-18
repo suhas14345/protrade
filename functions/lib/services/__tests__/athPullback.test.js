@@ -40,5 +40,18 @@ describe('athPullbackSetup (ATH-Pullback entry gate)', () => {
     it('fails closed on a missing feature', () => {
         expect((0, strategy_1.athPullbackSetup)(Object.assign(Object.assign({}, leader), { rsi14: undefined }), CLOSE)).toBe(false);
     });
+    it('prefers the true ATH over the 52w high when present', () => {
+        // athHigh 120 (true ATH) > high252 110. At close 103 the stock is ~14% off the ATH —
+        // still inside the 3–15% pullback band, so it remains a valid setup.
+        expect((0, strategy_1.athPullbackSetup)(Object.assign(Object.assign({}, leader), { athHigh: 120 }), CLOSE)).toBe(true);
+    });
+    it('rejects when the true ATH makes the pullback too deep (>15%)', () => {
+        // athHigh 130: close 103 is ~21% below the ATH — beyond HI_PROX_MAX, so reject even
+        // though it looked fine against the 52w high alone.
+        expect((0, strategy_1.athPullbackSetup)(Object.assign(Object.assign({}, leader), { athHigh: 130 }), CLOSE)).toBe(false);
+    });
+    it('falls back to the 52w high when athHigh is not yet tracked', () => {
+        expect((0, strategy_1.athPullbackSetup)(Object.assign(Object.assign({}, leader), { athHigh: undefined }), CLOSE)).toBe(true);
+    });
 });
 //# sourceMappingURL=athPullback.test.js.map

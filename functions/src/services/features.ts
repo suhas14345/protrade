@@ -112,7 +112,12 @@ export async function doComputeFeatures(jobId: string, symbol: string, runDate: 
     }
     const high252 = Math.max(...closes.slice(-252));
     const ret126 = closes.length >= 127 ? (closes[closes.length - 1] / closes[closes.length - 127]) - 1 : 0;
-    sepaFields = { sma50, sma150, sma200, sma200Rising, high252, ret126 };
+    // True all-time high: a running max of the daily HIGH across all processed history,
+    // persisted on the parent features/{symbol} doc. Max is monotonic ⇒ safe to recompute.
+    const athSnap = await db.collection('features').doc(symbol).get();
+    const prevAth = Number(athSnap.exists ? (athSnap.data() as any)?.athHigh : 0) || 0;
+    const athHigh = Math.max(prevAth, Math.max(...highs), high252);
+    sepaFields = { sma50, sma150, sma200, sma200Rising, high252, ret126, athHigh };
   }
 
   // 4. Refined Trend State
@@ -171,7 +176,15 @@ export async function doComputeFeatures(jobId: string, symbol: string, runDate: 
   };
 
   await db.collection('features').doc(symbol).collection('days').doc(dateId).set(featureDoc);
-  
+
+  // Persist the running ATH on the parent doc so the next session can extend the max.
+  if (SEPA_CONFIG.SEPA_ONLY && Number.isFinite(Number((sepaFields as any).athHigh))) {
+    await db.collection('features').doc(symbol).set(
+      { athHigh: (sepaFields as any).athHigh, athUpdatedAt: Timestamp.now() },
+      { merge: true },
+    );
+  }
+
   await logger.info(`Features computed for ${symbol}: Trend=${trendState}, RSI=${rsi14.toFixed(2)}`, 'Features', { jobId, symbol });
 }
 

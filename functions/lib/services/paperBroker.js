@@ -34,6 +34,7 @@ var __importStar = (this && this.__importStar) || (function () {
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.capSepaQtyToBook = capSepaQtyToBook;
+exports.resolveLimitEntryFill = resolveLimitEntryFill;
 exports.doPlaceOrders = doPlaceOrders;
 exports.doOpenFillSimulation = doOpenFillSimulation;
 const admin = __importStar(require("firebase-admin"));
@@ -101,10 +102,27 @@ function capSepaQtyToBook(desiredQty, priceRef, deployed, book) {
     return Math.min(desiredQty, affordable);
 }
 /**
+ * LIMIT entry fill decision (pure). A buy-on-dip limit fills only if the next session
+ * trades INTO the buy range [limitLo, limitHi]:
+ *  - gap below limitLo (the stop) ⇒ thesis broken, cancel (never enter a stopped-out trade);
+ *  - never trades at/below limitHi (gapped up / ran away) ⇒ don't chase, cancel;
+ *  - otherwise fill at the better of the open or the limit ceiling (min(open, limitHi)).
+ * Undefined bounds are treated as unbounded on that side.
+ */
+function resolveLimitEntryFill(bar, limitLo, limitHi) {
+    const lo = Number(limitLo), hi = Number(limitHi);
+    if (Number.isFinite(lo) && bar.open < lo)
+        return { action: 'CANCEL_GAP_BELOW', refPrice: bar.open };
+    if (Number.isFinite(hi) && bar.low > hi)
+        return { action: 'CANCEL_NO_FILL', refPrice: bar.open };
+    const refPrice = Number.isFinite(hi) ? Math.min(bar.open, hi) : bar.open;
+    return { action: 'FILL', refPrice };
+}
+/**
  * Paper Broker: Places orders for APPROVED signals.
  */
 async function doPlaceOrders(dateId, jobId) {
-    var _a, _b, _c, _d;
+    var _a, _b, _c, _d, _e;
     const db = getDb();
     await logger_1.logger.info(`[PaperBroker] Placing orders for ${dateId}`, 'PaperBroker', { dateId, jobId });
     (0, safety_1.checkSafety)();
@@ -182,16 +200,23 @@ async function doPlaceOrders(dateId, jobId) {
             }
         }
         const orderId = doc.id;
+        const isLimit = ((_e = signal.entryPlan) === null || _e === void 0 ? void 0 : _e.type) === 'LIMIT';
         const order = {
             symbol: signal.symbol,
             side: signal.direction,
             orderType: 'ENTRY',
             intendedQty: sizedQty,
-            intendedEntryRef: 'OPEN',
+            intendedEntryRef: isLimit ? 'LIMIT' : 'OPEN',
             createdFromSignalId: doc.id,
             risk: { plannedR: 1.0, riskAmount, stopDistance: atrRef * stopMult },
             status: 'ACCEPTED'
         };
+        if (isLimit) {
+            if (Number.isFinite(Number(signal.entryPlan.limitHi)))
+                order.limitHi = Number(signal.entryPlan.limitHi);
+            if (Number.isFinite(Number(signal.entryPlan.limitLo)))
+                order.limitLo = Number(signal.entryPlan.limitLo);
+        }
         await db.collection('paperOrders').doc(dateId).collection('items').doc(orderId).set(order);
         await doc.ref.update({ status: 'ORDERED', execution: { status: 'ORDERED', orderId } });
         await logger_1.logger.info(`[PaperBroker] ENTRY Order: ${orderId} (${signal.direction})`, 'PaperBroker', { symbol: signal.symbol, orderId, jobId });
@@ -235,7 +260,19 @@ async function doOpenFillSimulation(jobId, runDate, symbol) {
         const medVol20 = (_k = ((signalSnap === null || signalSnap === void 0 ? void 0 : signalSnap.exists) ? (_j = (_h = (_g = signalSnap.data()) === null || _g === void 0 ? void 0 : _g.features) === null || _h === void 0 ? void 0 : _h.liquidity) === null || _j === void 0 ? void 0 : _j.medVol20 : undefined)) !== null && _k !== void 0 ? _k : 0;
         const slippageBps = computeSlippageBps(liquidityBucket, regimeState, order.intendedQty, medVol20);
         const slippageMult = order.side === 'BUY' ? (1 + slippageBps / 10000) : (1 - slippageBps / 10000);
-        let fillPrice = bar.open * slippageMult;
+        // LIMIT entries only fill on a dip into the buy range; otherwise the order is cancelled.
+        let entryRef = bar.open;
+        if (order.orderType === 'ENTRY' && order.intendedEntryRef === 'LIMIT') {
+            const decision = resolveLimitEntryFill(bar, order.limitLo, order.limitHi);
+            if (decision.action !== 'FILL') {
+                const reason = decision.action === 'CANCEL_GAP_BELOW' ? 'GAP_BELOW_STOP' : 'NO_FILL_LIMIT';
+                batch.update(doc.ref, { status: 'CANCELLED', rejectReason: reason });
+                await logger_1.logger.info(`[PaperBroker] LIMIT ${symbol} not filled (${reason})`, 'PaperBroker', { symbol, jobId });
+                continue;
+            }
+            entryRef = decision.refPrice;
+        }
+        let fillPrice = entryRef * slippageMult;
         // V3.0: Fill price bounds — clamp to [bar.low, bar.high]
         fillPrice = Math.max(bar.low, Math.min(bar.high, fillPrice));
         // V3.0: Gap-through-stop simulation — if open gaps past stop, fill at open (not stop)

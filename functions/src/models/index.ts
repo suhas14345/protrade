@@ -92,6 +92,7 @@ export interface Features {
   sma200?: number;
   sma200Rising?: boolean;     // 200-SMA higher than it was SMA200_SLOPE_LOOKBACK bars ago
   high252?: number;           // 52-week high of close
+  athHigh?: number;           // true all-time high (running max of daily HIGH across all stored history)
   ret126?: number;            // 126-day momentum (close/close[-126] - 1)
   rsRank126?: number;         // cross-sectional rank by ret126 (1 = strongest), set by RS pass
   patterns?: string[];
@@ -131,7 +132,10 @@ export interface Signal {
   strategy: 'PullbackEOD' | 'BreakoutCloseEOD' | 'ShortBounceEOD' | 'MeanReversionEOD' | 'BearBounceEOD' | 'RSLeaderEOD' | 'SepaBreakoutEOD' | 'MetalsRotation' | 'ATHPullbackEOD';
   score: number;
   entryPlan: {
-    type: 'NEXT_OPEN';
+    type: 'NEXT_OPEN' | 'LIMIT';
+    // LIMIT entries: buy only if the next session trades into [limitLo, limitHi].
+    limitLo?: number;
+    limitHi?: number;
   };
   indicativeStopPrice: number;
   indicativeTargets: number[];
@@ -190,7 +194,10 @@ export interface PaperOrder {
   side: 'BUY' | 'SELL';
   orderType: 'ENTRY' | 'EXIT'; // Gap B2 & B3 alignment
   intendedQty: number;
-  intendedEntryRef: 'OPEN';
+  intendedEntryRef: 'OPEN' | 'LIMIT';
+  // LIMIT entries: fill only if the next session trades into [limitLo, limitHi].
+  limitLo?: number;
+  limitHi?: number;
   createdFromSignalId: string;
   risk: {
     plannedR: number;

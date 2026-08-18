@@ -1,4 +1,4 @@
-import { doOpenFillSimulation, capSepaQtyToBook } from '../paperBroker';
+import { doOpenFillSimulation, capSepaQtyToBook, resolveLimitEntryFill } from '../paperBroker';
 import { CalendarService } from '../calendar';
 
 // Mock logger
@@ -184,5 +184,43 @@ describe('capSepaQtyToBook (SEPA buying-power gate)', () => {
     // ~4 fully-funded positions fit in the 70% book (not 10 leveraged ones).
     expect(placed).toBeGreaterThanOrEqual(3);
     expect(placed).toBeLessThanOrEqual(4);
+  });
+});
+
+/**
+ * LIMIT entry fill decision (ATH-Pullback). Buy-on-dip limits must only fill when
+ * price actually trades into the buy range, must not chase a gap-up away from support,
+ * and must never enter a trade that already gapped below its stop.
+ */
+describe('resolveLimitEntryFill (LIMIT buy-on-dip)', () => {
+  const HI = 100;   // don't pay more than 100 (today's close)
+  const LO = 90;    // stop — cancel if it opens below this
+
+  it('fills at the open when the session opens inside the range', () => {
+    const r = resolveLimitEntryFill({ open: 98, low: 95, high: 102 }, LO, HI);
+    expect(r.action).toBe('FILL');
+    expect(r.refPrice).toBe(98); // min(open, limitHi) = min(98,100)
+  });
+
+  it('fills at the limit ceiling when it opens above but dips into the range', () => {
+    const r = resolveLimitEntryFill({ open: 103, low: 99, high: 104 }, LO, HI);
+    expect(r.action).toBe('FILL');
+    expect(r.refPrice).toBe(HI); // min(103,100) = 100
+  });
+
+  it('does not chase: cancels when the range is never touched (gap-up run)', () => {
+    const r = resolveLimitEntryFill({ open: 105, low: 101, high: 108 }, LO, HI);
+    expect(r.action).toBe('CANCEL_NO_FILL');
+  });
+
+  it('cancels when the session gaps below the stop (thesis broken)', () => {
+    const r = resolveLimitEntryFill({ open: 88, low: 85, high: 92 }, LO, HI);
+    expect(r.action).toBe('CANCEL_GAP_BELOW');
+  });
+
+  it('treats an undefined ceiling as unbounded (fills at open)', () => {
+    const r = resolveLimitEntryFill({ open: 120, low: 118, high: 122 }, LO, undefined);
+    expect(r.action).toBe('FILL');
+    expect(r.refPrice).toBe(120);
   });
 });

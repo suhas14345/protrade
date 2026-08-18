@@ -427,13 +427,16 @@ async function evaluateSepaSignal(db, jobId, symbol, dateId, features, regime, a
 function athPullbackSetup(f, close) {
     const sma50 = Number(f.sma50), sma150 = Number(f.sma150), sma200 = Number(f.sma200);
     const high252 = Number(f.high252), rsRank126 = Number(f.rsRank126), rsi14 = Number(f.rsi14);
-    if (![sma50, sma150, sma200, high252, rsRank126, rsi14, close].every(Number.isFinite))
+    // Prefer the true all-time high; fall back to the 52-week high when ATH isn't tracked yet.
+    const athHigh = Number(f.athHigh);
+    const highRef = Number.isFinite(athHigh) && athHigh > 0 ? athHigh : high252;
+    if (![sma50, sma150, sma200, highRef, rsRank126, rsi14, close].every(Number.isFinite))
         return false;
     if (!(close > 0))
         return false;
     const trendTemplate = close > sma50 && sma50 > sma150 && sma150 > sma200 && f.sma200Rising === true;
     const rsLeader = rsRank126 <= runtime_1.ATH_CONFIG.RS_TOP;
-    const belowHigh = close <= high252 * (1 - runtime_1.ATH_CONFIG.HI_PROX_MIN) && close >= high252 * (1 - runtime_1.ATH_CONFIG.HI_PROX_MAX);
+    const belowHigh = close <= highRef * (1 - runtime_1.ATH_CONFIG.HI_PROX_MIN) && close >= highRef * (1 - runtime_1.ATH_CONFIG.HI_PROX_MAX);
     const dist50 = (close - sma50) / sma50;
     const inZone = dist50 >= runtime_1.ATH_CONFIG.SUPPORT_BAND_LO && dist50 <= runtime_1.ATH_CONFIG.SUPPORT_BAND_HI;
     const healthyRsi = rsi14 >= runtime_1.ATH_CONFIG.RSI_LO && rsi14 <= runtime_1.ATH_CONFIG.RSI_HI;
@@ -478,22 +481,27 @@ async function evaluateAthSignal(db, jobId, symbol, dateId, features, regime, ac
     if (sizedQty <= 0)
         return;
     const high252 = Number(features.high252);
+    const athHigh = Number(features.athHigh);
+    const highRef = Number.isFinite(athHigh) && athHigh > 0 ? athHigh : high252;
     const dist50 = (close - Number(features.sma50)) / Number(features.sma50);
+    const stopPrice = close - stopDistance;
     const signal = {
         symbol,
         direction: 'BUY',
         strategy: 'ATHPullbackEOD',
         score: 100,
         features,
-        entryPlan: { type: 'NEXT_OPEN' },
-        indicativeStopPrice: close - stopDistance,
+        // LIMIT entry: only buy on a dip into the zone next session (≤ today's close),
+        // and cancel if it gaps below the stop. Don't chase a gap-up away from support.
+        entryPlan: { type: 'LIMIT', limitHi: close, limitLo: stopPrice },
+        indicativeStopPrice: stopPrice,
         indicativeTargets: [],
         indicativeRr: 0,
         checklist: { regime: true, trendTemplate: true, pullback: true, inZone: true, rsLeader: true },
         reasons: {
             marketState: regime.marketState,
             rsRank126: Number(features.rsRank126),
-            pctFrom52wHigh: (((close - high252) / high252) * 100).toFixed(1) + '%',
+            pctFromAth: (((close - highRef) / highRef) * 100).toFixed(1) + '%',
             distFrom50Sma: (dist50 * 100).toFixed(1) + '%',
             rsi14: Number(features.rsi14).toFixed(1),
         },
