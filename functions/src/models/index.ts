@@ -317,6 +317,10 @@ export interface AccountConfig {
   peakEquity?: number;        // V2.2: for drawdown multiplier computation
   equityEMA25?: number;       // V2.2: 25-day EMA of equity for curve filter
   portfolioRealizedVol?: number; // V2.3: 20-day realized portfolio volatility (annualized)
+  initialEquity?: number;     // immutable deposited capital (equity anchor)
+  realizedPnl?: number;       // cumulative realised P&L (trades ledger)
+  openUnrealized?: number;    // mark-to-market of open positions
+  cashBalance?: number;       // settled cash available to deploy = initialEquity + realizedPnl - deployedCost
 }
 
 // V2.3: Event calendar entry

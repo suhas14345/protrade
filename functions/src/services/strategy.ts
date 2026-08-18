@@ -7,6 +7,7 @@ import { CalendarService } from './calendar';
 import { EventCalendarService } from './eventCalendar';
 import { logger } from './logger';
 import { getWindowOnOrBefore } from './barCache';
+import { settledCash } from './portfolioEquity';
 
 const getDb = () => {
   if (admin.apps.length === 0) admin.initializeApp();
@@ -478,9 +479,10 @@ async function evaluateMetalsSignal(
   const raMom = ret / vol;
   if (!(raMom > METALS_CONFIG.MIN_RA_MOM)) return;
 
-  // 4. Sizing — equal slice of the sleeve budget. A wide hard stop is a protective
-  //    floor only; the trend gate in tradeManager is the primary exit.
-  const slotBudget = (account.equity * METALS_CONFIG.ALLOC_PCT) / METALS_CONFIG.MAX_POS;
+  // 4. Sizing — equal slice of the sleeve budget off SETTLED CASH (initial + realised),
+  //    not equity, so the sleeve deploys only funds actually available (no leverage on
+  //    unrealised gains). A wide hard stop is a protective floor; the trend gate exits.
+  const slotBudget = (settledCash(account) * METALS_CONFIG.ALLOC_PCT) / METALS_CONFIG.MAX_POS;
   const sizedQty = Math.floor(slotBudget / close);
   if (sizedQty <= 0) return;
   const stopDistance = close * METALS_CONFIG.HARD_STOP_PCT;

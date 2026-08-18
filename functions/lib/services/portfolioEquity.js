@@ -40,6 +40,9 @@ exports.markPosition = markPosition;
 exports.computeOpenUnrealized = computeOpenUnrealized;
 exports.persistOpenPositionMarks = persistOpenPositionMarks;
 exports.resolveInitialEquity = resolveInitialEquity;
+exports.settledCash = settledCash;
+exports.availableFunds = availableFunds;
+exports.computeDeployedCost = computeDeployedCost;
 exports.recomputeAccountEquity = recomputeAccountEquity;
 /**
  * Single source of truth for account equity, drawdown, and realized-vol.
@@ -214,6 +217,36 @@ function resolveInitialEquity(account, realizedToDate, openUnrealized) {
     return { initial, backfill: true };
 }
 /**
+ * Settled cash capital = deposited capital + realised P&L. This is the buying-power
+ * base for placing trades — NOT `equity`, which includes UNREALISED gains that are not
+ * cash. Trades may only deploy settled cash, so paper profits never become leverage.
+ */
+function settledCash(account) {
+    const init = (account.initialEquity !== undefined && account.initialEquity !== null && Number.isFinite(Number(account.initialEquity)))
+        ? Number(account.initialEquity)
+        : (Number(account.equity) || 0); // legacy fallback if the anchor is missing
+    return init + (Number(account.realizedPnl) || 0);
+}
+/** Available (undeployed) cash = settled cash − capital tied up in open positions (at cost). */
+function availableFunds(account, deployedCost) {
+    return settledCash(account) - deployedCost;
+}
+/** Σ cost basis (avgEntryPrice × qty) of every OPEN position — capital currently deployed. */
+async function computeDeployedCost(db, _dateId) {
+    const snap = await db
+        .collection('portfolio').doc('default').collection('positions')
+        .where('status', '==', 'OPEN')
+        .get();
+    let total = 0;
+    for (const doc of snap.docs) {
+        const p = doc.data();
+        if (!p.qty || p.qty <= 0)
+            continue;
+        total += Math.abs(Number(p.avgEntryPrice) * Number(p.qty));
+    }
+    return total;
+}
+/**
  * Recompute account equity from authoritative state at `dateId`, persist a daily
  * equity snapshot, refresh peak / EMA / realised-vol, and write them back to
  * `config/account`. Returns the update, or null if there is no account config.
@@ -265,9 +298,14 @@ async function recomputeAccountEquity(db, dateId) {
     const volWindow = series.slice(-VOL_LOOKBACK_POINTS);
     const portfolioRealizedVol = annualisedVol(dailyReturns(volWindow));
     const peakEquity = Math.max((_b = account.peakEquity) !== null && _b !== void 0 ? _b : equity, equity);
+    // Settled cash available to deploy = (initial + realised) − capital tied up at cost.
+    const deployedCost = await computeDeployedCost(db, dateId);
+    const cashBalance = (initial + realizedToDate) - deployedCost;
     // Persist equity AND its authoritative breakdown so every consumer (dashboard,
-    // reports) reconciles by construction: equity === initialEquity + realizedPnl + openUnrealized.
-    await accountRef.update({ equity, peakEquity, equityEMA25, portfolioRealizedVol, realizedPnl: realizedToDate, openUnrealized });
+    // reports, the buying-power gate) reconciles by construction:
+    //   equity === initialEquity + realizedPnl + openUnrealized
+    //   cashBalance === initialEquity + realizedPnl − deployedCost
+    await accountRef.update({ equity, peakEquity, equityEMA25, portfolioRealizedVol, realizedPnl: realizedToDate, openUnrealized, cashBalance });
     // Persist per-position marks with the SAME formula/close so position docs
     // reconcile to config/account to the paisa.
     await persistOpenPositionMarks(db, dateId);

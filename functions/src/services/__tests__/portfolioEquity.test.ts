@@ -1,4 +1,4 @@
-import { computeExitPnl, markPosition, resolveInitialEquity } from '../portfolioEquity';
+import { computeExitPnl, markPosition, resolveInitialEquity, settledCash, availableFunds } from '../portfolioEquity';
 
 /**
  * Unit tests for the single realised-P&L formula used by the paperBroker exit
@@ -254,5 +254,69 @@ describe('resolveInitialEquity (immutable equity anchor)', () => {
     expect(equities[0]).toBeCloseTo(500_000 + openUnrealized, 8);
     expect(equities[1]).toBeCloseTo(equities[0], 10);
     expect(equities[2]).toBeCloseTo(equities[0], 10);
+  });
+});
+
+/**
+ * Buying power / available funds. Trades must strictly use SETTLED CASH
+ * (initialEquity + realizedPnl), NEVER equity (which includes unrealised gains that
+ * are not cash). And a sale must return its capital + P&L to available cash.
+ */
+describe('settledCash / availableFunds (strict funds)', () => {
+  it('settledCash = initialEquity + realizedPnl (NOT equity)', () => {
+    // Equity is inflated by unrealised gains; buying power must ignore them.
+    expect(settledCash({ initialEquity: 500_000, realizedPnl: 1_234.5, equity: 999_999 })).toBeCloseTo(501_234.5, 6);
+  });
+
+  it('falls back to equity only when initialEquity is missing (legacy doc)', () => {
+    expect(settledCash({ equity: 500_270, realizedPnl: 0 })).toBe(500_270);
+  });
+
+  it('availableFunds = settledCash - deployed cost', () => {
+    const deployed = 125.97069599999999 * 599; // GOLDBEES cost basis
+    expect(availableFunds({ initialEquity: 500_000, realizedPnl: 0 }, deployed))
+      .toBeCloseTo(500_000 - deployed, 6);
+  });
+
+  it('a sale returns capital + P&L to available cash (sold equity updates cash)', () => {
+    const init = 500_000;
+    const entry = 125.97069599999999, qty = 599, entryFee = 29.04;
+    const cost = entry * qty;
+
+    // Before the sale: one open position, cash = settledCash - deployed.
+    const cashBefore = availableFunds({ initialEquity: init, realizedPnl: 0 }, cost);
+
+    // Sell the whole position at 130 with a 20 exit fee.
+    const { realizedPnl } = computeExitPnl({
+      direction: 'BUY', avgEntryPrice: entry, exitPrice: 130, exitQty: qty,
+      entryQty: qty, entryFee, exitFee: 20,
+    });
+
+    // After the sale: position closed (deployed 0), realised booked into settled cash.
+    const cashAfter = availableFunds({ initialEquity: init, realizedPnl }, 0);
+
+    // Cash rose by exactly the freed cost basis plus the realised P&L.
+    expect(cashAfter - cashBefore).toBeCloseTo(cost + realizedPnl, 6);
+    expect(cashAfter).toBeGreaterThan(cashBefore);
+  });
+
+  it('reconciliation holds before AND after a sale: equity = cash + deployed + unrealized', () => {
+    const init = 500_000;
+    const entry = 100, qty = 100, entryFee = 20;
+    const cost = entry * qty;
+    // Open: mark at 110 -> unrealized = (110-100)*100 - 20 = 980.
+    const uPnl = markPosition({ direction: 'BUY', avgEntryPrice: entry, qty, entryQty: qty, entryFee } as any, 110).unrealizedPnl;
+    const equityOpen = init + 0 + uPnl;
+    const cashOpen = equityOpen - cost - uPnl;
+    expect(cashOpen + cost + uPnl).toBeCloseTo(equityOpen, 8);        // reconciles while open
+    expect(cashOpen).toBeCloseTo(availableFunds({ initialEquity: init, realizedPnl: 0 }, cost), 8);
+
+    // Close at 110, exitFee 0 -> realised replaces the mark exactly.
+    const { realizedPnl } = computeExitPnl({ direction: 'BUY', avgEntryPrice: entry, exitPrice: 110, exitQty: qty, entryQty: qty, entryFee, exitFee: 0 });
+    const equityClosed = init + realizedPnl + 0;
+    const cashClosed = equityClosed - 0 - 0;
+    expect(cashClosed).toBeCloseTo(equityClosed, 8);                 // reconciles after close
+    expect(realizedPnl).toBeCloseTo(uPnl, 8);                        // no jump: realised == prior mark
+    expect(equityClosed).toBeCloseTo(equityOpen, 8);                 // equity continuous across the close
   });
 });

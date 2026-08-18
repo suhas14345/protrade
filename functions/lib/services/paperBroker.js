@@ -104,7 +104,7 @@ function capSepaQtyToBook(desiredQty, priceRef, deployed, book) {
  * Paper Broker: Places orders for APPROVED signals.
  */
 async function doPlaceOrders(dateId, jobId) {
-    var _a, _b, _c, _d, _e;
+    var _a, _b, _c, _d;
     const db = getDb();
     await logger_1.logger.info(`[PaperBroker] Placing orders for ${dateId}`, 'PaperBroker', { dateId, jobId });
     (0, safety_1.checkSafety)();
@@ -133,8 +133,9 @@ async function doPlaceOrders(dateId, jobId) {
             return s + Math.abs(Number(p.avgEntryPrice) * Number(p.qty));
         }, 0);
         const accountSnap = await db.collection('config').doc('account').get();
-        const equity = Number((_a = accountSnap.data()) === null || _a === void 0 ? void 0 : _a.equity) || 0;
-        sepaBook = equity * runtime_1.SEPA_CONFIG.BOOK_PCT;
+        // Strict funds: buying power is SETTLED CASH (initial + realised), NOT equity —
+        // equity includes unrealised gains, which are not cash available to deploy.
+        sepaBook = (0, portfolioEquity_1.settledCash)(accountSnap.data()) * runtime_1.SEPA_CONFIG.BOOK_PCT;
         const slots = Math.max(0, runtime_1.SEPA_CONFIG.MAX_POS - openSepa);
         const ranked = signalsSnap.docs
             .filter(d => { var _a; return d.data().strategy === 'SepaBreakoutEOD' && !((_a = d.data().execution) === null || _a === void 0 ? void 0 : _a.status); })
@@ -146,16 +147,16 @@ async function doPlaceOrders(dateId, jobId) {
     }
     for (const doc of signalsSnap.docs) {
         const signal = doc.data();
-        if ((_b = signal.execution) === null || _b === void 0 ? void 0 : _b.status)
+        if ((_a = signal.execution) === null || _a === void 0 ? void 0 : _a.status)
             continue;
         // The SEPA leader cap only gates SEPA signals; metals (and any other) signals pass.
         if (allowedIds && signal.strategy === 'SepaBreakoutEOD' && !allowedIds.has(doc.id))
             continue;
-        const atrRef = signal.atrRef || ((_c = signal.features) === null || _c === void 0 ? void 0 : _c.atr14) || 0;
+        const atrRef = signal.atrRef || ((_b = signal.features) === null || _b === void 0 ? void 0 : _b.atr14) || 0;
         const stopMult = signal.stopAtrMult || 2.0;
-        const originalQty = ((_d = signal.riskApproval) === null || _d === void 0 ? void 0 : _d.sizedQty) || 0;
+        const originalQty = ((_c = signal.riskApproval) === null || _c === void 0 ? void 0 : _c.sizedQty) || 0;
         let sizedQty = originalQty;
-        let riskAmount = ((_e = signal.riskApproval) === null || _e === void 0 ? void 0 : _e.riskAmount) || 0;
+        let riskAmount = ((_d = signal.riskApproval) === null || _d === void 0 ? void 0 : _d.riskAmount) || 0;
         // SEPA buying-power gate: cap gross deployed capital to the SEPA book so SEPA and
         // the metals sleeve never jointly commit > 100% of equity. priceRef reconstructs
         // the decision close from the SEPA stop (atrRef = close * HARD_STOP_PCT). Scale the

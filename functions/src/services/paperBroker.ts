@@ -4,7 +4,7 @@ import { checkSafety } from './safety';
 import { SLIPPAGE_CONFIG, INDIAN_FEE_CONFIG, ADV_LIMITS, SEPA_CONFIG } from '../config/runtime';
 import { Timestamp } from 'firebase-admin/firestore';
 import { CalendarService } from './calendar';
-import { computeExitPnl } from './portfolioEquity';
+import { computeExitPnl, settledCash } from './portfolioEquity';
 import { getBarOn } from './barCache';
 import { logger } from './logger';
 
@@ -110,8 +110,9 @@ export async function doPlaceOrders(dateId: string, jobId?: string) {
       return s + Math.abs(Number(p.avgEntryPrice) * Number(p.qty));
     }, 0);
     const accountSnap = await db.collection('config').doc('account').get();
-    const equity = Number((accountSnap.data() as any)?.equity) || 0;
-    sepaBook = equity * SEPA_CONFIG.BOOK_PCT;
+    // Strict funds: buying power is SETTLED CASH (initial + realised), NOT equity —
+    // equity includes unrealised gains, which are not cash available to deploy.
+    sepaBook = settledCash(accountSnap.data() as any) * SEPA_CONFIG.BOOK_PCT;
     const slots = Math.max(0, SEPA_CONFIG.MAX_POS - openSepa);
     const ranked = signalsSnap.docs
       .filter(d => (d.data() as Signal).strategy === 'SepaBreakoutEOD' && !(d.data() as Signal).execution?.status)
