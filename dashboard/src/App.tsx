@@ -29,6 +29,8 @@ interface Position {
   entryPrice?: number;
   qty: number;
   unrealizedPnl: number;
+  unrealizedPnlPct?: number;
+  currentPrice?: number;
   realizedPnl: number;
   status: string;
   direction?: string;
@@ -37,6 +39,7 @@ interface Position {
   lastUpdatedAt: any;
   mfeR?: number;
   maeR?: number;
+  mfeAtr?: number;
   targets?: number[];
   stopPrice?: number;
   entryDate?: string;
@@ -135,11 +138,12 @@ function App() {
       setHistory(closed);
       console.log(`[Dashboard] Active Positions:`, active.length);
       
-      const totalRealized = closed.reduce((acc: number, p: Position) => acc + (p.realizedPnl || 0), 0);
       const wins = closed.filter((p: Position) => p.realizedPnl > 0).length;
       const wr = closed.length > 0 ? Math.round((wins / closed.length) * 100) : 0;
 
-      setStats((prev: any) => ({ ...prev, openPositions: active.length, realizedPnl: totalRealized, winRate: wr }));
+      // realizedPnl is sourced from the account (authoritative trades ledger, incl. partial
+      // exits on still-open positions), NOT re-summed from closed positions here.
+      setStats((prev: any) => ({ ...prev, openPositions: active.length, winRate: wr }));
     });
 
     // 4. Listen for aggregate stats (Scoreboard)
@@ -158,7 +162,11 @@ function App() {
     // 6. Listen for account equity (source of truth is config/account)
     const unsubAccount = onSnapshot(doc(db, 'config', 'account'), (snap) => {
       const acct = snap.data();
-      if (acct?.equity != null) setStats((prev: any) => ({ ...prev, equity: acct.equity }));
+      if (acct?.equity != null) setStats((prev: any) => ({
+        ...prev,
+        equity: acct.equity,
+        ...(acct.realizedPnl != null ? { realizedPnl: acct.realizedPnl } : {}),
+      }));
     });
 
     return () => {
@@ -421,6 +429,12 @@ function App() {
     equityCurveData.unshift({ name: 0, totalPnL: 0, symbol: 'START' });
   }
 
+  // Portfolio breakdown — all reconcile by construction: equity = cash + deployed + unrealized.
+  const inr = (n: number) => '₹' + Number(n || 0).toLocaleString('en-IN', { maximumFractionDigits: 2 });
+  const capitalDeployed = positions.reduce((a, p) => a + ((p.avgEntryPrice || p.entryPrice || 0) * (p.qty || 0)), 0);
+  const unrealizedTotal = positions.reduce((a, p) => a + (p.unrealizedPnl || 0), 0);
+  const cashBalance = stats.equity - capitalDeployed - unrealizedTotal;
+
   return (
     <div className="dashboard-container">
       <header className="header">
@@ -511,20 +525,32 @@ function App() {
           <>
           <section className="stats-grid" style={{ gridArea: 'stats' }}>
             <div className="card">
-              <div className="stat-label">Total Portfolio Equity</div>
-              {/* config/account.equity already = initial + realized + open MTM; do NOT re-add unrealizedPnl (double-count) */}
-              <div className="stat-value">₹{stats.equity.toLocaleString(undefined, { maximumFractionDigits: 2 })}</div>
+              <div className="stat-label">Total Equity</div>
+              {/* config/account.equity = initial + realized + open MTM; never re-add unrealizedPnl */}
+              <div className="stat-value">{inr(stats.equity)}</div>
+            </div>
+            <div className="card">
+              <div className="stat-label">Cash Balance</div>
+              <div className="stat-value">{inr(cashBalance)}</div>
+            </div>
+            <div className="card">
+              <div className="stat-label">Capital Deployed</div>
+              <div className="stat-value">{inr(capitalDeployed)}</div>
+            </div>
+            <div className="card">
+              <div className="stat-label">Unrealized PnL</div>
+              <div className={`stat-value ${unrealizedTotal >= 0 ? 'up' : 'down'}`}>{unrealizedTotal >= 0 ? '+' : ''}{inr(unrealizedTotal)}</div>
             </div>
             <div className="card">
               <div className="stat-label">Realized PnL</div>
-              <div className="stat-value up">₹{stats.realizedPnl.toLocaleString()}</div>
+              <div className={`stat-value ${stats.realizedPnl >= 0 ? 'up' : 'down'}`}>{stats.realizedPnl >= 0 ? '+' : ''}{inr(stats.realizedPnl)}</div>
             </div>
             <div className="card">
               <div className="stat-label">Active Trades</div>
               <div className="stat-value">{stats.openPositions}</div>
             </div>
             <div className="card">
-              <div className="stat-label">System Win Rate</div>
+              <div className="stat-label">Win Rate</div>
               <div className="stat-value" style={{ color: '#fbbf24' }}>{stats.winRate}%</div>
             </div>
           </section>
@@ -756,8 +782,9 @@ function App() {
                       <th>Symbol</th>
                       <th>Dir × Qty</th>
                       <th>Entry</th>
+                      <th>Current</th>
                       <th>PnL</th>
-                      <th>MFE / MAE</th>
+                      <th>MFE (ATR)</th>
                       <th>Strategy</th>
                       <th>Stop</th>
                       <th>Date</th>
@@ -775,19 +802,19 @@ function App() {
                         <tr key={p.symbol}>
                           <td><span className="symbol-tag">{p.symbol}</span></td>
                           <td>{p.direction || 'BUY'} × {p.qty}</td>
-                          <td>₹{entry.toFixed(1)}</td>
+                          <td>₹{entry.toFixed(2)}</td>
+                          <td>{p.currentPrice != null ? `₹${p.currentPrice.toFixed(2)}` : '—'}</td>
                           <td className={pnl >= 0 ? 'up-text' : 'down-text'}>
-                            ₹{pnl.toFixed(0)}
+                            ₹{pnl.toFixed(2)}{p.unrealizedPnlPct != null ? ` (${(p.unrealizedPnlPct * 100).toFixed(2)}%)` : ''}
                           </td>
-                          <td style={{ fontSize: '0.75rem' }}>
-                            <span style={{ color: '#10b981' }}>{p.mfeR?.toFixed(1) || 0}R</span> / 
-                            <span style={{ color: '#ef4444' }}> {p.maeR?.toFixed(1) || 0}R</span>
+                          <td style={{ fontSize: '0.75rem', color: '#10b981' }}>
+                            {p.mfeAtr != null ? `${p.mfeAtr.toFixed(1)}×ATR` : '—'}
                           </td>
                           <td style={{ fontSize: '0.8rem', color: '#94a3b8' }}>
                             {p.strategy || 'N/A'}
                           </td>
                           <td style={{ fontSize: '0.8rem', color: '#94a3b8' }}>
-                            ₹{p.stopPrice?.toFixed(1) || 'N/A'}
+                            ₹{p.stopPrice?.toFixed(2) || 'N/A'}
                           </td>
                           <td style={{ width: '100px' }}>
                             <div style={{ fontSize: '0.65rem', color: '#94a3b8', marginBottom: '2px' }}>{p.entryDate || ''}</div>

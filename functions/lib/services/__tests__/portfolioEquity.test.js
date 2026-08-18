@@ -186,4 +186,50 @@ describe('markPosition', () => {
         expect(equity).toBeCloseTo(initialEquity + leg1 + leg2, 8);
     });
 });
+/**
+ * Equity anchor. Regression for a COMPOUNDING drift bug: config/account had no
+ * initialEquity, so recomputeAccountEquity fell back to peakEquity (which moves up
+ * every run) and re-added open+realised P&L each EOD — equity inflated by ~openUnrealized
+ * per run. The anchor must be immutable and NEVER derived from peakEquity/equity.
+ */
+describe('resolveInitialEquity (immutable equity anchor)', () => {
+    it('uses initialEquity when present and does not backfill', () => {
+        const r = (0, portfolioEquity_1.resolveInitialEquity)({ initialEquity: 500000, equity: 500270 }, 0, 270);
+        expect(r).toEqual({ initial: 500000, backfill: false });
+    });
+    it('never anchors on peakEquity/equity when initialEquity is present', () => {
+        // Even with a wildly inflated equity/peak, the anchor stays the deposited capital.
+        const r = (0, portfolioEquity_1.resolveInitialEquity)({ initialEquity: 500000, equity: 999999 }, 0, 270);
+        expect(r.initial).toBe(500000);
+    });
+    it('backfills a stable baseline once when initialEquity is missing', () => {
+        // initial = equity - realized - openUnrealized (reconstructs the deposit).
+        const r = (0, portfolioEquity_1.resolveInitialEquity)({ equity: 500270 }, 0, 270);
+        expect(r.backfill).toBe(true);
+        expect(r.initial).toBeCloseTo(500000, 6);
+    });
+    it('is drift-free across repeated recomputations (the actual bug)', () => {
+        const openUnrealized = 270.063096;
+        const realized = 0;
+        // Seed run: fresh account (no open position yet), initialEquity backfilled to the deposit.
+        let account = { equity: 500000 };
+        let a = (0, portfolioEquity_1.resolveInitialEquity)(account, realized, 0);
+        let equity = a.initial + realized + 0; // 500,000
+        account = { initialEquity: a.initial, equity }; // persist the anchor
+        expect(a.initial).toBe(500000);
+        // A position opens; run the EOD three more times — equity must NOT compound.
+        const equities = [];
+        for (let i = 0; i < 3; i++) {
+            a = (0, portfolioEquity_1.resolveInitialEquity)(account, realized, openUnrealized);
+            equity = a.initial + realized + openUnrealized;
+            account = { initialEquity: a.initial, equity }; // simulate the write-back
+            equities.push(equity);
+            expect(a.backfill).toBe(false);
+        }
+        // Every run yields the same equity — no per-run inflation.
+        expect(equities[0]).toBeCloseTo(500000 + openUnrealized, 8);
+        expect(equities[1]).toBeCloseTo(equities[0], 10);
+        expect(equities[2]).toBeCloseTo(equities[0], 10);
+    });
+});
 //# sourceMappingURL=portfolioEquity.test.js.map

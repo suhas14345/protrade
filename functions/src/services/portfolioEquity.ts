@@ -276,7 +276,9 @@ export async function recomputeAccountEquity(
 
   const peakEquity = Math.max(account.peakEquity ?? equity, equity);
 
-  await accountRef.update({ equity, peakEquity, equityEMA25, portfolioRealizedVol });
+  // Persist equity AND its authoritative breakdown so every consumer (dashboard,
+  // reports) reconciles by construction: equity === initialEquity + realizedPnl + openUnrealized.
+  await accountRef.update({ equity, peakEquity, equityEMA25, portfolioRealizedVol, realizedPnl: realizedToDate, openUnrealized });
   // Persist per-position marks with the SAME formula/close so position docs
   // reconcile to config/account to the paisa.
   await persistOpenPositionMarks(db, dateId);

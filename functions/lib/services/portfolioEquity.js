@@ -265,7 +265,9 @@ async function recomputeAccountEquity(db, dateId) {
     const volWindow = series.slice(-VOL_LOOKBACK_POINTS);
     const portfolioRealizedVol = annualisedVol(dailyReturns(volWindow));
     const peakEquity = Math.max((_b = account.peakEquity) !== null && _b !== void 0 ? _b : equity, equity);
-    await accountRef.update({ equity, peakEquity, equityEMA25, portfolioRealizedVol });
+    // Persist equity AND its authoritative breakdown so every consumer (dashboard,
+    // reports) reconciles by construction: equity === initialEquity + realizedPnl + openUnrealized.
+    await accountRef.update({ equity, peakEquity, equityEMA25, portfolioRealizedVol, realizedPnl: realizedToDate, openUnrealized });
     // Persist per-position marks with the SAME formula/close so position docs
     // reconcile to config/account to the paisa.
     await persistOpenPositionMarks(db, dateId);
