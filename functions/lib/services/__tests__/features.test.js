@@ -111,4 +111,27 @@ describe('Features Service', () => {
             .rejects.toThrow('Insufficient data');
     });
 });
+describe('computeSma200Rising (adaptive 200-SMA slope)', () => {
+    // A strictly rising series: the last-200 average always exceeds any earlier 200-window.
+    const rising = (n) => Array.from({ length: n }, (_, i) => 100 + i);
+    const falling = (n) => Array.from({ length: n }, (_, i) => 100 - i);
+    it('detects a rising 200-SMA with only 212 bars (the real-world case)', () => {
+        // Regression: the old `>= 200 + 20` guard returned false here, disabling all signals.
+        expect((0, features_1.computeSma200Rising)(rising(212), 20)).toBe(true);
+    });
+    it('detects a rising 200-SMA at the full lookback', () => {
+        expect((0, features_1.computeSma200Rising)(rising(260), 20)).toBe(true);
+    });
+    it('returns false for a falling 200-SMA', () => {
+        expect((0, features_1.computeSma200Rising)(falling(240), 20)).toBe(false);
+    });
+    it('fails closed below the minimal slope window (< 205 bars)', () => {
+        expect((0, features_1.computeSma200Rising)(rising(204), 20)).toBe(false);
+        expect((0, features_1.computeSma200Rising)(rising(200), 20)).toBe(false);
+    });
+    it('caps the lookback at available history (adaptive)', () => {
+        // 206 bars → effective lookback 6, still a valid rising check.
+        expect((0, features_1.computeSma200Rising)(rising(206), 20)).toBe(true);
+    });
+});
 //# sourceMappingURL=features.test.js.map

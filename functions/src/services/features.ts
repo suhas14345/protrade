@@ -13,6 +13,23 @@ const getDb = () => {
   return admin.firestore();
 };
 
+/**
+ * 200-SMA slope check with an ADAPTIVE lookback: rising when today's 200-SMA exceeds
+ * the 200-SMA min(lookback, available) bars ago. Requires a full 200-bar SMA plus a
+ * minimal (>=5-bar) slope window. The old hard `>= 200 + lookback` guard defaulted to
+ * false whenever history was < 220 bars — which, with ~10-11 months of stored bars,
+ * was the whole universe, silently disabling every SEPA/ATH trend-template signal.
+ */
+export function computeSma200Rising(closes: number[], lookback: number): boolean {
+  const n = closes.length;
+  if (n < 205) return false;
+  const mean = (a: number[]) => a.reduce((x, y) => x + y, 0) / a.length;
+  const lb = Math.min(lookback, n - 200);
+  const sma200Now = mean(closes.slice(-200));
+  const sma200Prev = mean(closes.slice(-(200 + lb), -lb));
+  return sma200Now > sma200Prev;
+}
+
 export async function doComputeFeatures(jobId: string, symbol: string, runDate: string) {
   const db = getDb();
   const dateId = runDate.replace(/-/g, '');
@@ -103,13 +120,8 @@ export async function doComputeFeatures(jobId: string, symbol: string, runDate: 
     const sma50 = sma(50);
     const sma150 = sma(150);
     const sma200 = sma(200);
-    // 200-SMA slope: compare the current 200-SMA to the 200-SMA some bars ago.
-    const lb = SEPA_CONFIG.SMA200_SLOPE_LOOKBACK;
-    let sma200Rising = false;
-    if (closes.length >= 200 + lb) {
-      const past200 = avg(closes.slice(-(200 + lb), -lb));
-      sma200Rising = sma200 > past200;
-    }
+    // 200-SMA slope (adaptive lookback so ~200-bar histories can still confirm a rising 200-SMA).
+    const sma200Rising = computeSma200Rising(closes, SEPA_CONFIG.SMA200_SLOPE_LOOKBACK);
     const high252 = Math.max(...closes.slice(-252));
     const ret126 = closes.length >= 127 ? (closes[closes.length - 1] / closes[closes.length - 127]) - 1 : 0;
     // True all-time high: a running max of the daily HIGH across all processed history,

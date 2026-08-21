@@ -1,4 +1,4 @@
-import { doComputeFeatures } from '../features';
+import { doComputeFeatures, computeSma200Rising } from '../features';
 import * as admin from 'firebase-admin';
 
 // Mock technicalindicators
@@ -87,5 +87,34 @@ describe('Features Service', () => {
 
     await expect(doComputeFeatures('test-job', 'SMALLCAP.NS', '2026-03-21'))
       .rejects.toThrow('Insufficient data');
+  });
+});
+
+describe('computeSma200Rising (adaptive 200-SMA slope)', () => {
+  // A strictly rising series: the last-200 average always exceeds any earlier 200-window.
+  const rising = (n: number) => Array.from({ length: n }, (_, i) => 100 + i);
+  const falling = (n: number) => Array.from({ length: n }, (_, i) => 100 - i);
+
+  it('detects a rising 200-SMA with only 212 bars (the real-world case)', () => {
+    // Regression: the old `>= 200 + 20` guard returned false here, disabling all signals.
+    expect(computeSma200Rising(rising(212), 20)).toBe(true);
+  });
+
+  it('detects a rising 200-SMA at the full lookback', () => {
+    expect(computeSma200Rising(rising(260), 20)).toBe(true);
+  });
+
+  it('returns false for a falling 200-SMA', () => {
+    expect(computeSma200Rising(falling(240), 20)).toBe(false);
+  });
+
+  it('fails closed below the minimal slope window (< 205 bars)', () => {
+    expect(computeSma200Rising(rising(204), 20)).toBe(false);
+    expect(computeSma200Rising(rising(200), 20)).toBe(false);
+  });
+
+  it('caps the lookback at available history (adaptive)', () => {
+    // 206 bars → effective lookback 6, still a valid rising check.
+    expect(computeSma200Rising(rising(206), 20)).toBe(true);
   });
 });

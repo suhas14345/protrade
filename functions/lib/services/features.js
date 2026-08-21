@@ -34,6 +34,7 @@ var __importStar = (this && this.__importStar) || (function () {
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.computeFeaturesTask = void 0;
+exports.computeSma200Rising = computeSma200Rising;
 exports.doComputeFeatures = doComputeFeatures;
 const functionsV1 = __importStar(require("firebase-functions"));
 const admin = __importStar(require("firebase-admin"));
@@ -47,6 +48,23 @@ const getDb = () => {
         admin.initializeApp();
     return admin.firestore();
 };
+/**
+ * 200-SMA slope check with an ADAPTIVE lookback: rising when today's 200-SMA exceeds
+ * the 200-SMA min(lookback, available) bars ago. Requires a full 200-bar SMA plus a
+ * minimal (>=5-bar) slope window. The old hard `>= 200 + lookback` guard defaulted to
+ * false whenever history was < 220 bars — which, with ~10-11 months of stored bars,
+ * was the whole universe, silently disabling every SEPA/ATH trend-template signal.
+ */
+function computeSma200Rising(closes, lookback) {
+    const n = closes.length;
+    if (n < 205)
+        return false;
+    const mean = (a) => a.reduce((x, y) => x + y, 0) / a.length;
+    const lb = Math.min(lookback, n - 200);
+    const sma200Now = mean(closes.slice(-200));
+    const sma200Prev = mean(closes.slice(-(200 + lb), -lb));
+    return sma200Now > sma200Prev;
+}
 async function doComputeFeatures(jobId, symbol, runDate) {
     var _a;
     const db = getDb();
@@ -125,13 +143,8 @@ async function doComputeFeatures(jobId, symbol, runDate) {
         const sma50 = sma(50);
         const sma150 = sma(150);
         const sma200 = sma(200);
-        // 200-SMA slope: compare the current 200-SMA to the 200-SMA some bars ago.
-        const lb = runtime_1.SEPA_CONFIG.SMA200_SLOPE_LOOKBACK;
-        let sma200Rising = false;
-        if (closes.length >= 200 + lb) {
-            const past200 = avg(closes.slice(-(200 + lb), -lb));
-            sma200Rising = sma200 > past200;
-        }
+        // 200-SMA slope (adaptive lookback so ~200-bar histories can still confirm a rising 200-SMA).
+        const sma200Rising = computeSma200Rising(closes, runtime_1.SEPA_CONFIG.SMA200_SLOPE_LOOKBACK);
         const high252 = Math.max(...closes.slice(-252));
         const ret126 = closes.length >= 127 ? (closes[closes.length - 1] / closes[closes.length - 127]) - 1 : 0;
         // True all-time high: a running max of the daily HIGH across all processed history,
