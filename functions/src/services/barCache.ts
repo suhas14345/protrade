@@ -131,6 +131,33 @@ export async function getWindowOnOrBefore(
 }
 
 /**
+ * The maximum daily HIGH across ALL stored bars with id <= dateId. Seeds a TRUE
+ * all-time high: the ~260-bar feature window can't see older peaks, so the running
+ * max alone would only ever be a rolling ~1-year high.
+ */
+export async function maxHighOnOrBefore(
+  db: FirebaseFirestore.Firestore,
+  symbol: string,
+  dateId: string
+): Promise<number> {
+  if (!isReplay()) {
+    const snap = await db.collection('barsD').doc(symbol).collection('days')
+      .where(admin.firestore.FieldPath.documentId(), '<=', dateId)
+      .orderBy(admin.firestore.FieldPath.documentId(), 'asc')
+      .select('high')
+      .get();
+    let mx = 0;
+    for (const d of snap.docs) { const h = Number((d.data() as any).high); if (Number.isFinite(h) && h > mx) mx = h; }
+    return mx;
+  }
+  const c = await loadSymbol(db, symbol);
+  const idx = upperIndex(c.ids, dateId);
+  let mx = 0;
+  for (let i = 0; i <= idx; i++) { const h = Number(c.bars[i].high); if (Number.isFinite(h) && h > mx) mx = h; }
+  return mx;
+}
+
+/**
  * The most recent bar with id <= `dateId`, or null. Replaces the full
  * `<= dateId` ascending scan whose last row the regime and equity stages take.
  */

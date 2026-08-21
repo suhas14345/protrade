@@ -36,6 +36,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.clearBarCache = clearBarCache;
 exports.getBarOn = getBarOn;
 exports.getWindowOnOrBefore = getWindowOnOrBefore;
+exports.maxHighOnOrBefore = maxHighOnOrBefore;
 exports.getLatestOnOrBefore = getLatestOnOrBefore;
 /**
  * Replay-only in-process bar cache.
@@ -152,6 +153,36 @@ async function getWindowOnOrBefore(db, symbol, dateId, limit) {
         return [];
     const start = Math.max(0, idx + 1 - limit);
     return c.bars.slice(start, idx + 1);
+}
+/**
+ * The maximum daily HIGH across ALL stored bars with id <= dateId. Seeds a TRUE
+ * all-time high: the ~260-bar feature window can't see older peaks, so the running
+ * max alone would only ever be a rolling ~1-year high.
+ */
+async function maxHighOnOrBefore(db, symbol, dateId) {
+    if (!isReplay()) {
+        const snap = await db.collection('barsD').doc(symbol).collection('days')
+            .where(admin.firestore.FieldPath.documentId(), '<=', dateId)
+            .orderBy(admin.firestore.FieldPath.documentId(), 'asc')
+            .select('high')
+            .get();
+        let mx = 0;
+        for (const d of snap.docs) {
+            const h = Number(d.data().high);
+            if (Number.isFinite(h) && h > mx)
+                mx = h;
+        }
+        return mx;
+    }
+    const c = await loadSymbol(db, symbol);
+    const idx = upperIndex(c.ids, dateId);
+    let mx = 0;
+    for (let i = 0; i <= idx; i++) {
+        const h = Number(c.bars[i].high);
+        if (Number.isFinite(h) && h > mx)
+            mx = h;
+    }
+    return mx;
 }
 /**
  * The most recent bar with id <= `dateId`, or null. Replaces the full

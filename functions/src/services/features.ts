@@ -4,7 +4,7 @@ import { Timestamp } from 'firebase-admin/firestore';
 import { Features, Bar } from '../models';
 import { logger } from './logger';
 import { VDU_CONFIG, GAP_RISK_CONFIG, SEPA_CONFIG } from '../config/runtime';
-import { getWindowOnOrBefore } from './barCache';
+import { getWindowOnOrBefore, maxHighOnOrBefore } from './barCache';
 
 // Lazy load technicalindicators inside functions to avoid deployment timeouts
 
@@ -124,11 +124,19 @@ export async function doComputeFeatures(jobId: string, symbol: string, runDate: 
     const sma200Rising = computeSma200Rising(closes, SEPA_CONFIG.SMA200_SLOPE_LOOKBACK);
     const high252 = Math.max(...closes.slice(-252));
     const ret126 = closes.length >= 127 ? (closes[closes.length - 1] / closes[closes.length - 127]) - 1 : 0;
-    // True all-time high: a running max of the daily HIGH across all processed history,
-    // persisted on the parent features/{symbol} doc. Max is monotonic ⇒ safe to recompute.
+    // True all-time high. Until the one-time full-history seed runs (flagged on the parent
+    // doc), scan ALL stored bars so athHigh is genuinely all-time, not just the ~260-bar
+    // window; afterwards a cheap running max keeps it current (and self-heals new symbols).
     const athSnap = await db.collection('features').doc(symbol).get();
-    const prevAth = Number(athSnap.exists ? (athSnap.data() as any)?.athHigh : 0) || 0;
-    const athHigh = Math.max(prevAth, Math.max(...highs), high252);
+    const athData: any = athSnap.exists ? athSnap.data() : null;
+    let athHigh: number;
+    if (athData?.athHighFullScan) {
+      const prevAth = Number(athData.athHigh) || 0;
+      athHigh = Math.max(prevAth, Math.max(...highs), high252);
+    } else {
+      const allTimeHigh = await maxHighOnOrBefore(db, symbol, dateId);
+      athHigh = Math.max(allTimeHigh, Math.max(...highs), high252);
+    }
     sepaFields = { sma50, sma150, sma200, sma200Rising, high252, ret126, athHigh };
   }
 
@@ -192,7 +200,7 @@ export async function doComputeFeatures(jobId: string, symbol: string, runDate: 
   // Persist the running ATH on the parent doc so the next session can extend the max.
   if (SEPA_CONFIG.SEPA_ONLY && Number.isFinite(Number((sepaFields as any).athHigh))) {
     await db.collection('features').doc(symbol).set(
-      { athHigh: (sepaFields as any).athHigh, athUpdatedAt: Timestamp.now() },
+      { athHigh: (sepaFields as any).athHigh, athHighFullScan: true, athUpdatedAt: Timestamp.now() },
       { merge: true },
     );
   }

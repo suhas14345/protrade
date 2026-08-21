@@ -10,6 +10,7 @@ const mockFirestore = {
   where: jest.fn().mockReturnThis(),
   orderBy: jest.fn().mockReturnThis(),
   limit: jest.fn().mockReturnThis(),
+  select: jest.fn().mockReturnThis(),
   get: jest.fn().mockResolvedValue({ 
     exists: false, 
     empty: true, 
