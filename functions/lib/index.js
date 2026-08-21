@@ -223,6 +223,11 @@ exports.gateway = functions.runWith(v1Options).https.onRequest(async (req, res) 
                 await auditSignalsTask(req, res);
                 break;
             }
+            case 'snapshot': {
+                const { snapshotTask } = await Promise.resolve().then(() => __importStar(require('./services/snapshot')));
+                await snapshotTask(req, res);
+                break;
+            }
             case 'downloadReport': {
                 const { downloadReport } = await Promise.resolve().then(() => __importStar(require('./services/diag')));
                 await downloadReport(req, res);

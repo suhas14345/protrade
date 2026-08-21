@@ -192,6 +192,11 @@ export const gateway = functions.runWith(v1Options).https.onRequest(async (req, 
                 await auditSignalsTask(req, res);
                 break;
             }
+            case 'snapshot': {
+                const { snapshotTask } = await import('./services/snapshot');
+                await snapshotTask(req, res);
+                break;
+            }
             case 'downloadReport': {
                 const { downloadReport } = await import('./services/diag');
                 await downloadReport(req, res);
