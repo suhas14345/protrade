@@ -60,6 +60,7 @@ var AlertType;
     AlertType["RECONCILIATION_WARN"] = "RECONCILIATION_WARN";
     AlertType["RECONCILIATION_HALT"] = "RECONCILIATION_HALT";
     AlertType["SESSION_EXPIRED"] = "SESSION_EXPIRED";
+    AlertType["SIGNAL_AUDIT"] = "SIGNAL_AUDIT";
 })(AlertType || (exports.AlertType = AlertType = {}));
 // ── Thresholds ───────────────────────────────────────────────────────
 exports.THRESHOLDS = {

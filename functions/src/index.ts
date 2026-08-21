@@ -187,6 +187,11 @@ export const gateway = functions.runWith(v1Options).https.onRequest(async (req, 
                 await auditJobs(req, res);
                 break;
             }
+            case 'auditSignals': {
+                const { auditSignalsTask } = await import('./services/signalCritic');
+                await auditSignalsTask(req, res);
+                break;
+            }
             case 'downloadReport': {
                 const { downloadReport } = await import('./services/diag');
                 await downloadReport(req, res);

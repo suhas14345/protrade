@@ -11,6 +11,7 @@ describe('Middleware — validateRequest', () => {
         'diagnostics', 'checkHealth', 'updateToken', 'updateCredentials', 'seedUniverse',
         'systemHealth', 'sweepStuckJobs', 'getAlerts',
         'probeInventory', 'auditJobs', 'downloadReport',
+        'auditSignals',
         'scheduledKiteRenew', 'scheduledEod', 'scheduledMorning',
         'startMorningExecution', 'getKiteSettings',
         'syncNseHolidays', 'syncCorporateEvents',

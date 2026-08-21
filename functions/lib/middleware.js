@@ -50,6 +50,7 @@ const KNOWN_ACTIONS = new Set([
     'diagnostics', 'checkHealth', 'updateToken', 'updateCredentials', 'seedUniverse',
     'systemHealth', 'sweepStuckJobs', 'getAlerts',
     'probeInventory', 'auditJobs', 'downloadReport',
+    'auditSignals',
     'scheduledKiteRenew', 'scheduledEod', 'scheduledMorning',
     'startMorningExecution', 'getKiteSettings',
     'syncNseHolidays', 'syncCorporateEvents',
