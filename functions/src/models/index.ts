@@ -90,11 +90,30 @@ export interface Features {
   sma50?: number;
   sma150?: number;
   sma200?: number;
+  sma10?: number;             // VCP/IndiaPulse trend filter requirement
+  vcpRange40?: number;        // VCP base range (max/min over 40d)
+  vcpRange20?: number;        // VCP secondary range
+  vcpRange10?: number;
+  trend40Up?: boolean;
+  trend20Up?: boolean;
+  trend10Up?: boolean;        // VCP final pinch range
   sma200Rising?: boolean;     // 200-SMA higher than it was SMA200_SLOPE_LOOKBACK bars ago
+  sma50Rising?: boolean;      // 50-SMA rising (IndiaPulse trend template)
+  sma150Rising?: boolean;     // 150-SMA rising (IndiaPulse trend template)
   high252?: number;           // 52-week high of close
+  low252?: number;            // 52-week low of close
+  pctAboveLow252?: number;    // fraction above the 52-week low (IndiaPulse requires >= 0.30)
   athHigh?: number;           // true all-time high (running max of daily HIGH across all stored history)
   ret126?: number;            // 126-day momentum (close/close[-126] - 1)
   rsRank126?: number;         // cross-sectional rank by ret126 (1 = strongest), set by RS pass
+  // VCP pivot / trigger fields (IndiaPulse-style)
+  vcpPivot?: number;          // pivot = prior 50-session high (excludes the current bar)
+  vcpStructuralLow?: number;  // final-contraction low (min low over last 10 sessions) — invalidation ref
+  vcpDistToPivotPct?: number; // (close - pivot)/pivot: negative = below pivot, positive = above
+  atrCompressing?: boolean;   // 14d ATR now < 14d ATR ~20 sessions ago
+  vol10?: number;             // 10-day average volume
+  vol50?: number;             // 50-day average volume
+  volDryUpRatio?: number;     // vol10 / vol50 (< 1 = dry-up)
   patterns?: string[];
   computedAt: FirebaseFirestore.Timestamp;
 }
