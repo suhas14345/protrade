@@ -84,7 +84,7 @@ async function getInstrumentTokenMap(apiKey: string, accessToken: string): Promi
  * HTTP Triggers for Dashboard/Scheduler
  */
 export async function doStartEodRun(req: any, res: any) {
-  const { date, universe = 'nifty50', forceRegime, force } = { ...req.query, ...req.body } as any;
+  const { date, universe = 'midsmall400', forceRegime, force } = { ...req.query, ...req.body } as any;
   if (!date) {
     res.status(400).send({ error: 'Missing "date" query parameter (YYYY-MM-DD)' });
     return;
@@ -132,7 +132,7 @@ export async function doStartEodRun(req: any, res: any) {
  * Task Handler: Main EOD Orchestration Loop
  */
 export async function orchestrateEodTask(req: any) {
-  const { jobId, date, universe = 'nifty50', forceRegime } = req.body;
+  const { jobId, date, universe = 'midsmall400', forceRegime } = req.body;
   if (!jobId || !date) {
     console.error('[Orchestrator] Missing jobId or date in task body');
     return;
@@ -156,7 +156,7 @@ export async function orchestrateEodTask(req: any) {
  * Deep Sync: Force-fetches historical data (e.g. 90 days) for all symbols in a universe.
  */
 export async function doStartDeepSync(req: any, res: any) {
-  const { days = 90, universe = 'nifty500' } = { ...req.query, ...req.body } as any;
+  const { days = 90, universe = 'midsmall400' } = { ...req.query, ...req.body } as any;
   const jobId = `deepsync_${new Date().toISOString().split('T')[0]}_${universe}_${Date.now()}`;
   const db = getDb();
   
@@ -194,7 +194,7 @@ export async function doStartDeepSync(req: any, res: any) {
  * Task Handler: Deep Sync Orchestration Loop
  */
 export async function orchestrateDeepSyncTask(req: any) {
-  const { jobId, universe = 'nifty500', days } = req.body;
+  const { jobId, universe = 'midsmall400', days } = req.body;
   if (!jobId || !universe) {
     console.error('[Orchestrator] Missing jobId or universe in Deep Sync task body');
     return;
@@ -240,7 +240,7 @@ async function runDeepSyncLogic(jobId: string, universeId: string, forceDays: nu
 }
 
 export async function doStartMorningExecution(req: any, res: any) {
-  const { date, universe = 'nifty50' } = req.query as any;
+  const { date, universe = 'midsmall400' } = req.query as any;
   if (!date) {
     res.status(400).send({ error: 'Missing "date"' });
     return;
@@ -310,7 +310,7 @@ export async function terminateJob(req: any, res: any) {
 /**
  * Core Logic: EOD Run (Refactored Gap B4)
  */
-export async function runEodLogic(targetDate: string, targetJobId: string, targetUniverse: string = 'nifty50', forceRegime?: string) {
+export async function runEodLogic(targetDate: string, targetJobId: string, targetUniverse: string = 'midsmall400', forceRegime?: string) {
   const db = getDb();
   const dateId = toDateId(targetDate);
   
@@ -385,7 +385,7 @@ export async function runEodLogic(targetDate: string, targetJobId: string, targe
 /**
  * Morning Execution logic
  */
-export async function runMorningLogic(targetDate: string, targetJobId: string, targetUniverse: string = 'nifty50') {
+export async function runMorningLogic(targetDate: string, targetJobId: string, targetUniverse: string = 'midsmall400') {
   const db = getDb();
   const universeSnap = await db.collection('universes').doc(targetUniverse).collection('members').get();
   const symbols = universeSnap.docs.map(d => d.id);
@@ -465,7 +465,7 @@ export async function processSymbolTask(req: any) {
     const jobData = jobSnapForType.data();
     if (jobData?.type === 'EOD_RUN' && !await isStageCompleted(db, jobId, symbol, 'SIGNALS')) {
       const { doEvaluateSignals } = await import('./strategy');
-      await doEvaluateSignals(jobId, symbol, date, forceRegime, universe || jobData?.universeId || 'nifty500');
+      await doEvaluateSignals(jobId, symbol, date, forceRegime, universe || jobData?.universeId || 'midsmall400');
       await markStageCompleted(db, jobId, symbol, 'SIGNALS');
     }
 
@@ -567,7 +567,7 @@ async function checkAndFinalizeJob(db: any, jobRef: any, jobId: string, dateId: 
     const { doPlaceOrders } = await import('./paperBroker');
 
     // RS Rankings
-    const universeId = jobData.universeId || 'nifty500';
+    const universeId = jobData.universeId || 'midsmall400';
     try {
       await jobRef.update({ stage: 'RS_RANK' });
       const { doComputeRsRanking } = await import('./rsRanking');
@@ -631,6 +631,18 @@ async function checkAndFinalizeJob(db: any, jobRef: any, jobId: string, dateId: 
       await generateJobReport(jobId, date);
     } catch (wrapSubErr: any) {
       await logger.error(`[Orchestrator] Non-critical wrap-up task failed: ${wrapSubErr.message}`, 'Orchestrator', { jobId });
+    }
+
+    // Daily Telegram digest (EOD only). No-op unless settings/telegram is enabled.
+    try {
+      const { sendDailyDigest } = await import('./telegram');
+      const tg = await sendDailyDigest(date);
+      if (tg.sent) await logger.info(`[Orchestrator] Telegram digest sent for ${date}`, 'Orchestrator', { jobId });
+      else if (tg.reason && tg.reason !== 'disabled' && tg.reason !== 'not_configured') {
+        await logger.warn(`[Orchestrator] Telegram digest not sent: ${tg.reason}`, 'Orchestrator', { jobId });
+      }
+    } catch (tgErr: any) {
+      await logger.warn(`[Orchestrator] Telegram digest error: ${tgErr.message}`, 'Orchestrator', { jobId });
     }
 
     await logger.info(`[Orchestrator] Job ${jobId} Completed. Done: ${done}, Failed: ${failed}, Total: ${total}`, 'Orchestrator', { jobId, date, done, failed, total });

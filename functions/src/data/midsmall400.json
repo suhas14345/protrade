@@ -1,0 +1,1602 @@
+[
+  {
+    "symbol": "360ONE.NS",
+    "sector": "Financial Services"
+  },
+  {
+    "symbol": "3MINDIA.NS",
+    "sector": "Diversified"
+  },
+  {
+    "symbol": "ACC.NS",
+    "sector": "Construction Materials"
+  },
+  {
+    "symbol": "ACMESOLAR.NS",
+    "sector": "Power"
+  },
+  {
+    "symbol": "AIAENG.NS",
+    "sector": "Capital Goods"
+  },
+  {
+    "symbol": "APLAPOLLO.NS",
+    "sector": "Capital Goods"
+  },
+  {
+    "symbol": "AUBANK.NS",
+    "sector": "Financial Services"
+  },
+  {
+    "symbol": "AWL.NS",
+    "sector": "Fast Moving Consumer Goods"
+  },
+  {
+    "symbol": "AADHARHFC.NS",
+    "sector": "Financial Services"
+  },
+  {
+    "symbol": "AARTIIND.NS",
+    "sector": "Chemicals"
+  },
+  {
+    "symbol": "AAVAS.NS",
+    "sector": "Financial Services"
+  },
+  {
+    "symbol": "ABBOTINDIA.NS",
+    "sector": "Healthcare"
+  },
+  {
+    "symbol": "ACE.NS",
+    "sector": "Capital Goods"
+  },
+  {
+    "symbol": "ACUTAAS.NS",
+    "sector": "Healthcare"
+  },
+  {
+    "symbol": "ATGL.NS",
+    "sector": "Oil Gas & Consumable Fuels"
+  },
+  {
+    "symbol": "ABCAPITAL.NS",
+    "sector": "Financial Services"
+  },
+  {
+    "symbol": "ABFRL.NS",
+    "sector": "Consumer Services"
+  },
+  {
+    "symbol": "ABLBL.NS",
+    "sector": "Consumer Services"
+  },
+  {
+    "symbol": "ABREL.NS",
+    "sector": "Realty"
+  },
+  {
+    "symbol": "ABSLAMC.NS",
+    "sector": "Financial Services"
+  },
+  {
+    "symbol": "CPPLUS.NS",
+    "sector": "Capital Goods"
+  },
+  {
+    "symbol": "AEGISLOG.NS",
+    "sector": "Oil Gas & Consumable Fuels"
+  },
+  {
+    "symbol": "AEGISVOPAK.NS",
+    "sector": "Oil Gas & Consumable Fuels"
+  },
+  {
+    "symbol": "AFCONS.NS",
+    "sector": "Construction"
+  },
+  {
+    "symbol": "AFFLE.NS",
+    "sector": "Information Technology"
+  },
+  {
+    "symbol": "AJANTPHARM.NS",
+    "sector": "Healthcare"
+  },
+  {
+    "symbol": "ALKEM.NS",
+    "sector": "Healthcare"
+  },
+  {
+    "symbol": "ABDL.NS",
+    "sector": "Fast Moving Consumer Goods"
+  },
+  {
+    "symbol": "ARE&M.NS",
+    "sector": "Automobile and Auto Components"
+  },
+  {
+    "symbol": "AMBER.NS",
+    "sector": "Consumer Durables"
+  },
+  {
+    "symbol": "ANANDRATHI.NS",
+    "sector": "Financial Services"
+  },
+  {
+    "symbol": "ANANTRAJ.NS",
+    "sector": "Realty"
+  },
+  {
+    "symbol": "ANGELONE.NS",
+    "sector": "Financial Services"
+  },
+  {
+    "symbol": "ANTHEM.NS",
+    "sector": "Healthcare"
+  },
+  {
+    "symbol": "ANURAS.NS",
+    "sector": "Chemicals"
+  },
+  {
+    "symbol": "APARINDS.NS",
+    "sector": "Capital Goods"
+  },
+  {
+    "symbol": "APOLLOTYRE.NS",
+    "sector": "Automobile and Auto Components"
+  },
+  {
+    "symbol": "APTUS.NS",
+    "sector": "Financial Services"
+  },
+  {
+    "symbol": "ASAHIINDIA.NS",
+    "sector": "Automobile and Auto Components"
+  },
+  {
+    "symbol": "ASHOKLEY.NS",
+    "sector": "Capital Goods"
+  },
+  {
+    "symbol": "ASTERDM.NS",
+    "sector": "Healthcare"
+  },
+  {
+    "symbol": "ASTRAL.NS",
+    "sector": "Capital Goods"
+  },
+  {
+    "symbol": "ATHERENERG.NS",
+    "sector": "Automobile and Auto Components"
+  },
+  {
+    "symbol": "ATUL.NS",
+    "sector": "Chemicals"
+  },
+  {
+    "symbol": "AUROPHARMA.NS",
+    "sector": "Healthcare"
+  },
+  {
+    "symbol": "AIIL.NS",
+    "sector": "Financial Services"
+  },
+  {
+    "symbol": "BEML.NS",
+    "sector": "Capital Goods"
+  },
+  {
+    "symbol": "BLS.NS",
+    "sector": "Consumer Services"
+  },
+  {
+    "symbol": "BSE.NS",
+    "sector": "Financial Services"
+  },
+  {
+    "symbol": "BAJAJHFL.NS",
+    "sector": "Financial Services"
+  },
+  {
+    "symbol": "BALKRISIND.NS",
+    "sector": "Automobile and Auto Components"
+  },
+  {
+    "symbol": "BALRAMCHIN.NS",
+    "sector": "Fast Moving Consumer Goods"
+  },
+  {
+    "symbol": "BANDHANBNK.NS",
+    "sector": "Financial Services"
+  },
+  {
+    "symbol": "BANKINDIA.NS",
+    "sector": "Financial Services"
+  },
+  {
+    "symbol": "MAHABANK.NS",
+    "sector": "Financial Services"
+  },
+  {
+    "symbol": "BATAINDIA.NS",
+    "sector": "Consumer Durables"
+  },
+  {
+    "symbol": "BAYERCROP.NS",
+    "sector": "Chemicals"
+  },
+  {
+    "symbol": "BELRISE.NS",
+    "sector": "Automobile and Auto Components"
+  },
+  {
+    "symbol": "BERGEPAINT.NS",
+    "sector": "Consumer Durables"
+  },
+  {
+    "symbol": "BDL.NS",
+    "sector": "Capital Goods"
+  },
+  {
+    "symbol": "BHARATFORG.NS",
+    "sector": "Automobile and Auto Components"
+  },
+  {
+    "symbol": "BHEL.NS",
+    "sector": "Capital Goods"
+  },
+  {
+    "symbol": "BHARTIHEXA.NS",
+    "sector": "Telecommunication"
+  },
+  {
+    "symbol": "BIKAJI.NS",
+    "sector": "Fast Moving Consumer Goods"
+  },
+  {
+    "symbol": "GROWW.NS",
+    "sector": "Financial Services"
+  },
+  {
+    "symbol": "BIOCON.NS",
+    "sector": "Healthcare"
+  },
+  {
+    "symbol": "BSOFT.NS",
+    "sector": "Information Technology"
+  },
+  {
+    "symbol": "BLUEDART.NS",
+    "sector": "Services"
+  },
+  {
+    "symbol": "BLUEJET.NS",
+    "sector": "Healthcare"
+  },
+  {
+    "symbol": "BLUESTARCO.NS",
+    "sector": "Consumer Durables"
+  },
+  {
+    "symbol": "BBTC.NS",
+    "sector": "Fast Moving Consumer Goods"
+  },
+  {
+    "symbol": "FIRSTCRY.NS",
+    "sector": "Consumer Services"
+  },
+  {
+    "symbol": "BRIGADE.NS",
+    "sector": "Realty"
+  },
+  {
+    "symbol": "MAPMYINDIA.NS",
+    "sector": "Information Technology"
+  },
+  {
+    "symbol": "CCL.NS",
+    "sector": "Fast Moving Consumer Goods"
+  },
+  {
+    "symbol": "CESC.NS",
+    "sector": "Power"
+  },
+  {
+    "symbol": "CIEINDIA.NS",
+    "sector": "Automobile and Auto Components"
+  },
+  {
+    "symbol": "CRISIL.NS",
+    "sector": "Financial Services"
+  },
+  {
+    "symbol": "CANFINHOME.NS",
+    "sector": "Financial Services"
+  },
+  {
+    "symbol": "CANHLIFE.NS",
+    "sector": "Financial Services"
+  },
+  {
+    "symbol": "CAPLIPOINT.NS",
+    "sector": "Healthcare"
+  },
+  {
+    "symbol": "CGCL.NS",
+    "sector": "Financial Services"
+  },
+  {
+    "symbol": "CARBORUNIV.NS",
+    "sector": "Capital Goods"
+  },
+  {
+    "symbol": "CARTRADE.NS",
+    "sector": "Consumer Services"
+  },
+  {
+    "symbol": "CASTROLIND.NS",
+    "sector": "Oil Gas & Consumable Fuels"
+  },
+  {
+    "symbol": "CEATLTD.NS",
+    "sector": "Automobile and Auto Components"
+  },
+  {
+    "symbol": "CEMPRO.NS",
+    "sector": "Construction"
+  },
+  {
+    "symbol": "CENTRALBK.NS",
+    "sector": "Financial Services"
+  },
+  {
+    "symbol": "CDSL.NS",
+    "sector": "Financial Services"
+  },
+  {
+    "symbol": "CHALET.NS",
+    "sector": "Consumer Services"
+  },
+  {
+    "symbol": "CHAMBLFERT.NS",
+    "sector": "Chemicals"
+  },
+  {
+    "symbol": "CHENNPETRO.NS",
+    "sector": "Oil Gas & Consumable Fuels"
+  },
+  {
+    "symbol": "CHOICEIN.NS",
+    "sector": "Financial Services"
+  },
+  {
+    "symbol": "CHOLAHLDNG.NS",
+    "sector": "Financial Services"
+  },
+  {
+    "symbol": "CUB.NS",
+    "sector": "Financial Services"
+  },
+  {
+    "symbol": "CLEAN.NS",
+    "sector": "Chemicals"
+  },
+  {
+    "symbol": "COCHINSHIP.NS",
+    "sector": "Capital Goods"
+  },
+  {
+    "symbol": "COFORGE.NS",
+    "sector": "Information Technology"
+  },
+  {
+    "symbol": "COHANCE.NS",
+    "sector": "Healthcare"
+  },
+  {
+    "symbol": "COLPAL.NS",
+    "sector": "Fast Moving Consumer Goods"
+  },
+  {
+    "symbol": "CAMS.NS",
+    "sector": "Financial Services"
+  },
+  {
+    "symbol": "CONCORDBIO.NS",
+    "sector": "Healthcare"
+  },
+  {
+    "symbol": "CONCOR.NS",
+    "sector": "Services"
+  },
+  {
+    "symbol": "COROMANDEL.NS",
+    "sector": "Chemicals"
+  },
+  {
+    "symbol": "CRAFTSMAN.NS",
+    "sector": "Automobile and Auto Components"
+  },
+  {
+    "symbol": "CREDITACC.NS",
+    "sector": "Financial Services"
+  },
+  {
+    "symbol": "CROMPTON.NS",
+    "sector": "Consumer Durables"
+  },
+  {
+    "symbol": "CYIENT.NS",
+    "sector": "Information Technology"
+  },
+  {
+    "symbol": "DCMSHRIRAM.NS",
+    "sector": "Diversified"
+  },
+  {
+    "symbol": "DOMS.NS",
+    "sector": "Fast Moving Consumer Goods"
+  },
+  {
+    "symbol": "DABUR.NS",
+    "sector": "Fast Moving Consumer Goods"
+  },
+  {
+    "symbol": "DALBHARAT.NS",
+    "sector": "Construction Materials"
+  },
+  {
+    "symbol": "DATAPATTNS.NS",
+    "sector": "Capital Goods"
+  },
+  {
+    "symbol": "DEEPAKFERT.NS",
+    "sector": "Chemicals"
+  },
+  {
+    "symbol": "DEEPAKNTR.NS",
+    "sector": "Chemicals"
+  },
+  {
+    "symbol": "DELHIVERY.NS",
+    "sector": "Services"
+  },
+  {
+    "symbol": "DEVYANI.NS",
+    "sector": "Consumer Services"
+  },
+  {
+    "symbol": "DIXON.NS",
+    "sector": "Consumer Durables"
+  },
+  {
+    "symbol": "LALPATHLAB.NS",
+    "sector": "Healthcare"
+  },
+  {
+    "symbol": "EIDPARRY.NS",
+    "sector": "Fast Moving Consumer Goods"
+  },
+  {
+    "symbol": "EIHOTEL.NS",
+    "sector": "Consumer Services"
+  },
+  {
+    "symbol": "ELECON.NS",
+    "sector": "Capital Goods"
+  },
+  {
+    "symbol": "ELGIEQUIP.NS",
+    "sector": "Capital Goods"
+  },
+  {
+    "symbol": "EMAMILTD.NS",
+    "sector": "Fast Moving Consumer Goods"
+  },
+  {
+    "symbol": "EMCURE.NS",
+    "sector": "Healthcare"
+  },
+  {
+    "symbol": "EMMVEE.NS",
+    "sector": "Capital Goods"
+  },
+  {
+    "symbol": "ENDURANCE.NS",
+    "sector": "Automobile and Auto Components"
+  },
+  {
+    "symbol": "ENGINERSIN.NS",
+    "sector": "Construction"
+  },
+  {
+    "symbol": "ERIS.NS",
+    "sector": "Healthcare"
+  },
+  {
+    "symbol": "ESCORTS.NS",
+    "sector": "Capital Goods"
+  },
+  {
+    "symbol": "EXIDEIND.NS",
+    "sector": "Automobile and Auto Components"
+  },
+  {
+    "symbol": "NYKAA.NS",
+    "sector": "Consumer Services"
+  },
+  {
+    "symbol": "FEDERALBNK.NS",
+    "sector": "Financial Services"
+  },
+  {
+    "symbol": "FACT.NS",
+    "sector": "Chemicals"
+  },
+  {
+    "symbol": "FINCABLES.NS",
+    "sector": "Capital Goods"
+  },
+  {
+    "symbol": "FSL.NS",
+    "sector": "Services"
+  },
+  {
+    "symbol": "FIVESTAR.NS",
+    "sector": "Financial Services"
+  },
+  {
+    "symbol": "FORCEMOT.NS",
+    "sector": "Automobile and Auto Components"
+  },
+  {
+    "symbol": "FORTIS.NS",
+    "sector": "Healthcare"
+  },
+  {
+    "symbol": "GVT&D.NS",
+    "sector": "Capital Goods"
+  },
+  {
+    "symbol": "GMRAIRPORT.NS",
+    "sector": "Services"
+  },
+  {
+    "symbol": "GABRIEL.NS",
+    "sector": "Automobile and Auto Components"
+  },
+  {
+    "symbol": "GALLANTT.NS",
+    "sector": "Capital Goods"
+  },
+  {
+    "symbol": "GRSE.NS",
+    "sector": "Capital Goods"
+  },
+  {
+    "symbol": "GICRE.NS",
+    "sector": "Financial Services"
+  },
+  {
+    "symbol": "GILLETTE.NS",
+    "sector": "Fast Moving Consumer Goods"
+  },
+  {
+    "symbol": "GLAND.NS",
+    "sector": "Healthcare"
+  },
+  {
+    "symbol": "GLAXO.NS",
+    "sector": "Healthcare"
+  },
+  {
+    "symbol": "GLENMARK.NS",
+    "sector": "Healthcare"
+  },
+  {
+    "symbol": "MEDANTA.NS",
+    "sector": "Healthcare"
+  },
+  {
+    "symbol": "GODIGIT.NS",
+    "sector": "Financial Services"
+  },
+  {
+    "symbol": "GPIL.NS",
+    "sector": "Capital Goods"
+  },
+  {
+    "symbol": "GODFRYPHLP.NS",
+    "sector": "Fast Moving Consumer Goods"
+  },
+  {
+    "symbol": "GODREJIND.NS",
+    "sector": "Diversified"
+  },
+  {
+    "symbol": "GODREJPROP.NS",
+    "sector": "Realty"
+  },
+  {
+    "symbol": "GRANULES.NS",
+    "sector": "Healthcare"
+  },
+  {
+    "symbol": "GRAPHITE.NS",
+    "sector": "Capital Goods"
+  },
+  {
+    "symbol": "GRAVITA.NS",
+    "sector": "Metals & Mining"
+  },
+  {
+    "symbol": "GESHIP.NS",
+    "sector": "Services"
+  },
+  {
+    "symbol": "FLUOROCHEM.NS",
+    "sector": "Chemicals"
+  },
+  {
+    "symbol": "GMDCLTD.NS",
+    "sector": "Metals & Mining"
+  },
+  {
+    "symbol": "HEG.NS",
+    "sector": "Capital Goods"
+  },
+  {
+    "symbol": "HBLENGINE.NS",
+    "sector": "Capital Goods"
+  },
+  {
+    "symbol": "HDBFS.NS",
+    "sector": "Financial Services"
+  },
+  {
+    "symbol": "HFCL.NS",
+    "sector": "Telecommunication"
+  },
+  {
+    "symbol": "HAVELLS.NS",
+    "sector": "Consumer Durables"
+  },
+  {
+    "symbol": "HEROMOTOCO.NS",
+    "sector": "Automobile and Auto Components"
+  },
+  {
+    "symbol": "HEXT.NS",
+    "sector": "Information Technology"
+  },
+  {
+    "symbol": "HSCL.NS",
+    "sector": "Chemicals"
+  },
+  {
+    "symbol": "HINDCOPPER.NS",
+    "sector": "Metals & Mining"
+  },
+  {
+    "symbol": "HINDPETRO.NS",
+    "sector": "Oil Gas & Consumable Fuels"
+  },
+  {
+    "symbol": "POWERINDIA.NS",
+    "sector": "Capital Goods"
+  },
+  {
+    "symbol": "HOMEFIRST.NS",
+    "sector": "Financial Services"
+  },
+  {
+    "symbol": "HONASA.NS",
+    "sector": "Fast Moving Consumer Goods"
+  },
+  {
+    "symbol": "HONAUT.NS",
+    "sector": "Capital Goods"
+  },
+  {
+    "symbol": "HUDCO.NS",
+    "sector": "Financial Services"
+  },
+  {
+    "symbol": "ICICIGI.NS",
+    "sector": "Financial Services"
+  },
+  {
+    "symbol": "ICICIAMC.NS",
+    "sector": "Financial Services"
+  },
+  {
+    "symbol": "ICICIPRULI.NS",
+    "sector": "Financial Services"
+  },
+  {
+    "symbol": "IDBI.NS",
+    "sector": "Financial Services"
+  },
+  {
+    "symbol": "IDFCFIRSTB.NS",
+    "sector": "Financial Services"
+  },
+  {
+    "symbol": "IFCI.NS",
+    "sector": "Financial Services"
+  },
+  {
+    "symbol": "IIFL.NS",
+    "sector": "Financial Services"
+  },
+  {
+    "symbol": "IRB.NS",
+    "sector": "Construction"
+  },
+  {
+    "symbol": "IRCON.NS",
+    "sector": "Construction"
+  },
+  {
+    "symbol": "ITCHOTELS.NS",
+    "sector": "Consumer Services"
+  },
+  {
+    "symbol": "ITI.NS",
+    "sector": "Telecommunication"
+  },
+  {
+    "symbol": "INDGN.NS",
+    "sector": "Healthcare"
+  },
+  {
+    "symbol": "INDIACEM.NS",
+    "sector": "Construction Materials"
+  },
+  {
+    "symbol": "INDIAMART.NS",
+    "sector": "Consumer Services"
+  },
+  {
+    "symbol": "INDIANB.NS",
+    "sector": "Financial Services"
+  },
+  {
+    "symbol": "IEX.NS",
+    "sector": "Financial Services"
+  },
+  {
+    "symbol": "IOB.NS",
+    "sector": "Financial Services"
+  },
+  {
+    "symbol": "IRCTC.NS",
+    "sector": "Consumer Services"
+  },
+  {
+    "symbol": "IREDA.NS",
+    "sector": "Financial Services"
+  },
+  {
+    "symbol": "IGL.NS",
+    "sector": "Oil Gas & Consumable Fuels"
+  },
+  {
+    "symbol": "INDUSTOWER.NS",
+    "sector": "Telecommunication"
+  },
+  {
+    "symbol": "INDUSINDBK.NS",
+    "sector": "Financial Services"
+  },
+  {
+    "symbol": "NAUKRI.NS",
+    "sector": "Consumer Services"
+  },
+  {
+    "symbol": "INOXWIND.NS",
+    "sector": "Capital Goods"
+  },
+  {
+    "symbol": "INTELLECT.NS",
+    "sector": "Information Technology"
+  },
+  {
+    "symbol": "IGIL.NS",
+    "sector": "Services"
+  },
+  {
+    "symbol": "IKS.NS",
+    "sector": "Information Technology"
+  },
+  {
+    "symbol": "IPCALAB.NS",
+    "sector": "Healthcare"
+  },
+  {
+    "symbol": "JKCEMENT.NS",
+    "sector": "Construction Materials"
+  },
+  {
+    "symbol": "JBMA.NS",
+    "sector": "Automobile and Auto Components"
+  },
+  {
+    "symbol": "JKTYRE.NS",
+    "sector": "Automobile and Auto Components"
+  },
+  {
+    "symbol": "JMFINANCIL.NS",
+    "sector": "Financial Services"
+  },
+  {
+    "symbol": "JSWCEMENT.NS",
+    "sector": "Construction Materials"
+  },
+  {
+    "symbol": "JSWDULUX.NS",
+    "sector": "Consumer Durables"
+  },
+  {
+    "symbol": "JSWENERGY.NS",
+    "sector": "Power"
+  },
+  {
+    "symbol": "JSWINFRA.NS",
+    "sector": "Services"
+  },
+  {
+    "symbol": "JAINREC.NS",
+    "sector": "Metals & Mining"
+  },
+  {
+    "symbol": "JPPOWER.NS",
+    "sector": "Power"
+  },
+  {
+    "symbol": "J&KBANK.NS",
+    "sector": "Financial Services"
+  },
+  {
+    "symbol": "JINDALSAW.NS",
+    "sector": "Capital Goods"
+  },
+  {
+    "symbol": "JSL.NS",
+    "sector": "Metals & Mining"
+  },
+  {
+    "symbol": "JUBLFOOD.NS",
+    "sector": "Consumer Services"
+  },
+  {
+    "symbol": "JUBLINGREA.NS",
+    "sector": "Chemicals"
+  },
+  {
+    "symbol": "JUBLPHARMA.NS",
+    "sector": "Healthcare"
+  },
+  {
+    "symbol": "JWL.NS",
+    "sector": "Capital Goods"
+  },
+  {
+    "symbol": "JYOTICNC.NS",
+    "sector": "Capital Goods"
+  },
+  {
+    "symbol": "KPRMILL.NS",
+    "sector": "Textiles"
+  },
+  {
+    "symbol": "KEI.NS",
+    "sector": "Capital Goods"
+  },
+  {
+    "symbol": "KPITTECH.NS",
+    "sector": "Information Technology"
+  },
+  {
+    "symbol": "KAJARIACER.NS",
+    "sector": "Consumer Durables"
+  },
+  {
+    "symbol": "KPIL.NS",
+    "sector": "Construction"
+  },
+  {
+    "symbol": "KALYANKJIL.NS",
+    "sector": "Consumer Durables"
+  },
+  {
+    "symbol": "KARURVYSYA.NS",
+    "sector": "Financial Services"
+  },
+  {
+    "symbol": "KAYNES.NS",
+    "sector": "Capital Goods"
+  },
+  {
+    "symbol": "KEC.NS",
+    "sector": "Construction"
+  },
+  {
+    "symbol": "KFINTECH.NS",
+    "sector": "Financial Services"
+  },
+  {
+    "symbol": "KIRLOSENG.NS",
+    "sector": "Capital Goods"
+  },
+  {
+    "symbol": "KIMS.NS",
+    "sector": "Healthcare"
+  },
+  {
+    "symbol": "LTF.NS",
+    "sector": "Financial Services"
+  },
+  {
+    "symbol": "LTTS.NS",
+    "sector": "Information Technology"
+  },
+  {
+    "symbol": "LGEINDIA.NS",
+    "sector": "Consumer Durables"
+  },
+  {
+    "symbol": "LICHSGFIN.NS",
+    "sector": "Financial Services"
+  },
+  {
+    "symbol": "LTFOODS.NS",
+    "sector": "Fast Moving Consumer Goods"
+  },
+  {
+    "symbol": "LATENTVIEW.NS",
+    "sector": "Information Technology"
+  },
+  {
+    "symbol": "LAURUSLABS.NS",
+    "sector": "Healthcare"
+  },
+  {
+    "symbol": "THELEELA.NS",
+    "sector": "Consumer Services"
+  },
+  {
+    "symbol": "LEMONTREE.NS",
+    "sector": "Consumer Services"
+  },
+  {
+    "symbol": "LENSKART.NS",
+    "sector": "Consumer Services"
+  },
+  {
+    "symbol": "LICI.NS",
+    "sector": "Financial Services"
+  },
+  {
+    "symbol": "LINDEINDIA.NS",
+    "sector": "Chemicals"
+  },
+  {
+    "symbol": "LLOYDSME.NS",
+    "sector": "Metals & Mining"
+  },
+  {
+    "symbol": "LUPIN.NS",
+    "sector": "Healthcare"
+  },
+  {
+    "symbol": "MMTC.NS",
+    "sector": "Services"
+  },
+  {
+    "symbol": "MRF.NS",
+    "sector": "Automobile and Auto Components"
+  },
+  {
+    "symbol": "MGL.NS",
+    "sector": "Oil Gas & Consumable Fuels"
+  },
+  {
+    "symbol": "M&MFIN.NS",
+    "sector": "Financial Services"
+  },
+  {
+    "symbol": "MANAPPURAM.NS",
+    "sector": "Financial Services"
+  },
+  {
+    "symbol": "MRPL.NS",
+    "sector": "Oil Gas & Consumable Fuels"
+  },
+  {
+    "symbol": "MANKIND.NS",
+    "sector": "Healthcare"
+  },
+  {
+    "symbol": "MARICO.NS",
+    "sector": "Fast Moving Consumer Goods"
+  },
+  {
+    "symbol": "MFSL.NS",
+    "sector": "Financial Services"
+  },
+  {
+    "symbol": "MEESHO.NS",
+    "sector": "Consumer Services"
+  },
+  {
+    "symbol": "MINDACORP.NS",
+    "sector": "Automobile and Auto Components"
+  },
+  {
+    "symbol": "MSUMI.NS",
+    "sector": "Automobile and Auto Components"
+  },
+  {
+    "symbol": "MOTILALOFS.NS",
+    "sector": "Financial Services"
+  },
+  {
+    "symbol": "MPHASIS.NS",
+    "sector": "Information Technology"
+  },
+  {
+    "symbol": "MCX.NS",
+    "sector": "Financial Services"
+  },
+  {
+    "symbol": "NATCOPHARM.NS",
+    "sector": "Healthcare"
+  },
+  {
+    "symbol": "NBCC.NS",
+    "sector": "Construction"
+  },
+  {
+    "symbol": "NCC.NS",
+    "sector": "Construction"
+  },
+  {
+    "symbol": "NHPC.NS",
+    "sector": "Power"
+  },
+  {
+    "symbol": "NLCINDIA.NS",
+    "sector": "Power"
+  },
+  {
+    "symbol": "NMDC.NS",
+    "sector": "Metals & Mining"
+  },
+  {
+    "symbol": "NSLNISP.NS",
+    "sector": "Metals & Mining"
+  },
+  {
+    "symbol": "NTPCGREEN.NS",
+    "sector": "Power"
+  },
+  {
+    "symbol": "NH.NS",
+    "sector": "Healthcare"
+  },
+  {
+    "symbol": "NATIONALUM.NS",
+    "sector": "Metals & Mining"
+  },
+  {
+    "symbol": "NAVA.NS",
+    "sector": "Power"
+  },
+  {
+    "symbol": "NAVINFLUOR.NS",
+    "sector": "Chemicals"
+  },
+  {
+    "symbol": "NETWEB.NS",
+    "sector": "Information Technology"
+  },
+  {
+    "symbol": "NEULANDLAB.NS",
+    "sector": "Healthcare"
+  },
+  {
+    "symbol": "NEWGEN.NS",
+    "sector": "Information Technology"
+  },
+  {
+    "symbol": "NAM-INDIA.NS",
+    "sector": "Financial Services"
+  },
+  {
+    "symbol": "NIVABUPA.NS",
+    "sector": "Financial Services"
+  },
+  {
+    "symbol": "NUVAMA.NS",
+    "sector": "Financial Services"
+  },
+  {
+    "symbol": "NUVOCO.NS",
+    "sector": "Construction Materials"
+  },
+  {
+    "symbol": "OBEROIRLTY.NS",
+    "sector": "Realty"
+  },
+  {
+    "symbol": "OIL.NS",
+    "sector": "Oil Gas & Consumable Fuels"
+  },
+  {
+    "symbol": "OLAELEC.NS",
+    "sector": "Automobile and Auto Components"
+  },
+  {
+    "symbol": "OLECTRA.NS",
+    "sector": "Automobile and Auto Components"
+  },
+  {
+    "symbol": "PAYTM.NS",
+    "sector": "Financial Services"
+  },
+  {
+    "symbol": "ONESOURCE.NS",
+    "sector": "Healthcare"
+  },
+  {
+    "symbol": "OFSS.NS",
+    "sector": "Information Technology"
+  },
+  {
+    "symbol": "POLICYBZR.NS",
+    "sector": "Financial Services"
+  },
+  {
+    "symbol": "PCBL.NS",
+    "sector": "Chemicals"
+  },
+  {
+    "symbol": "PGEL.NS",
+    "sector": "Consumer Durables"
+  },
+  {
+    "symbol": "PIIND.NS",
+    "sector": "Chemicals"
+  },
+  {
+    "symbol": "PNBHOUSING.NS",
+    "sector": "Financial Services"
+  },
+  {
+    "symbol": "PTCIL.NS",
+    "sector": "Capital Goods"
+  },
+  {
+    "symbol": "PVRINOX.NS",
+    "sector": "Media Entertainment & Publication"
+  },
+  {
+    "symbol": "PAGEIND.NS",
+    "sector": "Textiles"
+  },
+  {
+    "symbol": "PARADEEP.NS",
+    "sector": "Chemicals"
+  },
+  {
+    "symbol": "PATANJALI.NS",
+    "sector": "Fast Moving Consumer Goods"
+  },
+  {
+    "symbol": "PERSISTENT.NS",
+    "sector": "Information Technology"
+  },
+  {
+    "symbol": "PETRONET.NS",
+    "sector": "Oil Gas & Consumable Fuels"
+  },
+  {
+    "symbol": "PFIZER.NS",
+    "sector": "Healthcare"
+  },
+  {
+    "symbol": "PHOENIXLTD.NS",
+    "sector": "Realty"
+  },
+  {
+    "symbol": "PWL.NS",
+    "sector": "Consumer Services"
+  },
+  {
+    "symbol": "PINELABS.NS",
+    "sector": "Financial Services"
+  },
+  {
+    "symbol": "PIRAMALFIN.NS",
+    "sector": "Financial Services"
+  },
+  {
+    "symbol": "PPLPHARMA.NS",
+    "sector": "Healthcare"
+  },
+  {
+    "symbol": "POLYMED.NS",
+    "sector": "Healthcare"
+  },
+  {
+    "symbol": "POLYCAB.NS",
+    "sector": "Capital Goods"
+  },
+  {
+    "symbol": "POONAWALLA.NS",
+    "sector": "Financial Services"
+  },
+  {
+    "symbol": "PREMIERENE.NS",
+    "sector": "Capital Goods"
+  },
+  {
+    "symbol": "PRESTIGE.NS",
+    "sector": "Realty"
+  },
+  {
+    "symbol": "PFOCUS.NS",
+    "sector": "Media Entertainment & Publication"
+  },
+  {
+    "symbol": "RRKABEL.NS",
+    "sector": "Capital Goods"
+  },
+  {
+    "symbol": "RBLBANK.NS",
+    "sector": "Financial Services"
+  },
+  {
+    "symbol": "RHIM.NS",
+    "sector": "Capital Goods"
+  },
+  {
+    "symbol": "RITES.NS",
+    "sector": "Construction"
+  },
+  {
+    "symbol": "RADICO.NS",
+    "sector": "Fast Moving Consumer Goods"
+  },
+  {
+    "symbol": "RVNL.NS",
+    "sector": "Construction"
+  },
+  {
+    "symbol": "RAILTEL.NS",
+    "sector": "Telecommunication"
+  },
+  {
+    "symbol": "RAINBOW.NS",
+    "sector": "Healthcare"
+  },
+  {
+    "symbol": "RKFORGE.NS",
+    "sector": "Automobile and Auto Components"
+  },
+  {
+    "symbol": "REDINGTON.NS",
+    "sector": "Services"
+  },
+  {
+    "symbol": "RPOWER.NS",
+    "sector": "Power"
+  },
+  {
+    "symbol": "SBFC.NS",
+    "sector": "Financial Services"
+  },
+  {
+    "symbol": "SBICARD.NS",
+    "sector": "Financial Services"
+  },
+  {
+    "symbol": "SJVN.NS",
+    "sector": "Power"
+  },
+  {
+    "symbol": "SRF.NS",
+    "sector": "Chemicals"
+  },
+  {
+    "symbol": "SAGILITY.NS",
+    "sector": "Information Technology"
+  },
+  {
+    "symbol": "SAILIFE.NS",
+    "sector": "Healthcare"
+  },
+  {
+    "symbol": "SAMMAANCAP.NS",
+    "sector": "Financial Services"
+  },
+  {
+    "symbol": "SAPPHIRE.NS",
+    "sector": "Consumer Services"
+  },
+  {
+    "symbol": "SARDAEN.NS",
+    "sector": "Metals & Mining"
+  },
+  {
+    "symbol": "SAREGAMA.NS",
+    "sector": "Media Entertainment & Publication"
+  },
+  {
+    "symbol": "SCHAEFFLER.NS",
+    "sector": "Automobile and Auto Components"
+  },
+  {
+    "symbol": "SCHNEIDER.NS",
+    "sector": "Capital Goods"
+  },
+  {
+    "symbol": "SCI.NS",
+    "sector": "Services"
+  },
+  {
+    "symbol": "SHYAMMETL.NS",
+    "sector": "Capital Goods"
+  },
+  {
+    "symbol": "SIGNATURE.NS",
+    "sector": "Realty"
+  },
+  {
+    "symbol": "SOBHA.NS",
+    "sector": "Realty"
+  },
+  {
+    "symbol": "SONACOMS.NS",
+    "sector": "Automobile and Auto Components"
+  },
+  {
+    "symbol": "SONATSOFTW.NS",
+    "sector": "Information Technology"
+  },
+  {
+    "symbol": "STARHEALTH.NS",
+    "sector": "Financial Services"
+  },
+  {
+    "symbol": "SAIL.NS",
+    "sector": "Metals & Mining"
+  },
+  {
+    "symbol": "SUMICHEM.NS",
+    "sector": "Chemicals"
+  },
+  {
+    "symbol": "SUNTV.NS",
+    "sector": "Media Entertainment & Publication"
+  },
+  {
+    "symbol": "SUNDARMFIN.NS",
+    "sector": "Financial Services"
+  },
+  {
+    "symbol": "SUPREMEIND.NS",
+    "sector": "Capital Goods"
+  },
+  {
+    "symbol": "SPLPETRO.NS",
+    "sector": "Chemicals"
+  },
+  {
+    "symbol": "SUZLON.NS",
+    "sector": "Capital Goods"
+  },
+  {
+    "symbol": "SWANCORP.NS",
+    "sector": "Chemicals"
+  },
+  {
+    "symbol": "SWIGGY.NS",
+    "sector": "Consumer Services"
+  },
+  {
+    "symbol": "SYNGENE.NS",
+    "sector": "Healthcare"
+  },
+  {
+    "symbol": "SYRMA.NS",
+    "sector": "Capital Goods"
+  },
+  {
+    "symbol": "TBOTEK.NS",
+    "sector": "Consumer Services"
+  },
+  {
+    "symbol": "TATACHEM.NS",
+    "sector": "Chemicals"
+  },
+  {
+    "symbol": "TATACOMM.NS",
+    "sector": "Telecommunication"
+  },
+  {
+    "symbol": "TATAELXSI.NS",
+    "sector": "Information Technology"
+  },
+  {
+    "symbol": "TATAINVEST.NS",
+    "sector": "Financial Services"
+  },
+  {
+    "symbol": "TATATECH.NS",
+    "sector": "Information Technology"
+  },
+  {
+    "symbol": "TTML.NS",
+    "sector": "Telecommunication"
+  },
+  {
+    "symbol": "TECHNOE.NS",
+    "sector": "Construction"
+  },
+  {
+    "symbol": "TEGA.NS",
+    "sector": "Capital Goods"
+  },
+  {
+    "symbol": "TEJASNET.NS",
+    "sector": "Telecommunication"
+  },
+  {
+    "symbol": "TENNIND.NS",
+    "sector": "Automobile and Auto Components"
+  },
+  {
+    "symbol": "NIACL.NS",
+    "sector": "Financial Services"
+  },
+  {
+    "symbol": "RAMCOCEM.NS",
+    "sector": "Construction Materials"
+  },
+  {
+    "symbol": "THERMAX.NS",
+    "sector": "Capital Goods"
+  },
+  {
+    "symbol": "TIMKEN.NS",
+    "sector": "Capital Goods"
+  },
+  {
+    "symbol": "TITAGARH.NS",
+    "sector": "Capital Goods"
+  },
+  {
+    "symbol": "TORNTPOWER.NS",
+    "sector": "Power"
+  },
+  {
+    "symbol": "TARIL.NS",
+    "sector": "Capital Goods"
+  },
+  {
+    "symbol": "TRAVELFOOD.NS",
+    "sector": "Consumer Services"
+  },
+  {
+    "symbol": "TRIDENT.NS",
+    "sector": "Textiles"
+  },
+  {
+    "symbol": "TRITURBINE.NS",
+    "sector": "Capital Goods"
+  },
+  {
+    "symbol": "TIINDIA.NS",
+    "sector": "Automobile and Auto Components"
+  },
+  {
+    "symbol": "UCOBANK.NS",
+    "sector": "Financial Services"
+  },
+  {
+    "symbol": "UNOMINDA.NS",
+    "sector": "Automobile and Auto Components"
+  },
+  {
+    "symbol": "UPL.NS",
+    "sector": "Chemicals"
+  },
+  {
+    "symbol": "UTIAMC.NS",
+    "sector": "Financial Services"
+  },
+  {
+    "symbol": "UBL.NS",
+    "sector": "Fast Moving Consumer Goods"
+  },
+  {
+    "symbol": "URBANCO.NS",
+    "sector": "Consumer Services"
+  },
+  {
+    "symbol": "USHAMART.NS",
+    "sector": "Capital Goods"
+  },
+  {
+    "symbol": "VTL.NS",
+    "sector": "Textiles"
+  },
+  {
+    "symbol": "VIJAYA.NS",
+    "sector": "Healthcare"
+  },
+  {
+    "symbol": "VMM.NS",
+    "sector": "Consumer Services"
+  },
+  {
+    "symbol": "IDEA.NS",
+    "sector": "Telecommunication"
+  },
+  {
+    "symbol": "VOLTAS.NS",
+    "sector": "Consumer Durables"
+  },
+  {
+    "symbol": "WAAREEENER.NS",
+    "sector": "Capital Goods"
+  },
+  {
+    "symbol": "WELCORP.NS",
+    "sector": "Capital Goods"
+  },
+  {
+    "symbol": "WELSPUNLIV.NS",
+    "sector": "Textiles"
+  },
+  {
+    "symbol": "WHIRLPOOL.NS",
+    "sector": "Consumer Durables"
+  },
+  {
+    "symbol": "WOCKPHARMA.NS",
+    "sector": "Healthcare"
+  },
+  {
+    "symbol": "YESBANK.NS",
+    "sector": "Financial Services"
+  },
+  {
+    "symbol": "ZFCVINDIA.NS",
+    "sector": "Automobile and Auto Components"
+  },
+  {
+    "symbol": "ZEEL.NS",
+    "sector": "Media Entertainment & Publication"
+  },
+  {
+    "symbol": "ZENTEC.NS",
+    "sector": "Capital Goods"
+  },
+  {
+    "symbol": "ZENSARTECH.NS",
+    "sector": "Information Technology"
+  },
+  {
+    "symbol": "ZYDUSWELL.NS",
+    "sector": "Fast Moving Consumer Goods"
+  },
+  {
+    "symbol": "ECLERX.NS",
+    "sector": "Services"
+  }
+]
