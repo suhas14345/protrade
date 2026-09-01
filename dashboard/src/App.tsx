@@ -721,7 +721,7 @@ function App() {
             )}
           </section>
 
-          <section style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1.5rem', marginBottom: '1.5rem', gridArea: 'controls' }}>
+          <section style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: '1.5rem', marginBottom: '1.5rem', gridArea: 'controls' }}>
             <div className="card" style={{ borderLeft: '4px solid #10b981' }}>
               <h3 style={{ marginBottom: '1rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                 <Activity size={18} color="#10b981" /> System Risk & Regime
@@ -890,7 +890,7 @@ function App() {
           </div>
 
           <div className="signals-area">
-            <section className="card" style={{ height: '100%', marginBottom: '1.5rem' }}>
+            <section className="card">
               <h3 style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '1rem' }}>
                 <Activity size={18} /> VCP Pivot Watchlist
               </h3>
@@ -1003,7 +1003,7 @@ function App() {
               )}
             </section>
 
-            <section className="card" style={{ height: '100%' }}>
+            <section className="card">
               <h3 style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '1rem' }}>
                 <Zap size={18} /> Signal Lifecycle Monitor
               </h3>
@@ -1096,6 +1096,7 @@ function App() {
             {history.length === 0 ? (
               <div style={{ padding: '3rem', textAlign: 'center', color: '#444' }}>No historical trades found.</div>
             ) : (
+              <div style={{ overflowX: 'auto' }}>
               <table className="table">
                 <thead>
                   <tr><th>Symbol</th><th>Qty</th><th>Avg Entry</th><th>Realized PnL</th><th>Exit Reason</th><th>Date</th></tr>
@@ -1113,6 +1114,7 @@ function App() {
                   ))}
                 </tbody>
               </table>
+              </div>
             )}
           </section>
         </>
