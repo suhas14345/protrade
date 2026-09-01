@@ -69,6 +69,8 @@ function App() {
   const [jobs, setJobs] = useState<Job[]>([])
   const [signals, setSignals] = useState<any[]>([])
   const [watchlist, setWatchlist] = useState<any[]>([])
+  const [wlStats, setWlStats] = useState<any>(null)
+  const [wlStatsLoading, setWlStatsLoading] = useState(false)
   const [logs, setLogs] = useState<any[]>([])
   const [stats, setStats] = useState({ equity: 1000000, realizedPnl: 0, openPositions: 0, winRate: 0 })
   const [statsByRegime, setStatsByRegime] = useState<any[]>([])
@@ -130,6 +132,19 @@ function App() {
     };
     fetchInventory();
     const invInterval = setInterval(fetchInventory, 300000); // 5 mins
+
+    // Fetch watchlist conversion stats
+    const fetchWlStats = async () => {
+      setWlStatsLoading(true);
+      try {
+        const res = await fetch(GATEWAY_URL + '?action=watchlistStats&days=30');
+        const data = await res.json();
+        setWlStats(data);
+      } catch (err) { console.error('WL stats fetch failed:', err); }
+      setWlStatsLoading(false);
+    };
+    fetchWlStats();
+
     return () => clearInterval(invInterval);
   }, [authToken]);
 
@@ -920,6 +935,71 @@ function App() {
                     );
                   })}
                 </div>
+              )}
+            </section>
+
+            <section className="card" style={{ marginBottom: '1.5rem' }}>
+              <h3 style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '1rem' }}>
+                <PieIcon size={18} /> Watchlist Conversion Analytics (30d)
+              </h3>
+              {wlStatsLoading ? (
+                <div style={{ padding: '1rem', textAlign: 'center', color: '#64748b' }}><Loader2 size={16} className="spin" /> Loading...</div>
+              ) : !wlStats?.summary ? (
+                <div style={{ padding: '1rem', textAlign: 'center', color: '#444', fontSize: '0.8rem' }}>No historical watchlist data yet.</div>
+              ) : (
+                <>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '0.75rem', marginBottom: '1rem' }}>
+                    <div style={{ background: 'rgba(16,185,129,0.1)', padding: '0.75rem', borderRadius: '8px', textAlign: 'center' }}>
+                      <div style={{ fontSize: '1.5rem', fontWeight: 700, color: '#10b981' }}>{wlStats.summary.breakouts}</div>
+                      <div style={{ fontSize: '0.7rem', color: '#64748b' }}>Breakouts</div>
+                    </div>
+                    <div style={{ background: 'rgba(239,68,68,0.1)', padding: '0.75rem', borderRadius: '8px', textAlign: 'center' }}>
+                      <div style={{ fontSize: '1.5rem', fontWeight: 700, color: '#ef4444' }}>{wlStats.summary.invalidated}</div>
+                      <div style={{ fontSize: '0.7rem', color: '#64748b' }}>Invalidated</div>
+                    </div>
+                    <div style={{ background: 'rgba(59,130,246,0.1)', padding: '0.75rem', borderRadius: '8px', textAlign: 'center' }}>
+                      <div style={{ fontSize: '1.5rem', fontWeight: 700, color: '#3b82f6' }}>{wlStats.summary.conversionRate}</div>
+                      <div style={{ fontSize: '0.7rem', color: '#64748b' }}>Conversion Rate</div>
+                    </div>
+                  </div>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '0.5rem', marginBottom: '1rem', fontSize: '0.75rem', color: '#94a3b8' }}>
+                    <div>Tracked: <strong>{wlStats.summary.totalTracked}</strong></div>
+                    <div>Ready: <strong>{wlStats.summary.stillReady}</strong></div>
+                    <div>Setup: <strong>{wlStats.summary.stillSetup}</strong></div>
+                    <div>Extended: <strong>{wlStats.summary.extended}</strong></div>
+                  </div>
+                  {wlStats.items && wlStats.items.length > 0 && (
+                    <div style={{ maxHeight: '300px', overflowY: 'auto' }}>
+                      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.75rem' }}>
+                        <thead><tr style={{ borderBottom: '1px solid rgba(255,255,255,0.1)', color: '#64748b' }}>
+                          <th style={{ textAlign: 'left', padding: '0.4rem' }}>Symbol</th>
+                          <th>Days</th>
+                          <th>First</th>
+                          <th>Current</th>
+                          <th>Outcome</th>
+                        </tr></thead>
+                        <tbody>
+                          {[...wlStats.items].sort((a: any, b: any) => {
+                            const rank = (o: string) => ({ BREAKOUT: 0, READY: 1, SETUP: 2, EXTENDED: 3, TRIGGERED: 0, INVALIDATED: 4 } as any)[o] ?? 5;
+                            return rank(a.outcome) - rank(b.outcome);
+                          }).map((item: any) => (
+                            <tr key={item.symbol} style={{ borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
+                              <td style={{ padding: '0.4rem', fontWeight: 600 }}>{item.symbol}</td>
+                              <td style={{ textAlign: 'center' }}>{item.datesSeen}</td>
+                              <td style={{ textAlign: 'center' }}>{item.firstStatus}</td>
+                              <td style={{ textAlign: 'center' }}>{item.lastStatus}</td>
+                              <td style={{ textAlign: 'center' }}>
+                                <span className={`trend-badge ${item.outcome === 'BREAKOUT' ? 'up' : item.outcome === 'INVALIDATED' ? 'down' : 'range'}`} style={{ fontSize: '0.65rem', padding: '0.15rem 0.4rem' }}>
+                                  {item.outcome}
+                                </span>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </>
               )}
             </section>
 

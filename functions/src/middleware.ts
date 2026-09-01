@@ -15,10 +15,12 @@ const KNOWN_ACTIONS = new Set([
   'auditSignals', 'snapshot',
   'scheduledKiteRenew', 'scheduledEod', 'scheduledMorning',
   'startMorningExecution', 'getKiteSettings',
+  'getTelegramSettings', 'updateTelegram', 'testTelegram', 'sendDigest',
   'syncNseHolidays', 'syncCorporateEvents',
   'backfillHistorical',
   'resetTradingState',
   'cleanupStale',
+  'watchlistStats',
 ]);
 
 export function validateRequest(body: Record<string, unknown>): { valid: boolean; error?: string } {

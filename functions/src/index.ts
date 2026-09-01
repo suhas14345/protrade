@@ -202,6 +202,11 @@ export const gateway = functions.runWith(v1Options).https.onRequest(async (req, 
                 await downloadReport(req, res);
                 break;
             }
+            case 'watchlistStats': {
+                const { watchlistConversionStats } = await import('./services/reporting');
+                await watchlistConversionStats(req, res);
+                break;
+            }
 
             // V3.0: System health & scheduler
             case 'getKiteSettings': {
@@ -221,6 +226,44 @@ export const gateway = functions.runWith(v1Options).https.onRequest(async (req, 
                   updatedAt: kdata.updatedAt || null,
                   hasAllFields: !!(kdata.apiKey && kdata.apiSecret && kdata.userId && kdata.password && kdata.totpSecret),
                 });
+                break;
+            }
+            case 'getTelegramSettings': {
+                const tdb = admin.apps.length ? admin.firestore() : admin.initializeApp() && admin.firestore();
+                const tsnap = await tdb.collection('settings').doc('telegram').get();
+                const tdata = tsnap.data() || {};
+                res.status(200).send({
+                    botToken: tdata.botToken ? '***set***' : '(not set)',
+                    chatId: tdata.chatId || '(not set)',
+                    enabled: !!tdata.enabled,
+                    hasAllFields: !!(tdata.botToken && tdata.chatId),
+                });
+                break;
+            }
+            case 'updateTelegram': {
+                const tdb = admin.apps.length ? admin.firestore() : admin.initializeApp() && admin.firestore();
+                const { botToken, chatId, enabled } = { ...req.query, ...req.body } as any;
+                const update: Record<string, any> = { updatedAt: admin.firestore.Timestamp.now() };
+                if (typeof botToken === 'string' && botToken.trim()) update.botToken = botToken.trim();
+                if (typeof chatId === 'string' && chatId.trim()) update.chatId = chatId.trim();
+                if (typeof enabled === 'boolean') update.enabled = enabled;
+                await tdb.collection('settings').doc('telegram').set(update, { merge: true });
+                res.status(200).send({ message: 'Telegram settings saved' });
+                break;
+            }
+            case 'testTelegram': {
+                const { sendTelegramMessage } = await import('./services/telegram');
+                const result = await sendTelegramMessage('✅ ProTrade Alpha test message — Telegram is connected.');
+                if (result.sent) res.status(200).send({ message: 'Test message sent' });
+                else res.status(400).send({ error: `Not sent: ${result.reason}` });
+                break;
+            }
+            case 'sendDigest': {
+                const { sendDailyDigest } = await import('./services/telegram');
+                const digestDate = (req.body?.date || req.query?.date) as string | undefined;
+                const result = await sendDailyDigest(digestDate);
+                if (result.sent) res.status(200).send({ message: 'Digest sent' });
+                else res.status(400).send({ error: `Not sent: ${result.reason}` });
                 break;
             }
             case 'systemHealth': {
