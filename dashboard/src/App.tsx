@@ -68,19 +68,28 @@ function App() {
   const [history, setHistory] = useState<Position[]>([])
   const [jobs, setJobs] = useState<Job[]>([])
   const [signals, setSignals] = useState<any[]>([])
+  const [watchlist, setWatchlist] = useState<any[]>([])
   const [logs, setLogs] = useState<any[]>([])
   const [stats, setStats] = useState({ equity: 1000000, realizedPnl: 0, openPositions: 0, winRate: 0 })
   const [statsByRegime, setStatsByRegime] = useState<any[]>([])
   const [isTriggering, setIsTriggering] = useState(false)
-  const [universe, setUniverse] = useState<'nifty50' | 'nifty500' | 'sample'>(
-    (localStorage.getItem('protrade_universe') as any) || 'nifty50'
+  const [universe, setUniverse] = useState<'nifty50' | 'nifty500' | 'midsmall400' | 'sample'>(
+    (localStorage.getItem('protrade_universe') as any) || 'midsmall400'
   )
   const [inventory, setInventory] = useState<any>(null);
   const [isRefreshingInventory, setIsRefreshingInventory] = useState(false);
-  const [selectedDate, setSelectedDate] = useState(() => new Date().toISOString().split('T')[0]);
+  const [equitySeries, setEquitySeries] = useState<any[]>([]);
+  // Use IST (UTC+5:30) so the dashboard date matches the NSE trading day
+  const [selectedDate, setSelectedDate] = useState(() => {
+    const now = new Date();
+    const ist = new Date(now.getTime() + (5.5 * 60 * 60 * 1000));
+    return ist.toISOString().split('T')[0];
+  });
   const [settingsForm, setSettingsForm] = useState({ apiKey: '', apiSecret: '', userId: '', password: '', totpSecret: '' });
   const [settingsStatus, setSettingsStatus] = useState<string | null>(null);
   const [settingsSaving, setSettingsSaving] = useState(false);
+  const [telegramForm, setTelegramForm] = useState({ botToken: '', chatId: '', enabled: false });
+  const [telegramStatus, setTelegramStatus] = useState<string | null>(null);
 
   // Auto-capture request_token from Kite redirect URL
   useEffect(() => {
@@ -169,11 +178,22 @@ function App() {
       }));
     });
 
+    // 7. Listen for the persisted daily equity time-series (real equity curve,
+    //    written every EOD at stats/equityCurve/days/{dateId}).
+    const equityQuery = query(collection(db, 'stats', 'equityCurve', 'days'), orderBy('__name__', 'desc'), limit(120));
+    const unsubEquity = onSnapshot(equityQuery, (snap: any) => {
+      const rows = snap.docs
+        .map((d: any) => ({ dateId: d.id, ...(d.data() as any) }))
+        .reverse();
+      setEquitySeries(rows);
+    });
+
     return () => {
       unsubPos();
       unsubJobs();
       unsubAccount();
       unsubStats();
+      unsubEquity();
     };
   }, [authToken])
 
@@ -189,6 +209,13 @@ function App() {
         console.log(`[Dashboard] Signals for ${dateId}:`, snap.size);
     });
 
+    // Listen for watchlist
+    const watchlistQuery = query(collection(db, 'watchlist', dateId, 'items'));
+    const unsubWatchlist = onSnapshot(watchlistQuery, (snap) => {
+        setWatchlist(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+        console.log(`[Dashboard] Watchlist for ${dateId}:`, snap.size);
+    });
+
     // Listen for logs
     const logsQuery = query(collection(db, 'logs', dateId, 'entries'), orderBy('timestamp', 'desc'), limit(50));
     const unsubLogs = onSnapshot(logsQuery, (snap: any) => {
@@ -197,6 +224,7 @@ function App() {
 
     return () => {
       unsubSignalsCurrent();
+      unsubWatchlist();
       unsubLogs();
     };
   }, [authToken, selectedDate])
@@ -279,6 +307,14 @@ function App() {
           password: kite.password || '',
           totpSecret: kite.totpSecret || '',
           disableFallback: !!kite.disableFallback
+        }));
+      }
+      const telegram = snap.docs.find(d => d.id === 'telegram')?.data();
+      if (telegram) {
+        setTelegramForm(prev => ({
+          ...prev,
+          chatId: telegram.chatId || '',
+          enabled: !!telegram.enabled,
         }));
       }
     });
@@ -414,19 +450,26 @@ function App() {
   }));
 
   // Calculate Equity Curve Data
-  const sortedHistory = [...history].sort((a, b) => (a.lastUpdatedAt?.seconds || 0) - (b.lastUpdatedAt?.seconds || 0));
-  let runningPnL = 0;
-  const equityCurveData = sortedHistory.map((p, i) => {
-    runningPnL += (p.realizedPnl || 0);
-    return {
-      name: i + 1,
-      totalPnL: runningPnL,
-      symbol: p.symbol
-    };
-  });
-  // Add a starting point
-  if (equityCurveData.length > 0) {
-    equityCurveData.unshift({ name: 0, totalPnL: 0, symbol: 'START' });
+  // Prefer the persisted daily equity snapshots (stats/equityCurve/days) which track
+  // real account equity (initial + realized + open MTM) every EOD. Fall back to the
+  // closed-trade cumulative PnL only when no snapshots exist yet.
+  let equityCurveData: any[];
+  if (equitySeries.length > 0) {
+    equityCurveData = equitySeries.map((r) => ({
+      name: `${r.dateId?.slice(4, 6)}/${r.dateId?.slice(6, 8)}`,
+      totalPnL: Math.round(Number(r.equity) || 0),
+      symbol: r.dateId,
+    }));
+  } else {
+    const sortedHistory = [...history].sort((a, b) => (a.lastUpdatedAt?.seconds || 0) - (b.lastUpdatedAt?.seconds || 0));
+    let runningPnL = 0;
+    equityCurveData = sortedHistory.map((p, i) => {
+      runningPnL += (p.realizedPnl || 0);
+      return { name: i + 1, totalPnL: runningPnL, symbol: p.symbol };
+    });
+    if (equityCurveData.length > 0) {
+      equityCurveData.unshift({ name: 0, totalPnL: 0, symbol: 'START' });
+    }
   }
 
   // Portfolio breakdown — all reconcile by construction: equity = cash + deployed + unrealized.
@@ -832,6 +875,54 @@ function App() {
           </div>
 
           <div className="signals-area">
+            <section className="card" style={{ height: '100%', marginBottom: '1.5rem' }}>
+              <h3 style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '1rem' }}>
+                <Activity size={18} /> VCP Pivot Watchlist
+              </h3>
+              {watchlist.length === 0 ? (
+                <div style={{ padding: '1rem', textAlign: 'center', color: '#444', fontSize: '0.8rem' }}>No symbols nearing pivot for today.</div>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem', maxHeight: '460px', overflowY: 'auto', paddingRight: '0.5rem' }}>
+                  {[...watchlist].sort((a, b) => {
+                    // Rank: TRIGGERED first, then closest-below-pivot (READY/SETUP), then EXTENDED/INVALIDATED.
+                    const rank = (s: string) => ({ TRIGGERED: 0, READY: 1, SETUP: 2, EXTENDED: 3, INVALIDATED: 4 } as any)[s] ?? 5;
+                    if (rank(a.status) !== rank(b.status)) return rank(a.status) - rank(b.status);
+                    return Math.abs(a.distToPivotPct ?? 1) - Math.abs(b.distToPivotPct ?? 1);
+                  }).map(w => {
+                    const dist = w.distToPivotPct != null ? w.distToPivotPct * 100 : null;
+                    const badgeClass = w.status === 'TRIGGERED' || w.status === 'READY' ? 'up'
+                      : w.status === 'INVALIDATED' ? 'down' : 'range';
+                    return (
+                    <div key={w.id} className="signal-item" style={{ background: 'rgba(255,255,255,0.02)', padding: '0.75rem', borderRadius: '8px', border: '1px solid rgba(255,255,255,0.05)' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <div>
+                          <div style={{ fontWeight: 700, fontSize: '0.9rem' }}>{w.symbol}</div>
+                          <div style={{ fontSize: '0.7rem', color: '#64748b' }}>
+                            {w.strategy} • RS rank: {w.features?.rsRank126 ?? 'N/A'} •
+                            VCP: {(w.features?.vcpRange40 * 100).toFixed(0)}%→{(w.features?.vcpRange20 * 100).toFixed(0)}%→{(w.features?.vcpRange10 * 100).toFixed(0)}%
+                          </div>
+                        </div>
+                        <div className={`trend-badge ${badgeClass}`}>
+                          {w.status === 'READY' ? 'NEAR PIVOT' : w.status}
+                        </div>
+                      </div>
+                      <div style={{ marginTop: '0.5rem', fontSize: '0.7rem', color: '#94a3b8', borderTop: '1px solid rgba(255,255,255,0.05)', paddingTop: '0.5rem' }}>
+                        {w.pivot != null ? (
+                          <>Pivot ₹{w.pivot.toFixed(2)} • {dist != null ? (dist >= 0 ? `${dist.toFixed(1)}% above` : `${Math.abs(dist).toFixed(1)}% below`) : '—'} • Close ₹{w.close.toFixed(2)}</>
+                        ) : (
+                          <>Pivot forming • Close ₹{w.close.toFixed(2)}</>
+                        )}
+                        <br />
+                        {w.structuralLow != null && <>Stop ref ₹{w.structuralLow.toFixed(2)} • </>}
+                        Vol-dryup {w.features?.volDryUpRatio != null ? `${w.features.volDryUpRatio.toFixed(2)}x` : '—'} • ATR↓ {w.features?.atrCompressing ? '✅' : '❌'} • VDU {w.features?.vduActive ? '✅' : '❌'}
+                      </div>
+                    </div>
+                    );
+                  })}
+                </div>
+              )}
+            </section>
+
             <section className="card" style={{ height: '100%' }}>
               <h3 style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '1rem' }}>
                 <Zap size={18} /> Signal Lifecycle Monitor
@@ -887,7 +978,7 @@ function App() {
                     <Tooltip 
                       contentStyle={{ background: '#1e293b', border: 'none', borderRadius: '8px' }}
                       labelStyle={{ color: '#94a3b8' }}
-                      formatter={(value: any) => [`₹${Number(value).toLocaleString()}`, 'Cumulative PnL']}
+                      formatter={(value: any) => [`₹${Number(value).toLocaleString()}`, equitySeries.length > 0 ? 'Equity' : 'Cumulative PnL']}
                     />
                     <Line type="monotone" dataKey="totalPnL" stroke="#10b981" strokeWidth={2} dot={{ fill: '#10b981', r: 3 }} activeDot={{ r: 5 }} />
                   </LineChart>
@@ -974,6 +1065,16 @@ function App() {
                 }}
               >
                 Nifty 500
+              </button>
+              <button 
+                onClick={() => setUniverse('midsmall400')}
+                style={{ 
+                  padding: '0.4rem 1rem', borderRadius: '6px', border: 'none', fontSize: '0.8rem', cursor: 'pointer',
+                  background: universe === 'midsmall400' ? '#10b981' : 'transparent',
+                  color: universe === 'midsmall400' ? '#fff' : '#64748b'
+                }}
+              >
+                MidSmall 400
               </button>
               <button 
                 onClick={() => setUniverse('sample')}
@@ -1233,6 +1334,75 @@ function App() {
               >
                 🔑 Renew Kite Session Now
               </button>
+            </div>
+
+            <div className="card" style={{ marginBottom: '1.5rem' }}>
+              <h3 style={{ color: '#94a3b8', marginBottom: '1rem' }}>📲 Telegram Daily Digest</h3>
+              <p style={{ color: '#64748b', fontSize: '0.8rem', marginBottom: '1rem' }}>
+                Sends the daily EOD snapshot (active trades, day's activity, total P&amp;L) to your Telegram chat. The bot token is stored in Firestore and never displayed back.
+              </p>
+              <div style={{ marginBottom: '0.75rem' }}>
+                <label style={{ display: 'block', color: '#94a3b8', fontSize: '0.75rem', fontWeight: 600, marginBottom: '0.25rem' }}>Bot Token</label>
+                <input
+                  type="password"
+                  className="input"
+                  style={{ width: '100%', fontSize: '0.85rem', padding: '0.5rem', background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', color: '#fff', borderRadius: '4px' }}
+                  placeholder="Paste bot token from @BotFather"
+                  value={telegramForm.botToken}
+                  onChange={e => setTelegramForm(prev => ({ ...prev, botToken: e.target.value }))}
+                />
+              </div>
+              <div style={{ marginBottom: '0.75rem' }}>
+                <label style={{ display: 'block', color: '#94a3b8', fontSize: '0.75rem', fontWeight: 600, marginBottom: '0.25rem' }}>Chat ID</label>
+                <input
+                  type="text"
+                  className="input"
+                  style={{ width: '100%', fontSize: '0.85rem', padding: '0.5rem', background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', color: '#fff', borderRadius: '4px' }}
+                  placeholder="Your numeric chat ID (from @userinfobot)"
+                  value={telegramForm.chatId}
+                  onChange={e => setTelegramForm(prev => ({ ...prev, chatId: e.target.value }))}
+                />
+              </div>
+              <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: '#94a3b8', fontSize: '0.8rem', margin: '0.5rem 0 1rem' }}>
+                <input type="checkbox" checked={telegramForm.enabled} onChange={e => setTelegramForm(prev => ({ ...prev, enabled: e.target.checked }))} />
+                Enable daily digest
+              </label>
+              <div style={{ display: 'flex', gap: '0.5rem' }}>
+                <button
+                  className="btn-premium"
+                  onClick={async () => {
+                    setTelegramStatus(null);
+                    try {
+                      const payload: any = { enabled: telegramForm.enabled };
+                      if (telegramForm.botToken) payload.botToken = telegramForm.botToken;
+                      if (telegramForm.chatId) payload.chatId = telegramForm.chatId;
+                      await gw('updateTelegram', payload);
+                      setTelegramStatus('✅ Telegram settings saved');
+                      setTelegramForm(prev => ({ ...prev, botToken: '' }));
+                    } catch (err: any) {
+                      setTelegramStatus(`❌ ${err.message}`);
+                    }
+                  }}
+                >
+                  Save Telegram
+                </button>
+                <button
+                  className="btn-premium"
+                  style={{ background: 'rgba(255,255,255,0.08)' }}
+                  onClick={async () => {
+                    setTelegramStatus(null);
+                    try {
+                      const res = await gw('testTelegram');
+                      setTelegramStatus(`✅ ${(res as any)?.message || 'Test sent'}`);
+                    } catch (err: any) {
+                      setTelegramStatus(`❌ ${err.message}`);
+                    }
+                  }}
+                >
+                  Send Test
+                </button>
+              </div>
+              {telegramStatus && <p style={{ marginTop: '0.75rem', fontSize: '0.8rem', color: telegramStatus.startsWith('✅') ? '#10b981' : '#ef4444' }}>{telegramStatus}</p>}
             </div>
 
             <div className="card">
