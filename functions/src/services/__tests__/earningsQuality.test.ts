@@ -1,4 +1,4 @@
-import { computeEarningsQuality, nullFundamentalsSource } from '../earningsQuality';
+import { computeEarningsQuality, nullFundamentalsSource, isEntryBlockedByQuality } from '../earningsQuality';
 import { FinancialStatement } from '../../models';
 
 const base = (over: Partial<FinancialStatement> = {}): FinancialStatement => ({
@@ -128,5 +128,25 @@ describe('nullFundamentalsSource', () => {
   it('is a fail-soft placeholder that yields no statement', async () => {
     expect(nullFundamentalsSource.name).toBe('none');
     await expect(nullFundamentalsSource.fetchLatestStatement('TEST.NS')).resolves.toBeNull();
+  });
+});
+
+describe('isEntryBlockedByQuality', () => {
+  const cfg = { VETO_ON_FLAGGED: true } as any;
+
+  it('blocks only a FLAGGED name when veto is enabled', () => {
+    expect(isEntryBlockedByQuality({ status: 'FLAGGED' }, cfg)).toBe(true);
+  });
+
+  it('is fail-soft: never blocks on WATCH, CLEAN, UNKNOWN, or missing data', () => {
+    expect(isEntryBlockedByQuality({ status: 'WATCH' }, cfg)).toBe(false);
+    expect(isEntryBlockedByQuality({ status: 'CLEAN' }, cfg)).toBe(false);
+    expect(isEntryBlockedByQuality({ status: 'UNKNOWN' }, cfg)).toBe(false);
+    expect(isEntryBlockedByQuality(null, cfg)).toBe(false);
+    expect(isEntryBlockedByQuality(undefined, cfg)).toBe(false);
+  });
+
+  it('does not block when the veto is disabled', () => {
+    expect(isEntryBlockedByQuality({ status: 'FLAGGED' }, { VETO_ON_FLAGGED: false } as any)).toBe(false);
   });
 });

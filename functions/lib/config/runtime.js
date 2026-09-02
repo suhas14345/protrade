@@ -378,5 +378,6 @@ exports.EARNINGS_QUALITY_CONFIG = {
     MARGIN_SPIKE_MAX_REV_GROWTH: 0.05, // …only when revenue grew less than this (spike not demand-driven)
     PLEDGE_ABS_CRITICAL: 0.25, // promoter pledge at/above this fraction ⇒ governance red flag
     PLEDGE_INCREASE_MAX_DELTA: 0.05, // promoter-pledge QoQ increase beyond this ⇒ governance red flag
+    VETO_ON_FLAGGED: process.env.FUNDAMENTALS_VETO !== '0', // block SEPA/ATH entries on a CRITICAL (FLAGGED) name; UNKNOWN/WATCH pass (fail-soft)
 };
 //# sourceMappingURL=runtime.js.map

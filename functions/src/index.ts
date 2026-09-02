@@ -207,6 +207,21 @@ export const gateway = functions.runWith(v1Options).https.onRequest(async (req, 
                 await watchlistConversionStats(req, res);
                 break;
             }
+            case 'ingestFundamentals': {
+                const { doIngestFundamentals } = await import('./services/fundamentals');
+                await doIngestFundamentals(req, res);
+                break;
+            }
+            case 'syncFundamentals': {
+                const { doSyncFundamentals } = await import('./services/fundamentals');
+                await doSyncFundamentals(req, res);
+                break;
+            }
+            case 'getFundamentalsQuality': {
+                const { getFundamentalsQuality } = await import('./services/fundamentals');
+                await getFundamentalsQuality(req, res);
+                break;
+            }
 
             // V3.0: System health & scheduler
             case 'getKiteSettings': {

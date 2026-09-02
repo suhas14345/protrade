@@ -45,6 +45,20 @@ const eventCalendar_1 = require("./eventCalendar");
 const logger_1 = require("./logger");
 const barCache_1 = require("./barCache");
 const portfolioEquity_1 = require("./portfolioEquity");
+const earningsQuality_1 = require("./earningsQuality");
+/**
+ * Fundamentals veto: block an equity entry when the symbol carries a CRITICAL
+ * earnings-quality flag. Fail-soft — missing/UNKNOWN/WATCH never blocks.
+ */
+async function isFundamentallyBlocked(db, symbol) {
+    try {
+        const snap = await db.collection('fundamentalsQuality').doc(symbol).get();
+        return (0, earningsQuality_1.isEntryBlockedByQuality)(snap.exists ? snap.data() : null);
+    }
+    catch (_a) {
+        return false; // never fail-closed on a quality-lookup error
+    }
+}
 const getDb = () => {
     if (admin.apps.length === 0)
         admin.initializeApp();
@@ -468,6 +482,12 @@ async function evaluateSepaSignal(db, jobId, symbol, dateId, features, regime, a
     // ---- Entry gates (produce an APPROVED BUY only when the market gate is open) ----
     if (!indexUp)
         return;
+    // Fundamentals veto — a confirmed CRITICAL earnings-quality flag blocks the buy
+    // (the watchlist row is still tracked/badged above). Fail-soft on missing data.
+    if (await isFundamentallyBlocked(db, symbol)) {
+        await logger_1.logger.info(`[Strategy] SEPA ${symbol} blocked by earnings-quality veto`, 'Strategy', { jobId, symbol, dateId });
+        return;
+    }
     // Equity-curve throttle — no new buys once drawdown-from-peak exceeds the halt.
     const peak = account.peakEquity || account.equity;
     const drawdownPct = peak > 0 ? (peak - account.equity) / peak : 0;
@@ -565,6 +585,11 @@ async function evaluateAthSignal(db, jobId, symbol, dateId, features, regime, ac
     const indexUp = !!m && Number(m.close) > Number(m.ema200) && Number((_a = m.ema200Slope) !== null && _a !== void 0 ? _a : 0) > 0 && regime.marketState !== 'BEAR';
     if (!indexUp)
         return;
+    // Fundamentals veto (shared with SEPA) — CRITICAL earnings-quality flag blocks the buy.
+    if (await isFundamentallyBlocked(db, symbol)) {
+        await logger_1.logger.info(`[Strategy] ATH ${symbol} blocked by earnings-quality veto`, 'Strategy', { jobId, symbol, dateId });
+        return;
+    }
     // 2. Equity-curve throttle (shared with SEPA) — no new buys past the drawdown halt.
     const peak = account.peakEquity || account.equity;
     const drawdownPct = peak > 0 ? (peak - account.equity) / peak : 0;

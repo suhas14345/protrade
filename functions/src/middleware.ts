@@ -21,6 +21,7 @@ const KNOWN_ACTIONS = new Set([
   'resetTradingState',
   'cleanupStale',
   'watchlistStats',
+  'ingestFundamentals', 'syncFundamentals', 'getFundamentalsQuality',
 ]);
 
 export function validateRequest(body: Record<string, unknown>): { valid: boolean; error?: string } {

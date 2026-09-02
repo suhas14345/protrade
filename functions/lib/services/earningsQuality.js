@@ -2,6 +2,7 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.nullFundamentalsSource = void 0;
 exports.computeEarningsQuality = computeEarningsQuality;
+exports.isEntryBlockedByQuality = isEntryBlockedByQuality;
 const runtime_1 = require("../config/runtime");
 /**
  * Phase 1a — Minervini earnings-quality red-flag detector.
@@ -148,6 +149,14 @@ function computeEarningsQuality(stmt, config = runtime_1.EARNINGS_QUALITY_CONFIG
     else
         status = 'CLEAN';
     return { status, flags, evaluated };
+}
+/**
+ * Pure veto decision consumed by the SEPA/ATH entry gate: block an otherwise-valid entry
+ * only when quality is a confirmed CRITICAL (FLAGGED) and the veto is enabled. Missing data
+ * (null / UNKNOWN) and WATCH are fail-soft — they never block, matching patchy coverage.
+ */
+function isEntryBlockedByQuality(quality, config = runtime_1.EARNINGS_QUALITY_CONFIG) {
+    return config.VETO_ON_FLAGGED === true && (quality === null || quality === void 0 ? void 0 : quality.status) === 'FLAGGED';
 }
 /**
  * Placeholder source used until a real XBRL/vendor adapter is wired in. Returns null so the

@@ -112,4 +112,20 @@ describe('nullFundamentalsSource', () => {
         await expect(earningsQuality_1.nullFundamentalsSource.fetchLatestStatement('TEST.NS')).resolves.toBeNull();
     });
 });
+describe('isEntryBlockedByQuality', () => {
+    const cfg = { VETO_ON_FLAGGED: true };
+    it('blocks only a FLAGGED name when veto is enabled', () => {
+        expect((0, earningsQuality_1.isEntryBlockedByQuality)({ status: 'FLAGGED' }, cfg)).toBe(true);
+    });
+    it('is fail-soft: never blocks on WATCH, CLEAN, UNKNOWN, or missing data', () => {
+        expect((0, earningsQuality_1.isEntryBlockedByQuality)({ status: 'WATCH' }, cfg)).toBe(false);
+        expect((0, earningsQuality_1.isEntryBlockedByQuality)({ status: 'CLEAN' }, cfg)).toBe(false);
+        expect((0, earningsQuality_1.isEntryBlockedByQuality)({ status: 'UNKNOWN' }, cfg)).toBe(false);
+        expect((0, earningsQuality_1.isEntryBlockedByQuality)(null, cfg)).toBe(false);
+        expect((0, earningsQuality_1.isEntryBlockedByQuality)(undefined, cfg)).toBe(false);
+    });
+    it('does not block when the veto is disabled', () => {
+        expect((0, earningsQuality_1.isEntryBlockedByQuality)({ status: 'FLAGGED' }, { VETO_ON_FLAGGED: false })).toBe(false);
+    });
+});
 //# sourceMappingURL=earningsQuality.test.js.map

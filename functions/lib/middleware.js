@@ -53,10 +53,13 @@ const KNOWN_ACTIONS = new Set([
     'auditSignals', 'snapshot',
     'scheduledKiteRenew', 'scheduledEod', 'scheduledMorning',
     'startMorningExecution', 'getKiteSettings',
+    'getTelegramSettings', 'updateTelegram', 'testTelegram', 'sendDigest',
     'syncNseHolidays', 'syncCorporateEvents',
     'backfillHistorical',
     'resetTradingState',
     'cleanupStale',
+    'watchlistStats',
+    'ingestFundamentals', 'syncFundamentals', 'getFundamentalsQuality',
 ]);
 function validateRequest(body) {
     const action = body === null || body === void 0 ? void 0 : body.action;

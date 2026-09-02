@@ -176,6 +176,18 @@ export interface FundamentalsSource {
 }
 
 /**
+ * Pure veto decision consumed by the SEPA/ATH entry gate: block an otherwise-valid entry
+ * only when quality is a confirmed CRITICAL (FLAGGED) and the veto is enabled. Missing data
+ * (null / UNKNOWN) and WATCH are fail-soft — they never block, matching patchy coverage.
+ */
+export function isEntryBlockedByQuality(
+  quality: { status?: string } | null | undefined,
+  config = EARNINGS_QUALITY_CONFIG,
+): boolean {
+  return config.VETO_ON_FLAGGED === true && quality?.status === 'FLAGGED';
+}
+
+/**
  * Placeholder source used until a real XBRL/vendor adapter is wired in. Returns null so the
  * detector reports UNKNOWN (fail-soft) rather than fabricating quality data.
  */

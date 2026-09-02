@@ -70,6 +70,7 @@ function App() {
   const [signals, setSignals] = useState<any[]>([])
   const [watchlist, setWatchlist] = useState<any[]>([])
   const [wlStats, setWlStats] = useState<any>(null)
+  const [qualityMap, setQualityMap] = useState<Record<string, { status: string; flags: any[] }>>({})
   const [wlStatsLoading, setWlStatsLoading] = useState(false)
   const [logs, setLogs] = useState<any[]>([])
   const [stats, setStats] = useState({ equity: 1000000, realizedPnl: 0, openPositions: 0, winRate: 0 })
@@ -197,12 +198,23 @@ function App() {
       setEquitySeries(rows);
     });
 
+    // 8. Listen for fundamentals earnings-quality badges (per-symbol, not date-scoped)
+    const unsubQuality = onSnapshot(collection(db, 'fundamentalsQuality'), (snap: any) => {
+      const map: Record<string, { status: string; flags: any[] }> = {};
+      snap.docs.forEach((d: any) => {
+        const q = d.data();
+        if (q?.symbol) map[q.symbol] = { status: q.status, flags: q.flags || [] };
+      });
+      setQualityMap(map);
+    });
+
     return () => {
       unsubPos();
       unsubJobs();
       unsubAccount();
       unsubStats();
       unsubEquity();
+      unsubQuality();
     };
   }, [authToken])
 
@@ -901,6 +913,10 @@ function App() {
                     const dist = w.distToPivotPct != null ? w.distToPivotPct * 100 : null;
                     const badgeClass = w.status === 'TRIGGERED' || w.status === 'READY' ? 'up'
                       : w.status === 'INVALIDATED' ? 'down' : 'range';
+                    const q = qualityMap[w.symbol];
+                    const qColor = q?.status === 'FLAGGED' ? '#ef4444' : q?.status === 'WATCH' ? '#f59e0b' : q?.status === 'CLEAN' ? '#10b981' : '#475569';
+                    const qLabel = q?.status === 'FLAGGED' ? 'FLAGGED' : q?.status === 'WATCH' ? 'WATCH' : q?.status === 'CLEAN' ? 'CLEAN' : 'NO DATA';
+                    const qTip = q?.flags?.length ? q.flags.map((f: any) => f.message).join(' | ') : 'No fundamentals quality data';
                     return (
                     <div key={w.id} className="signal-item" style={{ background: 'rgba(255,255,255,0.02)', padding: '0.75rem', borderRadius: '8px', border: '1px solid rgba(255,255,255,0.05)' }}>
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -911,8 +927,13 @@ function App() {
                             VCP: {(w.features?.vcpRange40 * 100).toFixed(0)}%→{(w.features?.vcpRange20 * 100).toFixed(0)}%→{(w.features?.vcpRange10 * 100).toFixed(0)}%
                           </div>
                         </div>
-                        <div className={`trend-badge ${badgeClass}`}>
-                          {w.status === 'READY' ? 'NEAR PIVOT' : w.status}
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                          <span title={qTip} style={{ fontSize: '0.6rem', fontWeight: 700, padding: '0.15rem 0.4rem', borderRadius: '4px', color: qColor, border: `1px solid ${qColor}`, whiteSpace: 'nowrap' }}>
+                            Q: {qLabel}
+                          </span>
+                          <div className={`trend-badge ${badgeClass}`}>
+                            {w.status === 'READY' ? 'NEAR PIVOT' : w.status}
+                          </div>
                         </div>
                       </div>
                       <div style={{ marginTop: '0.5rem', fontSize: '0.7rem', color: '#94a3b8', borderTop: '1px solid rgba(255,255,255,0.05)', paddingTop: '0.5rem' }}>

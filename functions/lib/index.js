@@ -238,6 +238,21 @@ exports.gateway = functions.runWith(v1Options).https.onRequest(async (req, res) 
                 await watchlistConversionStats(req, res);
                 break;
             }
+            case 'ingestFundamentals': {
+                const { doIngestFundamentals } = await Promise.resolve().then(() => __importStar(require('./services/fundamentals')));
+                await doIngestFundamentals(req, res);
+                break;
+            }
+            case 'syncFundamentals': {
+                const { doSyncFundamentals } = await Promise.resolve().then(() => __importStar(require('./services/fundamentals')));
+                await doSyncFundamentals(req, res);
+                break;
+            }
+            case 'getFundamentalsQuality': {
+                const { getFundamentalsQuality } = await Promise.resolve().then(() => __importStar(require('./services/fundamentals')));
+                await getFundamentalsQuality(req, res);
+                break;
+            }
             // V3.0: System health & scheduler
             case 'getKiteSettings': {
                 const kdb = admin.apps.length ? admin.firestore() : admin.initializeApp() && admin.firestore();
