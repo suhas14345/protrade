@@ -399,3 +399,18 @@ export const SECURITY_CONFIG = {
   REQUIRE_AUTH: false,                // Enable for production (disable for local dev)
   SCHEDULER_USER_AGENT: 'Google-Cloud-Scheduler', // Trusted scheduler UA
 };
+
+// Phase 1a: Minervini earnings-quality red-flag thresholds. This is a VETO/DOWNGRADE
+// layer (distinct from the positive growth scorer): it flags accounting/governance
+// irregularities in as-reported filings — no consensus estimates required. Ratios are
+// fractions (0.25 = 25%); margins and promoter-pledge are fractions of 1, not 0–100.
+export const EARNINGS_QUALITY_CONFIG = {
+  EXCEPTIONAL_PBT_MAX_PCT: 0.25,       // |exceptional items| / |PBT| above this ⇒ profit distorted by one-offs
+  OTHER_INCOME_PBT_MAX_PCT: 0.30,      // other income / PBT above this ⇒ profit not from core sales
+  REVENUE_FROM_OPS_MIN_PCT: 0.70,      // revenueFromOps / totalRevenue below this ⇒ non-core revenue creep
+  EFFECTIVE_TAX_MIN_PCT: 0.10,         // tax / PBT below this (PBT>0) ⇒ tax anomaly inflating net profit
+  MARGIN_SPIKE_MAX_DELTA: 0.10,        // net-margin jump (pp, as fraction) beyond this is suspicious…
+  MARGIN_SPIKE_MAX_REV_GROWTH: 0.05,   // …only when revenue grew less than this (spike not demand-driven)
+  PLEDGE_ABS_CRITICAL: 0.25,           // promoter pledge at/above this fraction ⇒ governance red flag
+  PLEDGE_INCREASE_MAX_DELTA: 0.05,     // promoter-pledge QoQ increase beyond this ⇒ governance red flag
+};

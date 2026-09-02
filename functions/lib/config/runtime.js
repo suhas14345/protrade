@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.SECURITY_CONFIG = exports.REGIME_RSI_THRESHOLDS = exports.BEAR_STRATEGY_CONFIG = exports.RS_STRATEGY_THRESHOLDS = exports.STRATEGY_MIN_SCORES = exports.REGIME_HARDENING = exports.DATA_VALIDATION = exports.INDIAN_FEE_CONFIG = exports.MARKET_HOURS = exports.ORCH_CONFIG = exports.GAP_STRESS_CONFIG = exports.VOL_TARGET_CONFIG = exports.SHORT_CONFIG = exports.ADV_LIMITS = exports.EVENT_CONFIG = exports.EXIT_PROFILES = exports.RISK_LIMITS = exports.SLIPPAGE_CONFIG = exports.DRAWDOWN_CONFIG = exports.GAP_RISK_CONFIG = exports.VDU_CONFIG = exports.RS_CONFIG = exports.CORR_CONFIG = exports.STRATEGY_V11 = exports.EQUITY_STRATEGIES = exports.ATH_CONFIG = exports.METALS_CONFIG = exports.VCP_CONFIG = exports.SEPA_CONFIG = exports.RUNTIME_CONFIG = void 0;
+exports.EARNINGS_QUALITY_CONFIG = exports.SECURITY_CONFIG = exports.REGIME_RSI_THRESHOLDS = exports.BEAR_STRATEGY_CONFIG = exports.RS_STRATEGY_THRESHOLDS = exports.STRATEGY_MIN_SCORES = exports.REGIME_HARDENING = exports.DATA_VALIDATION = exports.INDIAN_FEE_CONFIG = exports.MARKET_HOURS = exports.ORCH_CONFIG = exports.GAP_STRESS_CONFIG = exports.VOL_TARGET_CONFIG = exports.SHORT_CONFIG = exports.ADV_LIMITS = exports.EVENT_CONFIG = exports.EXIT_PROFILES = exports.RISK_LIMITS = exports.SLIPPAGE_CONFIG = exports.DRAWDOWN_CONFIG = exports.GAP_RISK_CONFIG = exports.VDU_CONFIG = exports.RS_CONFIG = exports.CORR_CONFIG = exports.STRATEGY_V11 = exports.EQUITY_STRATEGIES = exports.ATH_CONFIG = exports.METALS_CONFIG = exports.VCP_CONFIG = exports.SEPA_CONFIG = exports.RUNTIME_CONFIG = void 0;
 exports.RUNTIME_CONFIG = {
     TRADING_ENABLED: true,
     PAPER_ONLY: true,
@@ -364,5 +364,19 @@ exports.SECURITY_CONFIG = {
     API_KEY_HEADER: 'x-api-key', // Header name for API key auth
     REQUIRE_AUTH: false, // Enable for production (disable for local dev)
     SCHEDULER_USER_AGENT: 'Google-Cloud-Scheduler', // Trusted scheduler UA
+};
+// Phase 1a: Minervini earnings-quality red-flag thresholds. This is a VETO/DOWNGRADE
+// layer (distinct from the positive growth scorer): it flags accounting/governance
+// irregularities in as-reported filings — no consensus estimates required. Ratios are
+// fractions (0.25 = 25%); margins and promoter-pledge are fractions of 1, not 0–100.
+exports.EARNINGS_QUALITY_CONFIG = {
+    EXCEPTIONAL_PBT_MAX_PCT: 0.25, // |exceptional items| / |PBT| above this ⇒ profit distorted by one-offs
+    OTHER_INCOME_PBT_MAX_PCT: 0.30, // other income / PBT above this ⇒ profit not from core sales
+    REVENUE_FROM_OPS_MIN_PCT: 0.70, // revenueFromOps / totalRevenue below this ⇒ non-core revenue creep
+    EFFECTIVE_TAX_MIN_PCT: 0.10, // tax / PBT below this (PBT>0) ⇒ tax anomaly inflating net profit
+    MARGIN_SPIKE_MAX_DELTA: 0.10, // net-margin jump (pp, as fraction) beyond this is suspicious…
+    MARGIN_SPIKE_MAX_REV_GROWTH: 0.05, // …only when revenue grew less than this (spike not demand-driven)
+    PLEDGE_ABS_CRITICAL: 0.25, // promoter pledge at/above this fraction ⇒ governance red flag
+    PLEDGE_INCREASE_MAX_DELTA: 0.05, // promoter-pledge QoQ increase beyond this ⇒ governance red flag
 };
 //# sourceMappingURL=runtime.js.map

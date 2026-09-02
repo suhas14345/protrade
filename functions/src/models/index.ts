@@ -374,3 +374,56 @@ export interface ReconciliationRecord {
   discrepancyBps: number;
   status: 'PENDING' | 'MATCHED' | 'DISCREPANT';
 }
+
+// Phase 1a: canonical, source-agnostic financial statement fed to the earnings-quality
+// detector. A normalizing adapter maps raw XBRL/vendor payloads into this shape so the
+// detector stays pure and vendor-swappable. Margins and promoter-pledge are fractions
+// of 1 (e.g. 0.18 = 18%), NOT 0–100. Amounts are in a single consistent currency unit.
+export interface FinancialStatement {
+  symbol: string;
+  period: string;              // '2026Q1' | 'FY2026'
+  filedAt: string;             // ISO date — stored point-in-time (no look-ahead backfill)
+  isFinancial?: boolean;       // banks/NBFCs: revenue/other-income/tax flags are skipped
+  revenueFromOps?: number;     // core operating revenue
+  otherIncome?: number;        // treasury / non-core income
+  totalRevenue?: number;       // revenueFromOps + otherIncome (as reported)
+  exceptionalItems?: number;   // signed; both gains and write-offs distort
+  pbt?: number;                // profit before tax
+  tax?: number;                // total tax expense
+  netProfit?: number;          // profit after tax
+  netMargin?: number;          // optional precomputed; else derived from netProfit/revenue
+  prevNetMargin?: number;      // prior comparable period net margin (for spike detection)
+  prevRevenueFromOps?: number; // prior comparable period core revenue (for growth context)
+  promoterPledge?: number;     // fraction of promoter holding pledged (0–1)
+  prevPromoterPledge?: number; // prior period promoter pledge fraction (0–1)
+}
+
+export type EarningsQualityFlagSeverity = 'INFO' | 'WARN' | 'CRITICAL';
+export type EarningsQualityStatus = 'CLEAN' | 'WATCH' | 'FLAGGED' | 'UNKNOWN';
+
+export interface EarningsQualityFlag {
+  code: string;                        // stable machine code, e.g. 'OTHER_INCOME_DEPENDENCE'
+  severity: EarningsQualityFlagSeverity;
+  value: number;                       // the computed ratio/delta that tripped the flag
+  threshold: number;                   // the configured limit it breached
+  message: string;                     // human-readable summary for the dashboard badge
+}
+
+export interface EarningsQualityResult {
+  status: EarningsQualityStatus;       // CLEAN | WATCH (warn) | FLAGGED (critical) | UNKNOWN (no data)
+  flags: EarningsQualityFlag[];
+  evaluated: boolean;                  // whether at least one check had enough data to run
+}
+
+// Phase 1a: persisted per-symbol quality snapshot (point-in-time). Non-gating for now —
+// surfaced as a dashboard badge; a later phase promotes CRITICAL flags to a SEPA veto.
+export interface FundamentalsQualityDoc {
+  symbol: string;
+  period: string;
+  filedAt: string;
+  source: string;                      // adapter name the statement came from
+  status: EarningsQualityStatus;
+  flags: EarningsQualityFlag[];
+  computedAt: FirebaseFirestore.Timestamp;
+}
+
