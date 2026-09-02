@@ -3,7 +3,7 @@ import * as admin from 'firebase-admin';
 import { Timestamp } from 'firebase-admin/firestore';
 import { Features, Bar } from '../models';
 import { logger } from './logger';
-import { VDU_CONFIG, GAP_RISK_CONFIG, SEPA_CONFIG } from '../config/runtime';
+import { VDU_CONFIG, GAP_RISK_CONFIG, SEPA_CONFIG, VCP_CONFIG } from '../config/runtime';
 import { getWindowOnOrBefore, maxHighOnOrBefore } from './barCache';
 
 // Lazy load technicalindicators inside functions to avoid deployment timeouts
@@ -44,6 +44,44 @@ export function computeSmaRising(closes: number[], period: number, lookback: num
   const smaNow = mean(closes.slice(-period));
   const smaPrev = mean(closes.slice(-(period + lb), -lb));
   return smaNow > smaPrev;
+}
+
+/**
+ * Minervini-style VCP dry-up: volume must materially contract during the final
+ * ten-session contraction before the signal bar, and continue fading into it.
+ * The signal bar is deliberately excluded because breakout volume should expand.
+ */
+export function computeVcpVolumeDryUp(bars: Pick<Bar, 'volume'>[]): {
+  passed: boolean;
+  finalVolume: number;
+  baseVolume: number;
+  ratio: number;
+} {
+  const finalDays = VCP_CONFIG.VOLUME_DRY_UP_DAYS;
+  const baselineDays = VCP_CONFIG.VOLUME_BASELINE_DAYS;
+  const priorBars = bars.slice(0, -1);
+  const requiredBars = finalDays + baselineDays;
+  if (priorBars.length < requiredBars) {
+    return { passed: false, finalVolume: NaN, baseVolume: NaN, ratio: NaN };
+  }
+
+  const averageVolume = (window: Pick<Bar, 'volume'>[]) =>
+    window.reduce((total, bar) => total + Math.max(0, Number(bar.volume) || 0), 0) / window.length;
+  const contraction = priorBars.slice(-finalDays);
+  const base = priorBars.slice(-(finalDays + baselineDays), -finalDays);
+  const firstHalf = contraction.slice(0, finalDays / 2);
+  const secondHalf = contraction.slice(finalDays / 2);
+  const finalVolume = averageVolume(contraction);
+  const baseVolume = averageVolume(base);
+  const ratio = baseVolume > 0 ? finalVolume / baseVolume : NaN;
+  const progressive = averageVolume(secondHalf) < averageVolume(firstHalf);
+
+  return {
+    passed: Number.isFinite(ratio) && ratio <= VCP_CONFIG.VOLUME_DRY_UP_MAX_RATIO && progressive,
+    finalVolume,
+    baseVolume,
+    ratio,
+  };
 }
 
 export async function doComputeFeatures(jobId: string, symbol: string, runDate: string) {
@@ -173,7 +211,8 @@ export async function doComputeFeatures(jobId: string, symbol: string, runDate: 
     const atrPrev = atrArr.length > 21 ? atrArr[atrArr.length - 21] : NaN;
     const atrCompressing = Number.isFinite(atrNow) && Number.isFinite(atrPrev) ? atrNow < atrPrev : false;
 
-    // Volume dry-up: 10-day avg volume vs 50-day avg volume (ratio < 1 = drying up).
+    // Legacy descriptive ratio. SEPA entry qualification uses the stricter,
+    // pre-breakout VCP contraction calculation below.
     const volAvg = (n: number) => {
       const w = bars.slice(-n);
       return w.length > 0 ? w.reduce((a, b) => a + (Number(b.volume) || 0), 0) / w.length : NaN;
@@ -181,6 +220,7 @@ export async function doComputeFeatures(jobId: string, symbol: string, runDate: 
     const vol10 = volAvg(10);
     const vol50 = volAvg(50);
     const volDryUpRatio = Number.isFinite(vol10) && Number.isFinite(vol50) && vol50 > 0 ? vol10 / vol50 : NaN;
+    const vcpVolume = computeVcpVolumeDryUp(bars);
 
     const high252 = Math.max(...closes.slice(-252));
     const low252 = Math.min(...closes.slice(-252));
@@ -208,6 +248,10 @@ export async function doComputeFeatures(jobId: string, symbol: string, runDate: 
       ret126, athHigh,
       vcpPivot, vcpStructuralLow, vcpDistToPivotPct,
       atrCompressing, vol10, vol50, volDryUpRatio,
+      vcpVolumeDryUp: vcpVolume.passed,
+      vcpFinalVolume10: vcpVolume.finalVolume,
+      vcpBaseVolume40: vcpVolume.baseVolume,
+      vcpVolumeRatio: vcpVolume.ratio,
     };
   }
 

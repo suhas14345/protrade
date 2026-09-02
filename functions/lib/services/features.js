@@ -35,6 +35,8 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.computeFeaturesTask = void 0;
 exports.computeSma200Rising = computeSma200Rising;
+exports.computeSmaRising = computeSmaRising;
+exports.computeVcpVolumeDryUp = computeVcpVolumeDryUp;
 exports.doComputeFeatures = doComputeFeatures;
 const functionsV1 = __importStar(require("firebase-functions"));
 const admin = __importStar(require("firebase-admin"));
@@ -64,6 +66,52 @@ function computeSma200Rising(closes, lookback) {
     const sma200Now = mean(closes.slice(-200));
     const sma200Prev = mean(closes.slice(-(200 + lb), -lb));
     return sma200Now > sma200Prev;
+}
+/**
+ * Generic "is this N-period SMA rising" check with an adaptive slope lookback,
+ * mirroring computeSma200Rising for the 50- and 150-DMA (IndiaPulse trend template
+ * requires all three rising).
+ */
+function computeSmaRising(closes, period, lookback) {
+    const n = closes.length;
+    if (n < period + 5)
+        return false;
+    const mean = (a) => a.reduce((x, y) => x + y, 0) / a.length;
+    const lb = Math.min(lookback, n - period);
+    if (lb < 1)
+        return false;
+    const smaNow = mean(closes.slice(-period));
+    const smaPrev = mean(closes.slice(-(period + lb), -lb));
+    return smaNow > smaPrev;
+}
+/**
+ * Minervini-style VCP dry-up: volume must materially contract during the final
+ * ten-session contraction before the signal bar, and continue fading into it.
+ * The signal bar is deliberately excluded because breakout volume should expand.
+ */
+function computeVcpVolumeDryUp(bars) {
+    const finalDays = runtime_1.VCP_CONFIG.VOLUME_DRY_UP_DAYS;
+    const baselineDays = runtime_1.VCP_CONFIG.VOLUME_BASELINE_DAYS;
+    const priorBars = bars.slice(0, -1);
+    const requiredBars = finalDays + baselineDays;
+    if (priorBars.length < requiredBars) {
+        return { passed: false, finalVolume: NaN, baseVolume: NaN, ratio: NaN };
+    }
+    const averageVolume = (window) => window.reduce((total, bar) => total + Math.max(0, Number(bar.volume) || 0), 0) / window.length;
+    const contraction = priorBars.slice(-finalDays);
+    const base = priorBars.slice(-(finalDays + baselineDays), -finalDays);
+    const firstHalf = contraction.slice(0, finalDays / 2);
+    const secondHalf = contraction.slice(finalDays / 2);
+    const finalVolume = averageVolume(contraction);
+    const baseVolume = averageVolume(base);
+    const ratio = baseVolume > 0 ? finalVolume / baseVolume : NaN;
+    const progressive = averageVolume(secondHalf) < averageVolume(firstHalf);
+    return {
+        passed: Number.isFinite(ratio) && ratio <= runtime_1.VCP_CONFIG.VOLUME_DRY_UP_MAX_RATIO && progressive,
+        finalVolume,
+        baseVolume,
+        ratio,
+    };
 }
 async function doComputeFeatures(jobId, symbol, runDate) {
     const db = getDb();
@@ -144,7 +192,49 @@ async function doComputeFeatures(jobId, symbol, runDate) {
         const sma200 = sma(200);
         // 200-SMA slope (adaptive lookback so ~200-bar histories can still confirm a rising 200-SMA).
         const sma200Rising = computeSma200Rising(closes, runtime_1.SEPA_CONFIG.SMA200_SLOPE_LOOKBACK);
+        // 50- and 150-SMA slopes (IndiaPulse trend template requires all three rising).
+        const sma50Rising = computeSmaRising(closes, 50, runtime_1.SEPA_CONFIG.SMA200_SLOPE_LOOKBACK);
+        const sma150Rising = computeSmaRising(closes, 150, runtime_1.SEPA_CONFIG.SMA200_SLOPE_LOOKBACK);
+        // VCP specific mathematics:
+        const sma10 = sma(10);
+        // calculate actual high-low price range percentages
+        const calcMaxMinDiff = (windowSize) => {
+            if (bars.length < windowSize)
+                return NaN;
+            const recent = bars.slice(-windowSize);
+            const hi = Math.max(...recent.map(b => Number(b.high)));
+            const lo = Math.min(...recent.map(b => Number(b.low)));
+            return (hi - lo) / hi; // The contraction range %
+        };
+        const vcpRange40 = calcMaxMinDiff(40);
+        const vcpRange20 = calcMaxMinDiff(20);
+        const vcpRange10 = calcMaxMinDiff(10);
+        // Pivot = prior 50-session high, EXCLUDING the current (signal) bar so a fresh
+        // close through it reads as a genuine breakout (IndiaPulse definition).
+        const priorBars = bars.slice(0, -1);
+        const pivotWindow = priorBars.slice(-50);
+        const vcpPivot = pivotWindow.length > 0 ? Math.max(...pivotWindow.map(b => Number(b.high))) : NaN;
+        // Final-contraction low = min low over the last 10 sessions (invalidation reference).
+        const finalContraction = bars.slice(-10);
+        const vcpStructuralLow = finalContraction.length > 0 ? Math.min(...finalContraction.map(b => Number(b.low))) : NaN;
+        const vcpDistToPivotPct = Number.isFinite(vcpPivot) && vcpPivot > 0 ? (currentClose - vcpPivot) / vcpPivot : NaN;
+        // 14-day ATR compression: current ATR vs the ATR ~20 sessions ago.
+        const atrNow = atrArr.length > 0 ? atrArr[atrArr.length - 1] : NaN;
+        const atrPrev = atrArr.length > 21 ? atrArr[atrArr.length - 21] : NaN;
+        const atrCompressing = Number.isFinite(atrNow) && Number.isFinite(atrPrev) ? atrNow < atrPrev : false;
+        // Legacy descriptive ratio. SEPA entry qualification uses the stricter,
+        // pre-breakout VCP contraction calculation below.
+        const volAvg = (n) => {
+            const w = bars.slice(-n);
+            return w.length > 0 ? w.reduce((a, b) => a + (Number(b.volume) || 0), 0) / w.length : NaN;
+        };
+        const vol10 = volAvg(10);
+        const vol50 = volAvg(50);
+        const volDryUpRatio = Number.isFinite(vol10) && Number.isFinite(vol50) && vol50 > 0 ? vol10 / vol50 : NaN;
+        const vcpVolume = computeVcpVolumeDryUp(bars);
         const high252 = Math.max(...closes.slice(-252));
+        const low252 = Math.min(...closes.slice(-252));
+        const pctAboveLow252 = low252 > 0 ? (currentClose - low252) / low252 : NaN;
         const ret126 = closes.length >= 127 ? (closes[closes.length - 1] / closes[closes.length - 127]) - 1 : 0;
         // True all-time high. Until the one-time full-history seed runs (flagged on the parent
         // doc), scan ALL stored bars so athHigh is genuinely all-time, not just the ~260-bar
@@ -160,7 +250,20 @@ async function doComputeFeatures(jobId, symbol, runDate) {
             const allTimeHigh = await (0, barCache_1.maxHighOnOrBefore)(db, symbol, dateId);
             athHigh = Math.max(allTimeHigh, Math.max(...highs), high252);
         }
-        sepaFields = { sma50, sma150, sma200, sma200Rising, high252, ret126, athHigh };
+        sepaFields = {
+            sma50, sma150, sma200, sma10,
+            vcpRange40, vcpRange20, vcpRange10,
+            trend40Up: vcpRange40 <= 0.40, trend20Up: vcpRange20 <= 0.40, trend10Up: vcpRange10 <= 0.40,
+            sma200Rising, sma50Rising, sma150Rising,
+            high252, low252, pctAboveLow252,
+            ret126, athHigh,
+            vcpPivot, vcpStructuralLow, vcpDistToPivotPct,
+            atrCompressing, vol10, vol50, volDryUpRatio,
+            vcpVolumeDryUp: vcpVolume.passed,
+            vcpFinalVolume10: vcpVolume.finalVolume,
+            vcpBaseVolume40: vcpVolume.baseVolume,
+            vcpVolumeRatio: vcpVolume.ratio,
+        };
     }
     // 4. Refined Trend State
     let trendState = 'RANGE';

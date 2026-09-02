@@ -134,4 +134,45 @@ describe('computeSma200Rising (adaptive 200-SMA slope)', () => {
         expect((0, features_1.computeSma200Rising)(rising(206), 20)).toBe(true);
     });
 });
+describe('computeVcpVolumeDryUp', () => {
+    const barsWithVolumes = (volumes) => volumes.map((volume) => ({ volume }));
+    it('accepts a materially quieter, progressively drying final contraction before a high-volume breakout', () => {
+        const volumes = [
+            ...Array(40).fill(1000000),
+            ...Array(5).fill(800000),
+            ...Array(5).fill(500000),
+            2000000,
+        ];
+        const result = (0, features_1.computeVcpVolumeDryUp)(barsWithVolumes(volumes));
+        expect(result.passed).toBe(true);
+        expect(result.ratio).toBeCloseTo(0.65);
+    });
+    it('rejects a trivial reduction that is not a meaningful dry-up', () => {
+        const volumes = [
+            ...Array(40).fill(1000000),
+            ...Array(5).fill(990000),
+            ...Array(5).fill(980000),
+            2000000,
+        ];
+        expect((0, features_1.computeVcpVolumeDryUp)(barsWithVolumes(volumes)).passed).toBe(false);
+    });
+    it('rejects a final contraction whose volume increases into the pivot', () => {
+        const volumes = [
+            ...Array(40).fill(1000000),
+            ...Array(5).fill(500000),
+            ...Array(5).fill(800000),
+            2000000,
+        ];
+        expect((0, features_1.computeVcpVolumeDryUp)(barsWithVolumes(volumes)).passed).toBe(false);
+    });
+    it('excludes the breakout bar from the dry-up calculation', () => {
+        const volumes = [
+            ...Array(40).fill(1000000),
+            ...Array(5).fill(800000),
+            ...Array(5).fill(500000),
+            5000000,
+        ];
+        expect((0, features_1.computeVcpVolumeDryUp)(barsWithVolumes(volumes)).passed).toBe(true);
+    });
+});
 //# sourceMappingURL=features.test.js.map

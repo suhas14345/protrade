@@ -10,7 +10,7 @@ export interface CalendarDay {
 
 export interface Job {
   runDate: string; // YYYY-MM-DD
-  universeId?: string; // nifty50, nifty500
+  universeId?: string; // operational default: midsmall400
   type: 'EOD_RUN' | 'OPEN_SIM_RUN' | 'DEEP_SYNC';
   stage: 'FETCH' | 'FEATURES' | 'REGIME' | 'CORR' | 'SIGNALS' | 'RISK' | 'ORDERS' | 'DONE';
   status: 'RUNNING' | 'FINALIZING' | 'FAILED' | 'DONE';
@@ -114,6 +114,10 @@ export interface Features {
   vol10?: number;             // 10-day average volume
   vol50?: number;             // 50-day average volume
   volDryUpRatio?: number;     // vol10 / vol50 (< 1 = dry-up)
+  vcpVolumeDryUp?: boolean;   // final pre-breakout contraction is materially quieter than its base
+  vcpFinalVolume10?: number;  // avg volume in the 10 sessions immediately before the signal bar
+  vcpBaseVolume40?: number;   // avg volume in the preceding 40-session base
+  vcpVolumeRatio?: number;    // vcpFinalVolume10 / vcpBaseVolume40
   patterns?: string[];
   computedAt: FirebaseFirestore.Timestamp;
 }

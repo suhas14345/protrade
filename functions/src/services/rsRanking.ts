@@ -21,7 +21,7 @@ const getDb = () => {
  *
  * This enables the strategy engine to filter: only trade rsScore >= MIN_RS_SCORE.
  */
-export async function doComputeRsRanking(dateId: string, jobId?: string, universeId: string = 'nifty500'): Promise<void> {
+export async function doComputeRsRanking(dateId: string, jobId?: string, universeId: string = 'midsmall400'): Promise<void> {
   const db = getDb();
   await logger.info(`[RSRank] Computing RS scores for ${dateId}`, 'RSRank', { dateId, jobId });
 

@@ -57,7 +57,7 @@ async function checkRuntimeKillSwitch() {
  * V3.0: Wired middleware — validation, auth, rate limiting, kill switch
  */
 exports.gateway = functions.runWith(v1Options).https.onRequest(async (req, res) => {
-    var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k;
+    var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k, _l, _m;
     // CORS: allow dashboard origin
     res.set('Access-Control-Allow-Origin', '*');
     res.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
@@ -233,6 +233,11 @@ exports.gateway = functions.runWith(v1Options).https.onRequest(async (req, res) 
                 await downloadReport(req, res);
                 break;
             }
+            case 'watchlistStats': {
+                const { watchlistConversionStats } = await Promise.resolve().then(() => __importStar(require('./services/reporting')));
+                await watchlistConversionStats(req, res);
+                break;
+            }
             // V3.0: System health & scheduler
             case 'getKiteSettings': {
                 const kdb = admin.apps.length ? admin.firestore() : admin.initializeApp() && admin.firestore();
@@ -251,6 +256,51 @@ exports.gateway = functions.runWith(v1Options).https.onRequest(async (req, res) 
                     updatedAt: kdata.updatedAt || null,
                     hasAllFields: !!(kdata.apiKey && kdata.apiSecret && kdata.userId && kdata.password && kdata.totpSecret),
                 });
+                break;
+            }
+            case 'getTelegramSettings': {
+                const tdb = admin.apps.length ? admin.firestore() : admin.initializeApp() && admin.firestore();
+                const tsnap = await tdb.collection('settings').doc('telegram').get();
+                const tdata = tsnap.data() || {};
+                res.status(200).send({
+                    botToken: tdata.botToken ? '***set***' : '(not set)',
+                    chatId: tdata.chatId || '(not set)',
+                    enabled: !!tdata.enabled,
+                    hasAllFields: !!(tdata.botToken && tdata.chatId),
+                });
+                break;
+            }
+            case 'updateTelegram': {
+                const tdb = admin.apps.length ? admin.firestore() : admin.initializeApp() && admin.firestore();
+                const { botToken, chatId, enabled } = Object.assign(Object.assign({}, req.query), req.body);
+                const update = { updatedAt: admin.firestore.Timestamp.now() };
+                if (typeof botToken === 'string' && botToken.trim())
+                    update.botToken = botToken.trim();
+                if (typeof chatId === 'string' && chatId.trim())
+                    update.chatId = chatId.trim();
+                if (typeof enabled === 'boolean')
+                    update.enabled = enabled;
+                await tdb.collection('settings').doc('telegram').set(update, { merge: true });
+                res.status(200).send({ message: 'Telegram settings saved' });
+                break;
+            }
+            case 'testTelegram': {
+                const { sendTelegramMessage } = await Promise.resolve().then(() => __importStar(require('./services/telegram')));
+                const result = await sendTelegramMessage('✅ ProTrade Alpha test message — Telegram is connected.');
+                if (result.sent)
+                    res.status(200).send({ message: 'Test message sent' });
+                else
+                    res.status(400).send({ error: `Not sent: ${result.reason}` });
+                break;
+            }
+            case 'sendDigest': {
+                const { sendDailyDigest } = await Promise.resolve().then(() => __importStar(require('./services/telegram')));
+                const digestDate = (((_b = req.body) === null || _b === void 0 ? void 0 : _b.date) || ((_c = req.query) === null || _c === void 0 ? void 0 : _c.date));
+                const result = await sendDailyDigest(digestDate);
+                if (result.sent)
+                    res.status(200).send({ message: 'Digest sent' });
+                else
+                    res.status(400).send({ error: `Not sent: ${result.reason}` });
                 break;
             }
             case 'systemHealth': {
@@ -319,7 +369,7 @@ exports.gateway = functions.runWith(v1Options).https.onRequest(async (req, res) 
                 }
                 console.log(`[Scheduler] Starting scheduled EOD for ${todayEod}`);
                 const { doStartEodRun } = await Promise.resolve().then(() => __importStar(require('./services/orchestrator')));
-                await doStartEodRun({ body: { date: todayEod, universe: 'nifty200', force: true }, query: {} }, res);
+                await doStartEodRun({ body: { date: todayEod, universe: 'midsmall400', force: true }, query: {} }, res);
                 break;
             }
             case 'scheduledMorning': {
@@ -343,13 +393,13 @@ exports.gateway = functions.runWith(v1Options).https.onRequest(async (req, res) 
                 }
                 console.log(`[Scheduler] Starting morning fill simulation for ${morningDate}`);
                 const { doStartMorningExecution } = await Promise.resolve().then(() => __importStar(require('./services/orchestrator')));
-                await doStartMorningExecution({ query: { date: morningDate, universe: 'nifty200' } }, res);
+                await doStartMorningExecution({ query: { date: morningDate, universe: 'midsmall400' } }, res);
                 break;
             }
             case 'startMorningExecution': {
-                // Manual trigger: { action: "startMorningExecution", date: "2026-04-13", universe: "nifty500" }
+                // Manual trigger defaults to the live MidSmall 400 universe.
                 const { doStartMorningExecution } = await Promise.resolve().then(() => __importStar(require('./services/orchestrator')));
-                await doStartMorningExecution({ query: { date: (_b = req.body) === null || _b === void 0 ? void 0 : _b.date, universe: ((_c = req.body) === null || _c === void 0 ? void 0 : _c.universe) || 'nifty500' } }, res);
+                await doStartMorningExecution({ query: { date: (_d = req.body) === null || _d === void 0 ? void 0 : _d.date, universe: ((_e = req.body) === null || _e === void 0 ? void 0 : _e.universe) || 'midsmall400' } }, res);
                 break;
             }
             case 'syncNseHolidays': {
@@ -361,7 +411,7 @@ exports.gateway = functions.runWith(v1Options).https.onRequest(async (req, res) 
             }
             case 'syncCorporateEvents': {
                 const { syncAllCorporateEvents } = await Promise.resolve().then(() => __importStar(require('./services/eventSync')));
-                const lookAhead = Number((_d = req.body) === null || _d === void 0 ? void 0 : _d.lookAheadDays) || 30;
+                const lookAhead = Number((_f = req.body) === null || _f === void 0 ? void 0 : _f.lookAheadDays) || 30;
                 const result = await syncAllCorporateEvents(lookAhead);
                 res.status(200).send({
                     message: 'Corporate events synced',
@@ -374,10 +424,10 @@ exports.gateway = functions.runWith(v1Options).https.onRequest(async (req, res) 
             case 'backfillHistorical': {
                 const { runHistoricalBackfill } = await Promise.resolve().then(() => __importStar(require('./services/historicalBackfill')));
                 const result = await runHistoricalBackfill({
-                    universeId: ((_e = req.body) === null || _e === void 0 ? void 0 : _e.universe) || 'nifty500',
-                    startISO: (_f = req.body) === null || _f === void 0 ? void 0 : _f.start,
-                    endISO: (_g = req.body) === null || _g === void 0 ? void 0 : _g.end,
-                    maxSymbols: Number((_h = req.body) === null || _h === void 0 ? void 0 : _h.maxSymbols) || 500,
+                    universeId: ((_g = req.body) === null || _g === void 0 ? void 0 : _g.universe) || 'midsmall400',
+                    startISO: (_h = req.body) === null || _h === void 0 ? void 0 : _h.start,
+                    endISO: (_j = req.body) === null || _j === void 0 ? void 0 : _j.end,
+                    maxSymbols: Number((_k = req.body) === null || _k === void 0 ? void 0 : _k.maxSymbols) || 500,
                 });
                 res.status(200).send(result);
                 break;
@@ -385,14 +435,14 @@ exports.gateway = functions.runWith(v1Options).https.onRequest(async (req, res) 
             case 'resetTradingState': {
                 const { runResetTradingState } = await Promise.resolve().then(() => __importStar(require('./services/resetState')));
                 const result = await runResetTradingState({
-                    equity: Number((_j = req.body) === null || _j === void 0 ? void 0 : _j.equity) || 1000000,
+                    equity: Number((_l = req.body) === null || _l === void 0 ? void 0 : _l.equity) || 1000000,
                 });
                 res.status(200).send(result);
                 break;
             }
             case 'cleanupStale': {
                 const { runStaleCleanup } = await Promise.resolve().then(() => __importStar(require('./services/cleanupStale')));
-                const result = await runStaleCleanup((_k = req.body) === null || _k === void 0 ? void 0 : _k.retention);
+                const result = await runStaleCleanup((_m = req.body) === null || _m === void 0 ? void 0 : _m.retention);
                 res.status(200).send({ message: 'Stale data cleaned', deleted: result });
                 break;
             }
@@ -507,7 +557,7 @@ exports.scheduledEod = functions
         console.warn('[Scheduler] Native EOD event sync failed:', error);
     }
     const { doStartEodRun } = await Promise.resolve().then(() => __importStar(require('./services/orchestrator')));
-    await doStartEodRun({ body: { date, universe: 'nifty200', force: true }, query: {} }, scheduledResponse());
+    await doStartEodRun({ body: { date, universe: 'midsmall400', force: true }, query: {} }, scheduledResponse());
     return null;
 });
 /** Native morning fill schedule; supersedes the manually-created gateway scheduler job. */
@@ -529,7 +579,7 @@ exports.scheduledMorning = functions
         return null;
     }
     const { doStartMorningExecution } = await Promise.resolve().then(() => __importStar(require('./services/orchestrator')));
-    await doStartMorningExecution({ query: { date, universe: 'nifty200' } }, scheduledResponse());
+    await doStartMorningExecution({ query: { date, universe: 'midsmall400' } }, scheduledResponse());
     return null;
 });
 //# sourceMappingURL=index.js.map

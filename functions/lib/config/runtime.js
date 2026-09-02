@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.SECURITY_CONFIG = exports.REGIME_RSI_THRESHOLDS = exports.BEAR_STRATEGY_CONFIG = exports.RS_STRATEGY_THRESHOLDS = exports.STRATEGY_MIN_SCORES = exports.REGIME_HARDENING = exports.DATA_VALIDATION = exports.INDIAN_FEE_CONFIG = exports.MARKET_HOURS = exports.ORCH_CONFIG = exports.GAP_STRESS_CONFIG = exports.VOL_TARGET_CONFIG = exports.SHORT_CONFIG = exports.ADV_LIMITS = exports.EVENT_CONFIG = exports.EXIT_PROFILES = exports.RISK_LIMITS = exports.SLIPPAGE_CONFIG = exports.DRAWDOWN_CONFIG = exports.GAP_RISK_CONFIG = exports.VDU_CONFIG = exports.RS_CONFIG = exports.CORR_CONFIG = exports.STRATEGY_V11 = exports.EQUITY_STRATEGIES = exports.ATH_CONFIG = exports.METALS_CONFIG = exports.SEPA_CONFIG = exports.RUNTIME_CONFIG = void 0;
+exports.SECURITY_CONFIG = exports.REGIME_RSI_THRESHOLDS = exports.BEAR_STRATEGY_CONFIG = exports.RS_STRATEGY_THRESHOLDS = exports.STRATEGY_MIN_SCORES = exports.REGIME_HARDENING = exports.DATA_VALIDATION = exports.INDIAN_FEE_CONFIG = exports.MARKET_HOURS = exports.ORCH_CONFIG = exports.GAP_STRESS_CONFIG = exports.VOL_TARGET_CONFIG = exports.SHORT_CONFIG = exports.ADV_LIMITS = exports.EVENT_CONFIG = exports.EXIT_PROFILES = exports.RISK_LIMITS = exports.SLIPPAGE_CONFIG = exports.DRAWDOWN_CONFIG = exports.GAP_RISK_CONFIG = exports.VDU_CONFIG = exports.RS_CONFIG = exports.CORR_CONFIG = exports.STRATEGY_V11 = exports.EQUITY_STRATEGIES = exports.ATH_CONFIG = exports.METALS_CONFIG = exports.VCP_CONFIG = exports.SEPA_CONFIG = exports.RUNTIME_CONFIG = void 0;
 exports.RUNTIME_CONFIG = {
     TRADING_ENABLED: true,
     PAPER_ONLY: true,
@@ -31,6 +31,21 @@ exports.SEPA_CONFIG = {
     BOOK_PCT: 0.70, // SEPA capital book: gross deployed capital capped at this fraction of
     // equity (metals sleeve gets the rest via ALLOC_PCT). Prevents the two
     // strategies from jointly committing > 100% of equity (implicit leverage).
+};
+// VCP watchlist / pivot state machine (IndiaPulse-style). Governs how symbols are
+// classified on the pre-breakout watchlist and when a breakout is "triggered".
+exports.VCP_CONFIG = {
+    WATCH_MAX_DIST_PCT: 0.05, // NEAR PIVOT WATCH: within 5% below the pivot
+    SETUP_MAX_DIST_PCT: 0.10, // SETUP (developing): within 10% below the pivot
+    TRIGGER_VOL_MULT: 1.4, // breakout confirmation: close-day volume >= 1.4x 50d avg
+    TRIGGER_CLOSE_TOP_PCT: 0.35, // close must be in the top 35% of the day's range
+    VOLUME_DRY_UP_DAYS: 10, // final contraction, ending before the signal bar
+    VOLUME_BASELINE_DAYS: 40, // earlier base-volume reference, before the final contraction
+    VOLUME_DRY_UP_MAX_RATIO: 0.70, // final contraction volume must be at least 30% below the base
+    EXTENDED_ABOVE_PIVOT_PCT: 0.05, // > 5% above pivot => Extended (chase risk)
+    INVALIDATE_BELOW_PIVOT_PCT: 0.02, // close 2% below pivot => Invalidated
+    MIN_PRICE: 50, // IndiaPulse price floor (Rs)
+    MIN_PCT_ABOVE_LOW: 0.30, // must be at least 30% above the 52-week low
 };
 // Metals rotation sleeve — a small, self-contained trend-following ETF strategy
 // that runs ALONGSIDE SEPA (not exclusive). It trades only the whitelisted metal

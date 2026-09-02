@@ -75,9 +75,7 @@ function App() {
   const [stats, setStats] = useState({ equity: 1000000, realizedPnl: 0, openPositions: 0, winRate: 0 })
   const [statsByRegime, setStatsByRegime] = useState<any[]>([])
   const [isTriggering, setIsTriggering] = useState(false)
-  const [universe, setUniverse] = useState<'nifty50' | 'nifty500' | 'midsmall400' | 'sample'>(
-    (localStorage.getItem('protrade_universe') as any) || 'midsmall400'
-  )
+  const universe = 'midsmall400'
   const [inventory, setInventory] = useState<any>(null);
   const [isRefreshingInventory, setIsRefreshingInventory] = useState(false);
   const [equitySeries, setEquitySeries] = useState<any[]>([]);
@@ -115,10 +113,6 @@ function App() {
       autoLink();
     }
   }, []);
-
-  useEffect(() => {
-    localStorage.setItem('protrade_universe', universe);
-  }, [universe]);
 
   useEffect(() => {
     if (!authToken) return;
@@ -929,7 +923,7 @@ function App() {
                         )}
                         <br />
                         {w.structuralLow != null && <>Stop ref ₹{w.structuralLow.toFixed(2)} • </>}
-                        Vol-dryup {w.features?.volDryUpRatio != null ? `${w.features.volDryUpRatio.toFixed(2)}x` : '—'} • ATR↓ {w.features?.atrCompressing ? '✅' : '❌'} • VDU {w.features?.vduActive ? '✅' : '❌'}
+                        Vol-dryup {w.features?.vcpVolumeRatio != null ? `${w.features.vcpVolumeRatio.toFixed(2)}x` : '—'} {w.features?.vcpVolumeDryUp ? '✅' : '❌'} • ATR↓ {w.features?.atrCompressing ? '✅' : '❌'}
                       </div>
                     </div>
                     );
@@ -1127,48 +1121,7 @@ function App() {
               <Terminal size={18} /> System Run History
             </h3>
           <div style={{ display: 'flex', gap: '1rem', alignItems: 'center' }}>
-            <div style={{ display: 'flex', background: '#1e293b', borderRadius: '8px', padding: '2px' }}>
-              <button 
-                onClick={() => setUniverse('nifty50')}
-                style={{ 
-                  padding: '0.4rem 1rem', borderRadius: '6px', border: 'none', fontSize: '0.8rem', cursor: 'pointer',
-                  background: universe === 'nifty50' ? '#10b981' : 'transparent',
-                  color: universe === 'nifty50' ? '#fff' : '#64748b'
-                }}
-              >
-                Nifty 50
-              </button>
-              <button 
-                onClick={() => setUniverse('nifty500')}
-                style={{ 
-                  padding: '0.4rem 1rem', borderRadius: '6px', border: 'none', fontSize: '0.8rem', cursor: 'pointer',
-                  background: universe === 'nifty500' ? '#10b981' : 'transparent',
-                  color: universe === 'nifty500' ? '#fff' : '#64748b'
-                }}
-              >
-                Nifty 500
-              </button>
-              <button 
-                onClick={() => setUniverse('midsmall400')}
-                style={{ 
-                  padding: '0.4rem 1rem', borderRadius: '6px', border: 'none', fontSize: '0.8rem', cursor: 'pointer',
-                  background: universe === 'midsmall400' ? '#10b981' : 'transparent',
-                  color: universe === 'midsmall400' ? '#fff' : '#64748b'
-                }}
-              >
-                MidSmall 400
-              </button>
-              <button 
-                onClick={() => setUniverse('sample')}
-                style={{ 
-                  padding: '0.4rem 1rem', borderRadius: '6px', border: 'none', fontSize: '0.8rem', cursor: 'pointer',
-                  background: universe === 'sample' ? '#10b981' : 'transparent',
-                  color: universe === 'sample' ? '#fff' : '#64748b'
-                }}
-              >
-                Sample
-              </button>
-            </div>
+            <span style={{ color: '#64748b', fontSize: '0.8rem' }}>Universe: MidSmall 400</span>
             <button 
               className="btn-premium" 
               onClick={handleTriggerScan}

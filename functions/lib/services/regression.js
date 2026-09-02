@@ -53,10 +53,10 @@ async function runSystemRegression() {
         }
         console.log('[REGRESSION] Firestore: OK');
         // 3. Test Universe Data
-        console.log('[REGRESSION] Testing Universe: Checking nifty50 membership...');
-        const universeSnap = await db.collection('universes').doc('nifty50').collection('members').limit(5).get();
+        console.log('[REGRESSION] Testing Universe: Checking midsmall400 membership...');
+        const universeSnap = await db.collection('universes').doc('midsmall400').collection('members').limit(5).get();
         if (universeSnap.empty) {
-            throw new Error('Universe check failed: nifty50 has no members');
+            throw new Error('Universe check failed: midsmall400 has no members');
         }
         console.log(`[REGRESSION] Universe: OK (${universeSnap.size} symbols found)`);
         // 4. Test Cloud Tasks Integration (Dry Run / Probe)

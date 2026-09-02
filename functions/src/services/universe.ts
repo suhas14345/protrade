@@ -11,7 +11,7 @@ const getDb = () => {
 };
 
 /**
- * Seed the universe data with Nifty 50 and Nifty 500 constituents.
+ * Seed custom and development universe data.
  */
 export async function seedUniverse(req: any, res: any) {
   try {
@@ -87,7 +87,7 @@ export async function seedUniverse(req: any, res: any) {
 export async function cleanupUniverse(req: any, res: any) {
   try {
     const db = getDb();
-    const { universe = 'nifty500' } = req.query as any;
+    const { universe = 'midsmall400' } = req.query as any;
     
     // 1. Fetch live NSE instrument list from Kite
     const { getNSEInstrumentsMap } = await import('./marketdata');
@@ -215,7 +215,7 @@ export async function validateUniverseCsv(req: any, res: any) {
 export async function updateUniverseFromCsv(req: any, res: any) {
     try {
         const db = getDb();
-        const { csvContent, universe = 'nifty500', append = false } = req.body;
+        const { csvContent, universe = 'midsmall400', append = false } = req.body;
         if (!csvContent) {
             res.status(400).send({ error: 'csvContent is required' });
             return;

@@ -1,4 +1,4 @@
-import { doComputeFeatures, computeSma200Rising } from '../features';
+import { doComputeFeatures, computeSma200Rising, computeVcpVolumeDryUp } from '../features';
 import * as admin from 'firebase-admin';
 
 // Mock technicalindicators
@@ -116,5 +116,56 @@ describe('computeSma200Rising (adaptive 200-SMA slope)', () => {
   it('caps the lookback at available history (adaptive)', () => {
     // 206 bars → effective lookback 6, still a valid rising check.
     expect(computeSma200Rising(rising(206), 20)).toBe(true);
+  });
+});
+
+describe('computeVcpVolumeDryUp', () => {
+  const barsWithVolumes = (volumes: number[]) => volumes.map((volume) => ({ volume }));
+
+  it('accepts a materially quieter, progressively drying final contraction before a high-volume breakout', () => {
+    const volumes = [
+      ...Array(40).fill(1_000_000),
+      ...Array(5).fill(800_000),
+      ...Array(5).fill(500_000),
+      2_000_000,
+    ];
+
+    const result = computeVcpVolumeDryUp(barsWithVolumes(volumes));
+
+    expect(result.passed).toBe(true);
+    expect(result.ratio).toBeCloseTo(0.65);
+  });
+
+  it('rejects a trivial reduction that is not a meaningful dry-up', () => {
+    const volumes = [
+      ...Array(40).fill(1_000_000),
+      ...Array(5).fill(990_000),
+      ...Array(5).fill(980_000),
+      2_000_000,
+    ];
+
+    expect(computeVcpVolumeDryUp(barsWithVolumes(volumes)).passed).toBe(false);
+  });
+
+  it('rejects a final contraction whose volume increases into the pivot', () => {
+    const volumes = [
+      ...Array(40).fill(1_000_000),
+      ...Array(5).fill(500_000),
+      ...Array(5).fill(800_000),
+      2_000_000,
+    ];
+
+    expect(computeVcpVolumeDryUp(barsWithVolumes(volumes)).passed).toBe(false);
+  });
+
+  it('excludes the breakout bar from the dry-up calculation', () => {
+    const volumes = [
+      ...Array(40).fill(1_000_000),
+      ...Array(5).fill(800_000),
+      ...Array(5).fill(500_000),
+      5_000_000,
+    ];
+
+    expect(computeVcpVolumeDryUp(barsWithVolumes(volumes)).passed).toBe(true);
   });
 });

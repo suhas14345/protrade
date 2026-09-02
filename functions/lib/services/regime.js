@@ -79,7 +79,7 @@ async function getEma200SlopeNeg(db, symbol, dateId, lookbackBars = 20) {
  * - New 20-day highs, new 20-day lows
  * Falls back to neutral defaults if data is insufficient.
  */
-async function computeUniverseBreadth(db, dateId, universeId = 'nifty500') {
+async function computeUniverseBreadth(db, dateId, universeId = 'midsmall400') {
     const defaults = { pctAboveEMA50: 50, pctAboveEMA200: 50, newHighs20: 25, newLows20: 25 };
     try {
         const universeSnap = await db.collection('universes').doc(universeId).collection('members').get();
@@ -137,7 +137,7 @@ async function computeUniverseBreadth(db, dateId, universeId = 'nifty500') {
 /**
  * HTTP Trigger to compute the Market Regime for the universe.
  */
-async function doComputeRegime(date, jobId, providedIndexSymbol, universeId = 'nifty500') {
+async function doComputeRegime(date, jobId, providedIndexSymbol, universeId = 'midsmall400') {
     var _a, _b;
     const db = getDb();
     const dateId = toDateId(date);

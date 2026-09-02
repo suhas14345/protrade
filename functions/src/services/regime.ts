@@ -58,7 +58,7 @@ async function getEma200SlopeNeg(
  * - New 20-day highs, new 20-day lows
  * Falls back to neutral defaults if data is insufficient.
  */
-async function computeUniverseBreadth(db: FirebaseFirestore.Firestore, dateId: string, universeId: string = 'nifty500'): Promise<{
+async function computeUniverseBreadth(db: FirebaseFirestore.Firestore, dateId: string, universeId: string = 'midsmall400'): Promise<{
   pctAboveEMA50: number;
   pctAboveEMA200: number;
   newHighs20: number;
@@ -125,7 +125,7 @@ async function computeUniverseBreadth(db: FirebaseFirestore.Firestore, dateId: s
 /**
  * HTTP Trigger to compute the Market Regime for the universe.
  */
-export async function doComputeRegime(date: string, jobId?: string, providedIndexSymbol?: string, universeId: string = 'nifty500') {
+export async function doComputeRegime(date: string, jobId?: string, providedIndexSymbol?: string, universeId: string = 'midsmall400') {
   const db = getDb();
   const dateId = toDateId(date);
 

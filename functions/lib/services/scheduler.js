@@ -174,7 +174,7 @@ async function runCatchUp(db, missedDates) {
         await db.collection('jobs').doc(jobId).set({
             id: jobId,
             runDate: date,
-            universeId: 'nifty50',
+            universeId: 'midsmall400',
             type: 'EOD_RUN',
             stage: 'STARTING',
             status: 'RUNNING',

@@ -198,7 +198,7 @@ function computeDynamicScore(baseScore, features, regime, strategyName) {
 /**
  * Consolidated Risk Approval Logic (V2.3 — with vol-targeting, ADV limits, gap stress)
  */
-async function doRiskApproval(signal, account, regime, openPositions, sessionApprovals, dateId, universeId = 'nifty500') {
+async function doRiskApproval(signal, account, regime, openPositions, sessionApprovals, dateId, universeId = 'midsmall400') {
     var _a, _b, _c, _d, _e, _f, _g;
     const db = getDb();
     // 1. Symbol Meta (Sector + Liquidity Bucket)
@@ -346,38 +346,144 @@ async function doRiskApproval(signal, account, regime, openPositions, sessionApp
  */
 async function evaluateSepaSignal(db, jobId, symbol, dateId, features, regime, account, openPositions) {
     var _a;
-    // 1. Index-regime gate — only buy leaders while the index is in a confirmed uptrend.
-    const m = regime.metrics;
-    const indexUp = !!m && Number(m.close) > Number(m.ema200) && Number((_a = m.ema200Slope) !== null && _a !== void 0 ? _a : 0) > 0 && regime.marketState !== 'BEAR';
-    if (!indexUp)
-        return;
-    // 2. Equity-curve throttle — no new buys once drawdown-from-peak exceeds the halt.
-    const peak = account.peakEquity || account.equity;
-    const drawdownPct = peak > 0 ? (peak - account.equity) / peak : 0;
-    if (drawdownPct >= runtime_1.SEPA_CONFIG.THROTTLE_HALT_PCT)
-        return;
-    // 3. Portfolio cap (final selection of the strongest leaders is enforced in doPlaceOrders).
-    if (openPositions.length >= runtime_1.SEPA_CONFIG.MAX_POS)
-        return;
-    // 4. Feature availability.
+    // Feature availability + current close — needed by BOTH the watchlist and the entry gates.
     const sma50 = Number(features.sma50);
     const sma150 = Number(features.sma150);
     const sma200 = Number(features.sma200);
     const high252 = Number(features.high252);
+    // NOTE: rsRank126 is produced by the RS-rank FINALIZE stage (after signals), so it can be
+    // missing at signal-time. It must NOT gate the watchlist — only the actual BUY (rsLeader).
     const rsRank126 = Number(features.rsRank126);
-    if (![sma50, sma150, sma200, high252, rsRank126].every(Number.isFinite))
+    if (symbol === 'EICHERMOT.NS') {
+        await logger_1.logger.info(`[VCPDBG] entered SEPA_ONLY=${runtime_1.SEPA_CONFIG.SEPA_ONLY} vcpPivot=${features.vcpPivot} sma50=${features.sma50} high252=${features.high252} guardPass=${[sma50, sma150, sma200, high252].every(Number.isFinite)}`, 'Strategy', { jobId, symbol, dateId });
+    }
+    if (![sma50, sma150, sma200, high252].every(Number.isFinite))
         return;
     const bars = await getRecentBarsOnOrBefore(db, symbol, dateId, 1);
     if (bars.length === 0)
         return;
-    const close = Number(bars[bars.length - 1].close);
+    const lastBar = bars[bars.length - 1];
+    const close = Number(lastBar.close);
     if (!Number.isFinite(close) || close <= 0)
         return;
-    // 5. Trend template + near-52w-high + RS leadership.
-    const trendTemplate = close > sma50 && sma50 > sma150 && sma150 > sma200 && features.sma200Rising === true;
+    // Index-regime gate — SEPA only BUYS while the index is in a confirmed uptrend, but the
+    // watchlist still tracks structures when the gate is off (IndiaPulse: market-blocked but visible).
+    const m = regime.metrics;
+    const indexUp = !!m && Number(m.close) > Number(m.ema200) && Number((_a = m.ema200Slope) !== null && _a !== void 0 ? _a : 0) > 0 && regime.marketState !== 'BEAR';
+    // Trend template + near-52w-high + RS leadership + VDU
+    const sma10 = Number(features.sma10);
+    const sma50Rising = features.sma50Rising === true;
+    const sma150Rising = features.sma150Rising === true;
+    const sma200Rising = features.sma200Rising === true;
+    const pctAboveLow = Number(features.pctAboveLow252);
+    const aboveLowOk = Number.isFinite(pctAboveLow) ? pctAboveLow >= runtime_1.VCP_CONFIG.MIN_PCT_ABOVE_LOW : true;
+    const priceFloorOk = close >= runtime_1.VCP_CONFIG.MIN_PRICE;
+    // Long-term trend structure (drives the watchlist). Deliberately excludes the close>10-DMA
+    // timing filter: a VCP pulling INTO its pivot routinely dips below the 10-DMA during the
+    // final contraction, so requiring it here would hide exactly the setups we want to track.
+    const trendStructure = close > sma50 && sma50 > sma150 && sma150 > sma200 &&
+        sma50Rising && sma150Rising && sma200Rising && aboveLowOk && priceFloorOk;
+    // Strict trend template (gates the actual BUY) — adds the 10-DMA timing filter.
+    const trendTemplate = trendStructure && close > sma10;
     const nearHigh = close >= high252 * (1 - runtime_1.SEPA_CONFIG.HI_PROX);
-    const rsLeader = rsRank126 <= runtime_1.SEPA_CONFIG.RS_TOP;
-    if (!(trendTemplate && nearHigh && rsLeader))
+    const rsLeader = Number.isFinite(rsRank126) && rsRank126 <= runtime_1.SEPA_CONFIG.RS_TOP;
+    // VCP logic: Ensure volume dry-up (VDU) or liquidity thresholds are met on pullback
+    const vduActive = features.vduActive === true;
+    // VCP logic: Progressive contraction limits
+    // range(40) > range(20) > range(10) where base range is < 35% and pinch < 10%
+    const r40 = Number(features.vcpRange40);
+    const r20 = Number(features.vcpRange20);
+    const r10 = Number(features.vcpRange10);
+    const isValidContraction = r40 > r20 && r20 > r10 && r10 <= 0.10 && r40 <= 0.35 && r40 >= 0.08;
+    const atrCompressing = features.atrCompressing === true;
+    // VCP dry-up is evaluated strictly before the signal bar: the final contraction
+    // must be materially quieter than its base, while the breakout bar expands.
+    const vcpVolumeDryUp = features.vcpVolumeDryUp === true;
+    const vcpPassed = vcpVolumeDryUp && isValidContraction && atrCompressing;
+    // ---- Pivot state machine (IndiaPulse-style) ----
+    const pivot = Number(features.vcpPivot);
+    const structuralLow = Number(features.vcpStructuralLow);
+    const dayHigh = Number(lastBar.high);
+    const dayLow = Number(lastBar.low);
+    const dayRange = dayHigh - dayLow;
+    const closeTopFrac = dayRange > 0 ? (close - dayLow) / dayRange : 0;
+    const distToPivotPct = Number.isFinite(pivot) && pivot > 0 ? (close - pivot) / pivot : NaN;
+    // Breakout trigger: close above the 50-session pivot, on >=1.4x 50d volume, closing
+    // in the top 35% of the day's range.
+    const breakoutTriggered = Number.isFinite(pivot) && close > pivot &&
+        Number(lastBar.volume) >= runtime_1.VCP_CONFIG.TRIGGER_VOL_MULT * Number(features.vol50 || 0) &&
+        closeTopFrac >= (1 - runtime_1.VCP_CONFIG.TRIGGER_CLOSE_TOP_PCT);
+    // Classify the structure state for the watchlist.
+    let vcpState = null;
+    if (Number.isFinite(distToPivotPct)) {
+        if (Number.isFinite(structuralLow) && close < structuralLow) {
+            vcpState = 'INVALIDATED';
+        }
+        else if (breakoutTriggered && distToPivotPct <= runtime_1.VCP_CONFIG.EXTENDED_ABOVE_PIVOT_PCT) {
+            vcpState = 'TRIGGERED';
+        }
+        else if (close > pivot) {
+            vcpState = 'EXTENDED';
+        }
+        else if (distToPivotPct >= -runtime_1.VCP_CONFIG.WATCH_MAX_DIST_PCT && vcpPassed) {
+            vcpState = 'READY';
+        }
+        else if (distToPivotPct >= -runtime_1.VCP_CONFIG.SETUP_MAX_DIST_PCT) {
+            vcpState = 'SETUP';
+        }
+    }
+    // Emit to the watchlist for any actionable pre/at-breakout state. This runs REGARDLESS of the
+    // index-regime gate (a market-blocked structure is still worth tracking); the gate only
+    // blocks the actual BUY below. INVALIDATED rows are kept as a short history of misses.
+    if (vcpState) {
+        await logger_1.logger.info(`[Watchlist] ${symbol} ${vcpState} (trendStruct=${trendStructure}, dist=${(distToPivotPct * 100).toFixed(1)}%)`, 'Strategy', { jobId, symbol, dateId });
+    }
+    if (vcpState && (trendStructure || vcpState === 'TRIGGERED')) {
+        const watchlistRef = db.collection('watchlist').doc(dateId).collection('items').doc(`${symbol}_SepaBreakoutEOD`);
+        await watchlistRef.set({
+            symbol,
+            dateId,
+            strategy: 'SepaBreakoutEOD',
+            status: vcpState,
+            marketBlocked: !indexUp,
+            close,
+            pivot: Number.isFinite(pivot) ? pivot : null,
+            structuralLow: Number.isFinite(structuralLow) ? structuralLow : null,
+            distToPivotPct: Number.isFinite(distToPivotPct) ? distToPivotPct : null,
+            pivotRiskPct: Number.isFinite(structuralLow) && structuralLow > 0 ? (close - structuralLow) / close : null,
+            features: {
+                vcpRange40: r40,
+                vcpRange20: r20,
+                vcpRange10: r10,
+                vduActive,
+                vcpVolumeDryUp,
+                vcpVolumeRatio: Number.isFinite(Number(features.vcpVolumeRatio)) ? Number(features.vcpVolumeRatio) : null,
+                atrCompressing,
+                rsRank126,
+                atrPct: Number(features.atr14) / close,
+            },
+            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        });
+    }
+    // ---- Entry gates (produce an APPROVED BUY only when the market gate is open) ----
+    if (!indexUp)
+        return;
+    // Equity-curve throttle — no new buys once drawdown-from-peak exceeds the halt.
+    const peak = account.peakEquity || account.equity;
+    const drawdownPct = peak > 0 ? (peak - account.equity) / peak : 0;
+    if (drawdownPct >= runtime_1.SEPA_CONFIG.THROTTLE_HALT_PCT)
+        return;
+    // Portfolio cap (final selection of the strongest leaders is enforced in doPlaceOrders).
+    if (openPositions.length >= runtime_1.SEPA_CONFIG.MAX_POS)
+        return;
+    // Entry gate: require the near-high + RS leadership + trend template, PLUS a genuine
+    // breakout through the pivot when a pivot is available (falls back to near-high when
+    // pivot data is missing so thinly-seeded symbols still behave as before).
+    const entryConfirmed = Number.isFinite(pivot) ? breakoutTriggered : nearHigh;
+    if (!(trendTemplate && nearHigh && rsLeader && entryConfirmed))
+        return;
+    // A valid final volume contraction is a non-negotiable VCP entry requirement.
+    if (!vcpPassed)
         return;
     // 6. Sizing — risk RISK_PCT of equity against the 7% hard stop, throttled by the
     //    drawdown-multiplier ladder.
@@ -407,6 +513,9 @@ async function evaluateSepaSignal(db, jobId, symbol, dateId, features, regime, a
             marketState: regime.marketState,
             rsRank126,
             pctFrom52wHigh: (((close - high252) / high252) * 100).toFixed(1) + '%',
+            pivot: Number.isFinite(pivot) ? pivot : undefined,
+            distToPivotPct: Number.isFinite(distToPivotPct) ? (distToPivotPct * 100).toFixed(1) + '%' : undefined,
+            breakoutTriggered,
             drawdownPct: (drawdownPct * 100).toFixed(1) + '%',
         },
         status: 'APPROVED',
@@ -607,7 +716,7 @@ async function evaluateMetalsSignal(db, jobId, symbol, dateId, account, openPosi
 /**
  * Evaluate strategies and generate signals for a symbol.
  */
-async function doEvaluateSignals(jobId, symbol, runDate, forceRegime, universeId = 'nifty500') {
+async function doEvaluateSignals(jobId, symbol, runDate, forceRegime, universeId = 'midsmall400') {
     var _a, _b, _c, _d, _e, _f, _g, _h, _j;
     const db = getDb();
     const dateId = toDateId(runDate);

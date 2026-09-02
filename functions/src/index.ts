@@ -331,7 +331,7 @@ export const gateway = functions.runWith(v1Options).https.onRequest(async (req, 
                 }
                 console.log(`[Scheduler] Starting scheduled EOD for ${todayEod}`);
                 const { doStartEodRun } = await import('./services/orchestrator');
-                await doStartEodRun({ body: { date: todayEod, universe: 'nifty200', force: true }, query: {} }, res);
+                await doStartEodRun({ body: { date: todayEod, universe: 'midsmall400', force: true }, query: {} }, res);
                 break;
             }
             case 'scheduledMorning': {
@@ -355,13 +355,13 @@ export const gateway = functions.runWith(v1Options).https.onRequest(async (req, 
                 }
                 console.log(`[Scheduler] Starting morning fill simulation for ${morningDate}`);
                 const { doStartMorningExecution } = await import('./services/orchestrator');
-                await doStartMorningExecution({ query: { date: morningDate, universe: 'nifty200' } }, res);
+                await doStartMorningExecution({ query: { date: morningDate, universe: 'midsmall400' } }, res);
                 break;
             }
             case 'startMorningExecution': {
-                // Manual trigger: { action: "startMorningExecution", date: "2026-04-13", universe: "nifty500" }
+                // Manual trigger defaults to the live MidSmall 400 universe.
                 const { doStartMorningExecution } = await import('./services/orchestrator');
-                await doStartMorningExecution({ query: { date: req.body?.date, universe: req.body?.universe || 'nifty500' } }, res);
+                await doStartMorningExecution({ query: { date: req.body?.date, universe: req.body?.universe || 'midsmall400' } }, res);
                 break;
             }
 
@@ -389,7 +389,7 @@ export const gateway = functions.runWith(v1Options).https.onRequest(async (req, 
             case 'backfillHistorical': {
                 const { runHistoricalBackfill } = await import('./services/historicalBackfill');
                 const result = await runHistoricalBackfill({
-                    universeId: req.body?.universe || 'nifty500',
+                    universeId: req.body?.universe || 'midsmall400',
                     startISO: req.body?.start,
                     endISO: req.body?.end,
                     maxSymbols: Number(req.body?.maxSymbols) || 500,
@@ -529,7 +529,7 @@ export const scheduledEod = functions
             console.warn('[Scheduler] Native EOD event sync failed:', error);
         }
         const { doStartEodRun } = await import('./services/orchestrator');
-        await doStartEodRun({ body: { date, universe: 'nifty200', force: true }, query: {} }, scheduledResponse());
+        await doStartEodRun({ body: { date, universe: 'midsmall400', force: true }, query: {} }, scheduledResponse());
         return null;
     });
 
@@ -552,6 +552,6 @@ export const scheduledMorning = functions
             return null;
         }
         const { doStartMorningExecution } = await import('./services/orchestrator');
-        await doStartMorningExecution({ query: { date, universe: 'nifty200' } }, scheduledResponse());
+        await doStartMorningExecution({ query: { date, universe: 'midsmall400' } }, scheduledResponse());
         return null;
     });

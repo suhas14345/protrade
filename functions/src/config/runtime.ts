@@ -31,6 +31,22 @@ export const SEPA_CONFIG = {
                                 // strategies from jointly committing > 100% of equity (implicit leverage).
 };
 
+// VCP watchlist / pivot state machine (IndiaPulse-style). Governs how symbols are
+// classified on the pre-breakout watchlist and when a breakout is "triggered".
+export const VCP_CONFIG = {
+  WATCH_MAX_DIST_PCT: 0.05,     // NEAR PIVOT WATCH: within 5% below the pivot
+  SETUP_MAX_DIST_PCT: 0.10,     // SETUP (developing): within 10% below the pivot
+  TRIGGER_VOL_MULT: 1.4,        // breakout confirmation: close-day volume >= 1.4x 50d avg
+  TRIGGER_CLOSE_TOP_PCT: 0.35,  // close must be in the top 35% of the day's range
+  VOLUME_DRY_UP_DAYS: 10,       // final contraction, ending before the signal bar
+  VOLUME_BASELINE_DAYS: 40,     // earlier base-volume reference, before the final contraction
+  VOLUME_DRY_UP_MAX_RATIO: 0.70, // final contraction volume must be at least 30% below the base
+  EXTENDED_ABOVE_PIVOT_PCT: 0.05, // > 5% above pivot => Extended (chase risk)
+  INVALIDATE_BELOW_PIVOT_PCT: 0.02, // close 2% below pivot => Invalidated
+  MIN_PRICE: 50,                // IndiaPulse price floor (Rs)
+  MIN_PCT_ABOVE_LOW: 0.30,      // must be at least 30% above the 52-week low
+};
+
 // Metals rotation sleeve — a small, self-contained trend-following ETF strategy
 // that runs ALONGSIDE SEPA (not exclusive). It trades only the whitelisted metal
 // ETFs (gold/silver), which are deliberately exempt from the equity liquidity/risk

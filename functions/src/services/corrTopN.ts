@@ -103,7 +103,7 @@ async function fetchCloses(
  *   Compute: 500×499/2      ≈ 124,750 correlation pairs   (< 1s in Node.js)
  *   Writes : 500 docs (batched at 400)
  */
-export async function doComputeCorrTopN(dateId: string, jobId?: string, universeId: string = 'nifty500'): Promise<void> {
+export async function doComputeCorrTopN(dateId: string, jobId?: string, universeId: string = 'midsmall400'): Promise<void> {
   const db = getDb();
   await logger.info(`[CorrTopN] Computing correlation matrix for ${dateId}`, 'CorrTopN', { dateId, jobId });
 
