@@ -253,6 +253,16 @@ exports.gateway = functions.runWith(v1Options).https.onRequest(async (req, res) 
                 await getFundamentalsQuality(req, res);
                 break;
             }
+            case 'updateFundamentalsSettings': {
+                const { updateFundamentalsSettings } = await Promise.resolve().then(() => __importStar(require('./services/fundamentals')));
+                await updateFundamentalsSettings(req, res);
+                break;
+            }
+            case 'getFundamentalsSettings': {
+                const { getFundamentalsSettings } = await Promise.resolve().then(() => __importStar(require('./services/fundamentals')));
+                await getFundamentalsSettings(req, res);
+                break;
+            }
             // V3.0: System health & scheduler
             case 'getKiteSettings': {
                 const kdb = admin.apps.length ? admin.firestore() : admin.initializeApp() && admin.firestore();

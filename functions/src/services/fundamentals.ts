@@ -2,6 +2,7 @@ import * as admin from 'firebase-admin';
 import { Timestamp } from 'firebase-admin/firestore';
 import { FinancialStatement, FundamentalsQualityDoc } from '../models';
 import { computeEarningsQuality, FundamentalsSource } from './earningsQuality';
+import { EodhdFundamentalsSource } from './eodhdAdapter';
 import { logger } from './logger';
 
 const getDb = () => {
@@ -95,12 +96,13 @@ export async function doSyncFundamentals(req: any, res: any): Promise<void> {
   const db = getDb();
   const source = new FirestoreFundamentalsSource();
 
-  // Optional: refresh fundamentalsRaw from the configured HTTP vendor first. Symbols come
-  // from the request, else from the universe members. Fail-soft per symbol (null skipped).
+  // Optional: refresh fundamentalsRaw from the configured vendor first. Prefer EODHD when a
+  // key is set, else the generic HTTP source. Symbols come from the request, else the universe.
   if (req.body?.fromHttp) {
-    const http = await HttpFundamentalsSource.fromSettings();
-    if (!http) {
-      res.status(400).send({ error: 'settings/fundamentals { url } not configured for fromHttp sync' });
+    const vendor: FundamentalsSource | null =
+      (await EodhdFundamentalsSource.fromSettings()) ?? (await HttpFundamentalsSource.fromSettings());
+    if (!vendor) {
+      res.status(400).send({ error: 'No fundamentals vendor configured (settings/fundamentals eodhdApiKey or url)' });
       return;
     }
     const universeId = req.body?.universe || 'midsmall400';
@@ -114,7 +116,7 @@ export async function doSyncFundamentals(req: any, res: any): Promise<void> {
       const batch = db.batch();
       let inBatch = 0;
       for (const sym of symbols.slice(i, i + 400)) {
-        const stmt = await http.fetchLatestStatement(sym);
+        const stmt = await vendor.fetchLatestStatement(sym);
         if (!stmt) continue;
         batch.set(db.collection('fundamentalsRaw').doc(sym), stmt, { merge: true });
         fetched++;
@@ -122,7 +124,7 @@ export async function doSyncFundamentals(req: any, res: any): Promise<void> {
       }
       if (inBatch > 0) await batch.commit();
     }
-    await logger.info(`[Fundamentals] HTTP refresh fetched ${fetched} statements`, 'Fundamentals', { fetched });
+    await logger.info(`[Fundamentals] ${vendor.name} refresh fetched ${fetched} statements`, 'Fundamentals', { fetched, vendor: vendor.name });
   }
 
   const rawSnap = await db.collection('fundamentalsRaw').get();
@@ -163,4 +165,30 @@ export async function getFundamentalsQuality(_req: any, res: any): Promise<void>
   const snap = await getDb().collection('fundamentalsQuality').get();
   const items = snap.docs.map((d) => d.data());
   res.status(200).send({ count: items.length, items });
+}
+
+/**
+ * Save the fundamentals vendor settings. The API key is written but never returned or logged.
+ */
+export async function updateFundamentalsSettings(req: any, res: any): Promise<void> {
+  const { eodhdApiKey, url, apiKey } = req.body ?? {};
+  const update: Record<string, string> = {};
+  if (typeof eodhdApiKey === 'string' && eodhdApiKey.trim()) update.eodhdApiKey = eodhdApiKey.trim();
+  if (typeof url === 'string') update.url = url.trim();
+  if (typeof apiKey === 'string' && apiKey.trim()) update.apiKey = apiKey.trim();
+  if (Object.keys(update).length === 0) {
+    res.status(400).send({ error: 'Provide eodhdApiKey and/or url' });
+    return;
+  }
+  await getDb().collection('settings').doc('fundamentals').set(update, { merge: true });
+  res.status(200).send({ message: 'Fundamentals settings saved' });
+}
+
+/**
+ * Report which vendor is configured WITHOUT ever returning the stored key.
+ */
+export async function getFundamentalsSettings(_req: any, res: any): Promise<void> {
+  const snap = await getDb().collection('settings').doc('fundamentals').get();
+  const d = snap.exists ? (snap.data() as { eodhdApiKey?: string; url?: string }) : {};
+  res.status(200).send({ hasEodhd: !!d.eodhdApiKey, hasUrl: !!d.url });
 }

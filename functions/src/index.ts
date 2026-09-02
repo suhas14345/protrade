@@ -222,6 +222,16 @@ export const gateway = functions.runWith(v1Options).https.onRequest(async (req, 
                 await getFundamentalsQuality(req, res);
                 break;
             }
+            case 'updateFundamentalsSettings': {
+                const { updateFundamentalsSettings } = await import('./services/fundamentals');
+                await updateFundamentalsSettings(req, res);
+                break;
+            }
+            case 'getFundamentalsSettings': {
+                const { getFundamentalsSettings } = await import('./services/fundamentals');
+                await getFundamentalsSettings(req, res);
+                break;
+            }
 
             // V3.0: System health & scheduler
             case 'getKiteSettings': {

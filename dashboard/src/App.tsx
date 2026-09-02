@@ -91,6 +91,9 @@ function App() {
   const [settingsSaving, setSettingsSaving] = useState(false);
   const [telegramForm, setTelegramForm] = useState({ botToken: '', chatId: '', enabled: false });
   const [telegramStatus, setTelegramStatus] = useState<string | null>(null);
+  const [fundForm, setFundForm] = useState({ eodhdApiKey: '' });
+  const [fundStatus, setFundStatus] = useState<string | null>(null);
+  const [fundConfigured, setFundConfigured] = useState<{ hasEodhd: boolean; hasUrl: boolean } | null>(null);
 
   // Auto-capture request_token from Kite redirect URL
   useEffect(() => {
@@ -207,6 +210,9 @@ function App() {
       });
       setQualityMap(map);
     });
+
+    // Fundamentals vendor configuration status (never returns the key)
+    gw('getFundamentalsSettings').then((r: any) => setFundConfigured(r)).catch(() => {});
 
     return () => {
       unsubPos();
@@ -1459,6 +1465,61 @@ function App() {
                 </button>
               </div>
               {telegramStatus && <p style={{ marginTop: '0.75rem', fontSize: '0.8rem', color: telegramStatus.startsWith('✅') ? '#10b981' : '#ef4444' }}>{telegramStatus}</p>}
+            </div>
+
+            <div className="card" style={{ marginBottom: '1.5rem' }}>
+              <h3 style={{ color: '#94a3b8', marginBottom: '1rem' }}>📊 Fundamentals (EODHD)</h3>
+              <p style={{ color: '#64748b', fontSize: '0.8rem', marginBottom: '1rem' }}>
+                Earnings-quality badges &amp; the SEPA/ATH veto use this feed. Requires a paid EODHD plan with India coverage (the free token returns 403 for .NSE). The key is stored in Firestore and never displayed back.
+                {fundConfigured && <><br /><span style={{ color: fundConfigured.hasEodhd ? '#10b981' : '#64748b' }}>EODHD key: {fundConfigured.hasEodhd ? 'configured ✅' : 'not set'}</span></>}
+              </p>
+              <div style={{ marginBottom: '0.75rem' }}>
+                <label style={{ display: 'block', color: '#94a3b8', fontSize: '0.75rem', fontWeight: 600, marginBottom: '0.25rem' }}>EODHD API Key</label>
+                <input
+                  type="password"
+                  className="input"
+                  style={{ width: '100%', fontSize: '0.85rem', padding: '0.5rem', background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', color: '#fff', borderRadius: '4px' }}
+                  placeholder="Paste EODHD API token"
+                  value={fundForm.eodhdApiKey}
+                  onChange={e => setFundForm({ eodhdApiKey: e.target.value })}
+                />
+              </div>
+              <div style={{ display: 'flex', gap: '0.5rem' }}>
+                <button
+                  className="btn-premium"
+                  onClick={async () => {
+                    setFundStatus(null);
+                    try {
+                      if (!fundForm.eodhdApiKey) { setFundStatus('❌ Enter a key first'); return; }
+                      await gw('updateFundamentalsSettings', { eodhdApiKey: fundForm.eodhdApiKey });
+                      setFundStatus('✅ EODHD key saved');
+                      setFundForm({ eodhdApiKey: '' });
+                      gw('getFundamentalsSettings').then((r: any) => setFundConfigured(r)).catch(() => {});
+                    } catch (err: any) {
+                      setFundStatus(`❌ ${err.message}`);
+                    }
+                  }}
+                >
+                  Save Key
+                </button>
+                <button
+                  className="btn-premium"
+                  style={{ background: 'rgba(255,255,255,0.08)' }}
+                  onClick={async () => {
+                    setFundStatus('⏳ Syncing fundamentals (this can take a few minutes)...');
+                    try {
+                      const res = await gw('syncFundamentals', { fromHttp: true });
+                      const s = (res as any)?.summary || {};
+                      setFundStatus(`✅ Synced ${(res as any)?.processed ?? 0}: CLEAN ${s.CLEAN || 0} · WATCH ${s.WATCH || 0} · FLAGGED ${s.FLAGGED || 0} · UNKNOWN ${s.UNKNOWN || 0}`);
+                    } catch (err: any) {
+                      setFundStatus(`❌ ${err.message}`);
+                    }
+                  }}
+                >
+                  Sync Fundamentals Now
+                </button>
+              </div>
+              {fundStatus && <p style={{ marginTop: '0.75rem', fontSize: '0.8rem', color: fundStatus.startsWith('✅') ? '#10b981' : fundStatus.startsWith('⏳') ? '#94a3b8' : '#ef4444' }}>{fundStatus}</p>}
             </div>
 
             <div className="card">
