@@ -43,6 +43,8 @@ interface Position {
   targets?: number[];
   stopPrice?: number;
   entryDate?: string;
+  entryDateId?: string;
+  openedAt?: any;
   regimeOverride?: boolean;
 }
 
@@ -881,7 +883,7 @@ function App() {
                             ₹{p.stopPrice?.toFixed(2) || 'N/A'}
                           </td>
                           <td style={{ width: '100px' }}>
-                            <div style={{ fontSize: '0.65rem', color: '#94a3b8', marginBottom: '2px' }}>{p.entryDate || ''}</div>
+                            <div style={{ fontSize: '0.65rem', color: '#94a3b8', marginBottom: '2px' }}>{p.entryDateId ? `${p.entryDateId.slice(6, 8)}/${p.entryDateId.slice(4, 6)}/${p.entryDateId.slice(2, 4)}` : (p.openedAt?.toDate?.().toLocaleDateString?.() || p.entryDate || '')}</div>
                             <div style={{ width: '100%', height: '4px', background: 'rgba(255,255,255,0.05)', borderRadius: '2px' }}>
                               <div style={{ width: `${progress}%`, height: '100%', background: '#10b981', borderRadius: '2px' }}></div>
                             </div>
