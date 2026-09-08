@@ -62,7 +62,7 @@ const KNOWN_ACTIONS = new Set([
     'ingestFundamentals', 'syncFundamentals', 'getFundamentalsQuality',
     'updateFundamentalsSettings', 'getFundamentalsSettings',
     'screenUniverse', 'scheduledScreen',
-    'buildNseUniverse', 'fillDailyQuotes', 'scheduledQuoteFill',
+    'buildNseUniverse', 'fillDailyQuotes', 'scheduledQuoteFill', 'filterLiquidUniverse',
 ]);
 function validateRequest(body) {
     const action = body === null || body === void 0 ? void 0 : body.action;

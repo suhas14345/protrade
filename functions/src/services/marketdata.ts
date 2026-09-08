@@ -517,6 +517,65 @@ export async function prefetchDailyBarsBatch(
 }
 
 /**
+ * Batched Kite quotes for a symbol list → map of symbol → { price, tradedValue } (price × day volume).
+ * ~1 getQuote call per CHUNK_SIZE symbols. Symbols Kite doesn't return (bad/debt/illiquid) are omitted.
+ */
+async function getQuoteStats(symbols: string[]): Promise<Map<string, { price: number; tradedValue: number }>> {
+  const { BATCHED_QUOTE_CONFIG } = await import('../config/runtime');
+  const db = getDb();
+  const settings = (await db.collection('settings').doc('kite').get()).data() as any;
+  const out = new Map<string, { price: number; tradedValue: number }>();
+  if (!settings?.apiKey || !settings?.accessToken) return out;
+  const kite = await getKite(settings.apiKey, settings.accessToken);
+  const keyOf = (s: string) => `NSE:${s.endsWith('.NS') ? s.slice(0, -3) : s}`;
+  for (let i = 0; i < symbols.length; i += BATCHED_QUOTE_CONFIG.CHUNK_SIZE) {
+    const slice = symbols.slice(i, i + BATCHED_QUOTE_CONFIG.CHUNK_SIZE);
+    let quotes: Record<string, any> = {};
+    try { quotes = await scheduleKiteRequest(() => kite.getQuote(slice.map(keyOf))); } catch { continue; }
+    for (const s of slice) {
+      const q = quotes[keyOf(s)];
+      const price = Number(q?.last_price);
+      const vol = Number(q?.volume) || 0;
+      if (Number.isFinite(price) && price > 0) out.set(s, { price, tradedValue: price * vol });
+    }
+  }
+  return out;
+}
+
+/**
+ * Gateway action: prune a raw universe to the liquid, tradeable subset using ONE batched-quote pass.
+ * Reliably separates real equities from the ~8k NSE debt/NCD instruments and illiquid microcaps
+ * (which trade negligible value) — keeping every liquid winner. Writes universes/{target}.
+ */
+export async function doFilterLiquidUniverse(req: any, res: any): Promise<void> {
+  const db = getDb();
+  const source = (req.body?.source as string) || 'allnse';
+  const target = (req.body?.target as string) || 'liquidnse';
+  const minPrice = Number(req.body?.minPrice) || 30;
+  const minTradedValue = Number(req.body?.minTradedValue) || 10_000_000; // ₹1 Cr/day floor (generous; screen re-checks ₹3Cr median-20d)
+  const snap = await db.collection('universes').doc(source).collection('members').get();
+  const rows = snap.docs.map((d) => ({ symbol: d.id, name: (d.data() as any)?.name || d.id }));
+  if (rows.length === 0) { res.status(400).send({ error: `Source '${source}' has no members` }); return; }
+  const stats = await getQuoteStats(rows.map((r) => r.symbol));
+  const liquid = rows.filter((r) => { const s = stats.get(r.symbol); return s && s.price >= minPrice && s.tradedValue >= minTradedValue; });
+
+  const memRef = db.collection('universes').doc(target).collection('members');
+  const existing = await memRef.get();
+  for (let i = 0; i < existing.docs.length; i += 400) {
+    const batch = db.batch();
+    existing.docs.slice(i, i + 400).forEach((d) => batch.delete(d.ref));
+    await batch.commit();
+  }
+  const now = admin.firestore.Timestamp.now();
+  for (let i = 0; i < liquid.length; i += 400) {
+    const batch = db.batch();
+    liquid.slice(i, i + 400).forEach((r) => batch.set(memRef.doc(r.symbol), { symbol: r.symbol, name: r.name, sector: 'UNKNOWN', liquidityBucket: 'A', screenedAt: now }));
+    await batch.commit();
+  }
+  res.status(200).send({ source, target, scanned: rows.length, quoted: stats.size, liquid: liquid.length, minPrice, minTradedValue });
+}
+
+/**
  * Gateway action: cheaply append today's bar for a whole universe via batched quotes.
  * ~10 getQuote calls for ~1900 symbols instead of ~1900 historicalData calls. Runs the
  * batched path with force=true (its own purpose) but still no-ops until the 15:30 close.

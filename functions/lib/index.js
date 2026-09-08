@@ -279,6 +279,11 @@ exports.gateway = functions.runWith(v1Options).https.onRequest(async (req, res) 
                 await doFillDailyQuotes(req, res);
                 break;
             }
+            case 'filterLiquidUniverse': {
+                const { doFilterLiquidUniverse } = await Promise.resolve().then(() => __importStar(require('./services/marketdata')));
+                await doFilterLiquidUniverse(req, res);
+                break;
+            }
             case 'scheduledQuoteFill': {
                 // Daily batched-quote bar append for the broad pool. Holiday-guarded.
                 const qfDate = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
