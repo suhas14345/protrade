@@ -380,7 +380,10 @@ async function evaluateSepaSignal(db, jobId, symbol, dateId, features, regime, a
     // Index-regime gate — SEPA only BUYS while the index is in a confirmed uptrend, but the
     // watchlist still tracks structures when the gate is off (IndiaPulse: market-blocked but visible).
     const m = regime.metrics;
-    const indexUp = !!m && Number(m.close) > Number(m.ema200) && Number((_a = m.ema200Slope) !== null && _a !== void 0 ? _a : 0) > 0 && regime.marketState !== 'BEAR';
+    const indexUpRaw = !!m && Number(m.close) > Number(m.ema200) && Number((_a = m.ema200Slope) !== null && _a !== void 0 ? _a : 0) > 0 && regime.marketState !== 'BEAR';
+    // Paper-study mode: ignore the market-regime gate entirely — treat the market as constructive so
+    // fully-qualified breakouts enter as normal signals (no regime-ignored flag). SEPA_IGNORE_REGIME=0 restores it.
+    const indexUp = runtime_1.SEPA_CONFIG.IGNORE_REGIME_GATE ? true : indexUpRaw;
     // Trend template + near-52w-high + RS leadership + VDU
     const sma10 = Number(features.sma10);
     const sma50Rising = features.sma50Rising === true;
@@ -469,7 +472,10 @@ async function evaluateSepaSignal(db, jobId, symbol, dateId, features, regime, a
     if (vcpState) {
         console.log(`[Watchlist] ${symbol} ${vcpState} (trendStruct=${trendStructure}, dist=${(distToPivotPct * 100).toFixed(1)}%)`);
     }
-    if (vcpState && (trendStructure || vcpState === 'TRIGGERED')) {
+    // Focused watchlist: only QUALITY setups that pass every SEPA gate (trend template + near-high +
+    // RS≥70 + valid VCP). With the large universe this drops the noise; excludes invalidated/failed names.
+    const buyReady = trendTemplate && nearHigh && rsLeader && vcpPassed;
+    if (vcpState && vcpState !== 'INVALIDATED' && buyReady) {
         const watchlistRef = db.collection('watchlist').doc(dateId).collection('items').doc(`${symbol}_SepaBreakoutEOD`);
         await watchlistRef.set({
             symbol,
@@ -608,7 +614,7 @@ async function evaluateAthSignal(db, jobId, symbol, dateId, features, regime, ac
     // 1. Index-regime gate — only buy leaders while the index is in a confirmed uptrend.
     const m = regime.metrics;
     const indexUp = !!m && Number(m.close) > Number(m.ema200) && Number((_a = m.ema200Slope) !== null && _a !== void 0 ? _a : 0) > 0 && regime.marketState !== 'BEAR';
-    if (!indexUp)
+    if (!indexUp && !runtime_1.SEPA_CONFIG.IGNORE_REGIME_GATE)
         return;
     // Fundamentals veto (shared with SEPA) — CRITICAL earnings-quality flag blocks the buy.
     if (await isFundamentallyBlocked(db, symbol)) {
