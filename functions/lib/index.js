@@ -58,7 +58,7 @@ async function checkRuntimeKillSwitch() {
  * V3.0: Wired middleware — validation, auth, rate limiting, kill switch
  */
 exports.gateway = functions.runWith(v1Options).https.onRequest(async (req, res) => {
-    var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k, _l, _m;
+    var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k, _l, _m, _o;
     // CORS: allow dashboard origin
     res.set('Access-Control-Allow-Origin', '*');
     res.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
@@ -269,6 +269,34 @@ exports.gateway = functions.runWith(v1Options).https.onRequest(async (req, res) 
                 await doScreenUniverse(req, res);
                 break;
             }
+            case 'buildNseUniverse': {
+                const { buildNseUniverse } = await Promise.resolve().then(() => __importStar(require('./services/universe')));
+                await buildNseUniverse(req, res);
+                break;
+            }
+            case 'fillDailyQuotes': {
+                const { doFillDailyQuotes } = await Promise.resolve().then(() => __importStar(require('./services/marketdata')));
+                await doFillDailyQuotes(req, res);
+                break;
+            }
+            case 'scheduledQuoteFill': {
+                // Daily batched-quote bar append for the broad pool. Holiday-guarded.
+                const qfDate = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+                const { isTradingDay } = await Promise.resolve().then(() => __importStar(require('./services/scheduler')));
+                if (!isTradingDay(qfDate)) {
+                    res.status(200).send({ message: `Skipped: ${qfDate} not a trading day` });
+                    break;
+                }
+                const kdb = admin.apps.length ? admin.firestore() : admin.initializeApp() && admin.firestore();
+                const kd = (await kdb.collection('settings').doc('kite').get()).data();
+                if (!(kd === null || kd === void 0 ? void 0 : kd.accessToken) || (kd === null || kd === void 0 ? void 0 : kd.status) !== 'ACTIVE') {
+                    res.status(503).send({ error: 'Kite session not active' });
+                    break;
+                }
+                const { doFillDailyQuotes } = await Promise.resolve().then(() => __importStar(require('./services/marketdata')));
+                await doFillDailyQuotes({ body: { universe: ((_b = req.body) === null || _b === void 0 ? void 0 : _b.universe) || 'allnse' } }, res);
+                break;
+            }
             case 'scheduledScreen': {
                 // Auto-refresh the dynamic/eligible universes after the daily bar fill. Holiday-guarded.
                 const scanDate = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
@@ -338,7 +366,7 @@ exports.gateway = functions.runWith(v1Options).https.onRequest(async (req, res) 
             }
             case 'sendDigest': {
                 const { sendDailyDigest } = await Promise.resolve().then(() => __importStar(require('./services/telegram')));
-                const digestDate = (((_b = req.body) === null || _b === void 0 ? void 0 : _b.date) || ((_c = req.query) === null || _c === void 0 ? void 0 : _c.date));
+                const digestDate = (((_c = req.body) === null || _c === void 0 ? void 0 : _c.date) || ((_d = req.query) === null || _d === void 0 ? void 0 : _d.date));
                 const result = await sendDailyDigest(digestDate);
                 if (result.sent)
                     res.status(200).send({ message: 'Digest sent' });
@@ -442,7 +470,7 @@ exports.gateway = functions.runWith(v1Options).https.onRequest(async (req, res) 
             case 'startMorningExecution': {
                 // Manual trigger defaults to the live hunt universe.
                 const { doStartMorningExecution } = await Promise.resolve().then(() => __importStar(require('./services/orchestrator')));
-                await doStartMorningExecution({ query: { date: (_d = req.body) === null || _d === void 0 ? void 0 : _d.date, universe: ((_e = req.body) === null || _e === void 0 ? void 0 : _e.universe) || runtime_1.DEFAULT_UNIVERSE } }, res);
+                await doStartMorningExecution({ query: { date: (_e = req.body) === null || _e === void 0 ? void 0 : _e.date, universe: ((_f = req.body) === null || _f === void 0 ? void 0 : _f.universe) || runtime_1.DEFAULT_UNIVERSE } }, res);
                 break;
             }
             case 'syncNseHolidays': {
@@ -454,7 +482,7 @@ exports.gateway = functions.runWith(v1Options).https.onRequest(async (req, res) 
             }
             case 'syncCorporateEvents': {
                 const { syncAllCorporateEvents } = await Promise.resolve().then(() => __importStar(require('./services/eventSync')));
-                const lookAhead = Number((_f = req.body) === null || _f === void 0 ? void 0 : _f.lookAheadDays) || 30;
+                const lookAhead = Number((_g = req.body) === null || _g === void 0 ? void 0 : _g.lookAheadDays) || 30;
                 const result = await syncAllCorporateEvents(lookAhead);
                 res.status(200).send({
                     message: 'Corporate events synced',
@@ -467,10 +495,10 @@ exports.gateway = functions.runWith(v1Options).https.onRequest(async (req, res) 
             case 'backfillHistorical': {
                 const { runHistoricalBackfill } = await Promise.resolve().then(() => __importStar(require('./services/historicalBackfill')));
                 const result = await runHistoricalBackfill({
-                    universeId: ((_g = req.body) === null || _g === void 0 ? void 0 : _g.universe) || 'midsmall400',
-                    startISO: (_h = req.body) === null || _h === void 0 ? void 0 : _h.start,
-                    endISO: (_j = req.body) === null || _j === void 0 ? void 0 : _j.end,
-                    maxSymbols: Number((_k = req.body) === null || _k === void 0 ? void 0 : _k.maxSymbols) || 500,
+                    universeId: ((_h = req.body) === null || _h === void 0 ? void 0 : _h.universe) || 'midsmall400',
+                    startISO: (_j = req.body) === null || _j === void 0 ? void 0 : _j.start,
+                    endISO: (_k = req.body) === null || _k === void 0 ? void 0 : _k.end,
+                    maxSymbols: Number((_l = req.body) === null || _l === void 0 ? void 0 : _l.maxSymbols) || 500,
                 });
                 res.status(200).send(result);
                 break;
@@ -478,14 +506,14 @@ exports.gateway = functions.runWith(v1Options).https.onRequest(async (req, res) 
             case 'resetTradingState': {
                 const { runResetTradingState } = await Promise.resolve().then(() => __importStar(require('./services/resetState')));
                 const result = await runResetTradingState({
-                    equity: Number((_l = req.body) === null || _l === void 0 ? void 0 : _l.equity) || 1000000,
+                    equity: Number((_m = req.body) === null || _m === void 0 ? void 0 : _m.equity) || 1000000,
                 });
                 res.status(200).send(result);
                 break;
             }
             case 'cleanupStale': {
                 const { runStaleCleanup } = await Promise.resolve().then(() => __importStar(require('./services/cleanupStale')));
-                const result = await runStaleCleanup((_m = req.body) === null || _m === void 0 ? void 0 : _m.retention);
+                const result = await runStaleCleanup((_o = req.body) === null || _o === void 0 ? void 0 : _o.retention);
                 res.status(200).send({ message: 'Stale data cleaned', deleted: result });
                 break;
             }

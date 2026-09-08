@@ -35,10 +35,13 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.isMarketClosed = isMarketClosed;
 exports.getNSEInstrumentsMap = getNSEInstrumentsMap;
+exports.parseNseEquityCsv = parseNseEquityCsv;
+exports.getNSEEquitySymbols = getNSEEquitySymbols;
 exports.doFetchCandles = doFetchCandles;
 exports.fetchCandlesTask = fetchCandlesTask;
 exports.fetchHistoricalBars = fetchHistoricalBars;
 exports.prefetchDailyBarsBatch = prefetchDailyBarsBatch;
+exports.doFillDailyQuotes = doFillDailyQuotes;
 exports.updateKiteToken = updateKiteToken;
 exports.updateKiteCredentials = updateKiteCredentials;
 exports.checkKiteHealth = checkKiteHealth;
@@ -145,6 +148,38 @@ async function getNSEInstrumentsMap(apiKey, accessToken) {
         }
     })();
     return _nseFetchPromise;
+}
+/**
+ * Pure parser: Kite NSE instruments CSV → cash-equity list (instrument_type=EQ, segment=NSE).
+ * Trailing columns are read from the end so names containing commas don't shift the parse.
+ */
+function parseNseEquityCsv(csv) {
+    const lines = String(csv).split('\n');
+    const out = [];
+    for (let i = 1; i < lines.length; i++) {
+        const parts = lines[i].split(',');
+        if (parts.length < 12)
+            continue;
+        const tradingsymbol = parts[2];
+        const instrumentType = parts[parts.length - 3];
+        const segment = parts[parts.length - 2];
+        if (instrumentType !== 'EQ' || segment !== 'NSE')
+            continue;
+        if (!tradingsymbol || /[^A-Z0-9&\-]/i.test(tradingsymbol))
+            continue; // skip odd tickers
+        const name = parts.slice(3, parts.length - 8).join(',') || tradingsymbol;
+        out.push({ symbol: `${tradingsymbol}.NS`, name });
+    }
+    return out;
+}
+/**
+ * Full NSE cash-equity list from Kite instruments (instrument_type=EQ, segment=NSE).
+ * Returns app symbols ("TRADINGSYMBOL.NS") + display name.
+ */
+async function getNSEEquitySymbols(apiKey, accessToken) {
+    const axios = (await Promise.resolve().then(() => __importStar(require('axios')))).default;
+    const response = await axios.get('https://api.kite.trade/instruments/NSE', { timeout: 120000, responseType: 'text' });
+    return parseNseEquityCsv(String(response.data));
 }
 /**
  * Task Queue Trigger to fetch historical candles for a specific symbol.
@@ -419,9 +454,9 @@ async function fetchHistoricalBars(symbol, startISO, endISO, apiKey, accessToken
  * PREVIOUS close, so today's close is taken from `last_price` — valid ONLY after the 15:30 cash close.
  * Gated by BATCHED_QUOTE_CONFIG.ENABLED; safe no-op when disabled or market still open.
  */
-async function prefetchDailyBarsBatch(jobId, symbols, runDate) {
+async function prefetchDailyBarsBatch(jobId, symbols, runDate, force = false) {
     const { BATCHED_QUOTE_CONFIG } = await Promise.resolve().then(() => __importStar(require('../config/runtime')));
-    if (!BATCHED_QUOTE_CONFIG.ENABLED)
+    if (!BATCHED_QUOTE_CONFIG.ENABLED && !force)
         return { enabled: false, written: 0, skipped: 0, chunks: 0 };
     if (!isMarketClosed()) {
         await logger_1.logger.warn('[MarketData] Batched-quote prefetch skipped: market not yet closed', 'MarketData', { jobId });
@@ -481,6 +516,25 @@ async function prefetchDailyBarsBatch(jobId, symbols, runDate) {
     }
     await logger_1.logger.info(`[MarketData] Batched-quote prefetch: ${written} written, ${skipped} skipped, ${chunks} chunks`, 'MarketData', { jobId, runDate });
     return { enabled: true, written, skipped, chunks };
+}
+/**
+ * Gateway action: cheaply append today's bar for a whole universe via batched quotes.
+ * ~10 getQuote calls for ~1900 symbols instead of ~1900 historicalData calls. Runs the
+ * batched path with force=true (its own purpose) but still no-ops until the 15:30 close.
+ */
+async function doFillDailyQuotes(req, res) {
+    var _a, _b;
+    const db = getDb();
+    const universe = ((_a = req.body) === null || _a === void 0 ? void 0 : _a.universe) || 'allnse';
+    const runDate = ((_b = req.body) === null || _b === void 0 ? void 0 : _b.date) ? String(req.body.date) : new Date(Date.now() + 5.5 * 3600000).toISOString().slice(0, 10);
+    const snap = await db.collection('universes').doc(universe).collection('members').get();
+    const symbols = snap.docs.map((d) => d.id).filter((s) => s !== '^NSEI' && s !== 'NIFTY 50');
+    if (symbols.length === 0) {
+        res.status(400).send({ error: `Universe '${universe}' has no members` });
+        return;
+    }
+    const result = await prefetchDailyBarsBatch(`quotefill_${runDate}`, symbols, runDate, true);
+    res.status(200).send(Object.assign({ universe, runDate, symbols: symbols.length }, result));
 }
 async function updateKiteToken(req, res) {
     const db = getDb();

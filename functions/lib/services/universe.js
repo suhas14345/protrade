@@ -33,6 +33,7 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.buildNseUniverse = buildNseUniverse;
 exports.seedUniverse = seedUniverse;
 exports.cleanupUniverse = cleanupUniverse;
 exports.validateUniverseCsv = validateUniverseCsv;
@@ -47,6 +48,45 @@ const getDb = () => {
     }
     return admin.firestore();
 };
+/**
+ * Build the full NSE cash-equity universe (universes/allnse) from Kite instruments.
+ * EQ-filtered; refresh weekly (listings change slowly). Cheap: one instruments CSV fetch.
+ */
+async function buildNseUniverse(req, res) {
+    var _a;
+    try {
+        const db = getDb();
+        const target = ((_a = req.body) === null || _a === void 0 ? void 0 : _a.universe) || 'allnse';
+        const settings = (await db.collection('settings').doc('kite').get()).data();
+        if (!(settings === null || settings === void 0 ? void 0 : settings.apiKey) || !(settings === null || settings === void 0 ? void 0 : settings.accessToken)) {
+            res.status(401).send({ error: 'Kite credentials missing or inactive' });
+            return;
+        }
+        const { getNSEEquitySymbols } = await Promise.resolve().then(() => __importStar(require('./marketdata')));
+        const equities = await getNSEEquitySymbols(settings.apiKey, settings.accessToken);
+        if (equities.length === 0) {
+            res.status(502).send({ error: 'Kite returned no NSE equities' });
+            return;
+        }
+        const memRef = db.collection('universes').doc(target).collection('members');
+        // Clear then rewrite so delistings drop out.
+        const existing = await memRef.get();
+        for (let i = 0; i < existing.docs.length; i += 400) {
+            const batch = db.batch();
+            existing.docs.slice(i, i + 400).forEach((d) => batch.delete(d.ref));
+            await batch.commit();
+        }
+        for (let i = 0; i < equities.length; i += 400) {
+            const batch = db.batch();
+            equities.slice(i, i + 400).forEach((e) => batch.set(memRef.doc(e.symbol), { symbol: e.symbol, name: e.name, sector: 'UNKNOWN', liquidityBucket: 'A' }));
+            await batch.commit();
+        }
+        res.status(200).send({ message: `Built '${target}'`, count: equities.length });
+    }
+    catch (error) {
+        res.status(500).send({ error: 'Failed to build NSE universe', details: error instanceof Error ? error.message : String(error) });
+    }
+}
 /**
  * Seed custom and development universe data.
  */

@@ -238,6 +238,28 @@ export const gateway = functions.runWith(v1Options).https.onRequest(async (req, 
                 await doScreenUniverse(req, res);
                 break;
             }
+            case 'buildNseUniverse': {
+                const { buildNseUniverse } = await import('./services/universe');
+                await buildNseUniverse(req, res);
+                break;
+            }
+            case 'fillDailyQuotes': {
+                const { doFillDailyQuotes } = await import('./services/marketdata');
+                await doFillDailyQuotes(req, res);
+                break;
+            }
+            case 'scheduledQuoteFill': {
+                // Daily batched-quote bar append for the broad pool. Holiday-guarded.
+                const qfDate = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+                const { isTradingDay } = await import('./services/scheduler');
+                if (!isTradingDay(qfDate)) { res.status(200).send({ message: `Skipped: ${qfDate} not a trading day` }); break; }
+                const kdb = admin.apps.length ? admin.firestore() : admin.initializeApp() && admin.firestore();
+                const kd = (await kdb.collection('settings').doc('kite').get()).data();
+                if (!kd?.accessToken || kd?.status !== 'ACTIVE') { res.status(503).send({ error: 'Kite session not active' }); break; }
+                const { doFillDailyQuotes } = await import('./services/marketdata');
+                await doFillDailyQuotes({ body: { universe: req.body?.universe || 'allnse' } }, res);
+                break;
+            }
             case 'scheduledScreen': {
                 // Auto-refresh the dynamic/eligible universes after the daily bar fill. Holiday-guarded.
                 const scanDate = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });

@@ -24,6 +24,7 @@ const KNOWN_ACTIONS = new Set([
   'ingestFundamentals', 'syncFundamentals', 'getFundamentalsQuality',
   'updateFundamentalsSettings', 'getFundamentalsSettings',
   'screenUniverse', 'scheduledScreen',
+  'buildNseUniverse', 'fillDailyQuotes', 'scheduledQuoteFill',
 ]);
 
 export function validateRequest(body: Record<string, unknown>): { valid: boolean; error?: string } {

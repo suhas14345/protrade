@@ -11,6 +11,44 @@ const getDb = () => {
 };
 
 /**
+ * Build the full NSE cash-equity universe (universes/allnse) from Kite instruments.
+ * EQ-filtered; refresh weekly (listings change slowly). Cheap: one instruments CSV fetch.
+ */
+export async function buildNseUniverse(req: any, res: any) {
+  try {
+    const db = getDb();
+    const target = (req.body?.universe as string) || 'allnse';
+    const settings = (await db.collection('settings').doc('kite').get()).data() as any;
+    if (!settings?.apiKey || !settings?.accessToken) {
+      res.status(401).send({ error: 'Kite credentials missing or inactive' });
+      return;
+    }
+    const { getNSEEquitySymbols } = await import('./marketdata');
+    const equities = await getNSEEquitySymbols(settings.apiKey, settings.accessToken);
+    if (equities.length === 0) {
+      res.status(502).send({ error: 'Kite returned no NSE equities' });
+      return;
+    }
+    const memRef = db.collection('universes').doc(target).collection('members');
+    // Clear then rewrite so delistings drop out.
+    const existing = await memRef.get();
+    for (let i = 0; i < existing.docs.length; i += 400) {
+      const batch = db.batch();
+      existing.docs.slice(i, i + 400).forEach((d) => batch.delete(d.ref));
+      await batch.commit();
+    }
+    for (let i = 0; i < equities.length; i += 400) {
+      const batch = db.batch();
+      equities.slice(i, i + 400).forEach((e) => batch.set(memRef.doc(e.symbol), { symbol: e.symbol, name: e.name, sector: 'UNKNOWN', liquidityBucket: 'A' }));
+      await batch.commit();
+    }
+    res.status(200).send({ message: `Built '${target}'`, count: equities.length });
+  } catch (error) {
+    res.status(500).send({ error: 'Failed to build NSE universe', details: error instanceof Error ? error.message : String(error) });
+  }
+}
+
+/**
  * Seed custom and development universe data.
  */
 export async function seedUniverse(req: any, res: any) {

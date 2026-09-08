@@ -111,6 +111,36 @@ export async function getNSEInstrumentsMap(apiKey: string, accessToken: string):
   return _nseFetchPromise;
 }
 
+/**
+ * Pure parser: Kite NSE instruments CSV → cash-equity list (instrument_type=EQ, segment=NSE).
+ * Trailing columns are read from the end so names containing commas don't shift the parse.
+ */
+export function parseNseEquityCsv(csv: string): { symbol: string; name: string }[] {
+  const lines = String(csv).split('\n');
+  const out: { symbol: string; name: string }[] = [];
+  for (let i = 1; i < lines.length; i++) {
+    const parts = lines[i].split(',');
+    if (parts.length < 12) continue;
+    const tradingsymbol = parts[2];
+    const instrumentType = parts[parts.length - 3];
+    const segment = parts[parts.length - 2];
+    if (instrumentType !== 'EQ' || segment !== 'NSE') continue;
+    if (!tradingsymbol || /[^A-Z0-9&\-]/i.test(tradingsymbol)) continue; // skip odd tickers
+    const name = parts.slice(3, parts.length - 8).join(',') || tradingsymbol;
+    out.push({ symbol: `${tradingsymbol}.NS`, name });
+  }
+  return out;
+}
+
+/**
+ * Full NSE cash-equity list from Kite instruments (instrument_type=EQ, segment=NSE).
+ * Returns app symbols ("TRADINGSYMBOL.NS") + display name.
+ */
+export async function getNSEEquitySymbols(apiKey: string, accessToken: string): Promise<{ symbol: string; name: string }[]> {
+  const axios = (await import('axios')).default;
+  const response = await axios.get('https://api.kite.trade/instruments/NSE', { timeout: 120000, responseType: 'text' });
+  return parseNseEquityCsv(String(response.data));
+}
 
 
 /**
@@ -429,9 +459,10 @@ export async function prefetchDailyBarsBatch(
   jobId: string,
   symbols: string[],
   runDate: string,
+  force = false,
 ): Promise<{ enabled: boolean; written: number; skipped: number; chunks: number }> {
   const { BATCHED_QUOTE_CONFIG } = await import('../config/runtime');
-  if (!BATCHED_QUOTE_CONFIG.ENABLED) return { enabled: false, written: 0, skipped: 0, chunks: 0 };
+  if (!BATCHED_QUOTE_CONFIG.ENABLED && !force) return { enabled: false, written: 0, skipped: 0, chunks: 0 };
   if (!isMarketClosed()) {
     await logger.warn('[MarketData] Batched-quote prefetch skipped: market not yet closed', 'MarketData', { jobId });
     return { enabled: true, written: 0, skipped: symbols.length, chunks: 0 };
@@ -483,6 +514,22 @@ export async function prefetchDailyBarsBatch(
   }
   await logger.info(`[MarketData] Batched-quote prefetch: ${written} written, ${skipped} skipped, ${chunks} chunks`, 'MarketData', { jobId, runDate });
   return { enabled: true, written, skipped, chunks };
+}
+
+/**
+ * Gateway action: cheaply append today's bar for a whole universe via batched quotes.
+ * ~10 getQuote calls for ~1900 symbols instead of ~1900 historicalData calls. Runs the
+ * batched path with force=true (its own purpose) but still no-ops until the 15:30 close.
+ */
+export async function doFillDailyQuotes(req: any, res: any): Promise<void> {
+  const db = getDb();
+  const universe = (req.body?.universe as string) || 'allnse';
+  const runDate = req.body?.date ? String(req.body.date) : new Date(Date.now() + 5.5 * 3600000).toISOString().slice(0, 10);
+  const snap = await db.collection('universes').doc(universe).collection('members').get();
+  const symbols = snap.docs.map((d) => d.id).filter((s) => s !== '^NSEI' && s !== 'NIFTY 50');
+  if (symbols.length === 0) { res.status(400).send({ error: `Universe '${universe}' has no members` }); return; }
+  const result = await prefetchDailyBarsBatch(`quotefill_${runDate}`, symbols, runDate, true);
+  res.status(200).send({ universe, runDate, symbols: symbols.length, ...result });
 }
 
 export async function updateKiteToken(req: any, res: any) {
