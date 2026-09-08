@@ -11,10 +11,11 @@ exports.RUNTIME_CONFIG = {
     EXIT_EXECUTION_MODEL: 'NEXT_OPEN',
     KILL_SWITCH: false, // V3: Emergency halt — blocks ALL new entries when true
 };
-// Live hunt/EOD universe. The dynamic screener (screenUniverse) rebuilds
-// universes/dynamic each evening from the fresh nifty500 bars; the EOD/morning runs
-// hunt on it. Set env DEFAULT_UNIVERSE to override (e.g. 'midsmall400' to revert).
-exports.DEFAULT_UNIVERSE = process.env.DEFAULT_UNIVERSE || 'dynamic';
+// Live hunt/EOD universe. The dynamic screener (screenUniverse) rebuilds universes/eligible
+// (the full Minervini trend-template set) + universes/dynamic (top-momentum view) each evening.
+// Minervini watches the ENTIRE trend-template list and buys RS≥70 VCP breakouts, so the hunt
+// runs on `eligible`, not the momentum decile. Set env DEFAULT_UNIVERSE to override.
+exports.DEFAULT_UNIVERSE = process.env.DEFAULT_UNIVERSE || 'eligible';
 // SEPA (Minervini-style) faithful port. When SEPA_ONLY is true the signal engine
 // runs the SEPA strategy (alongside the metals sleeve) and the legacy multi-
 // strategy equity path is bypassed. This is now the LIVE daily configuration —
@@ -45,7 +46,8 @@ exports.SEPA_CONFIG = {
     // timing filter is dropped, and ATR-compression becomes optional (VCP core = dry-up + contraction
     // is still required). Set SEPA_MINERVINI_ALIGN=0 to restore the stricter legacy gates.
     MINERVINI_ALIGN: process.env.SEPA_MINERVINI_ALIGN !== '0',
-    RS_TOP_ALIGNED: 80, // Minervini RS Rating >= 80th percentile (top 20% of the universe)
+    RS_TOP_ALIGNED: 80, // (legacy fallback) absolute 126-day momentum rank when rsScore is unavailable
+    RS_MIN_RATING: 70, // Minervini Trend-Template rule #8: RS rating (rsScore percentile) >= 70
     HI_PROX_ALIGNED: 0.25, // Minervini trend template: within 25% of the 52-week high
 };
 // VCP watchlist / pivot state machine (IndiaPulse-style). Governs how symbols are

@@ -80,7 +80,7 @@ function App() {
   const [stats, setStats] = useState({ equity: 1000000, realizedPnl: 0, openPositions: 0, winRate: 0 })
   const [statsByRegime, setStatsByRegime] = useState<any[]>([])
   const [isTriggering, setIsTriggering] = useState(false)
-  const universe = 'dynamic'
+  const universe = 'eligible'
   const [inventory, setInventory] = useState<any>(null);
   const [isRefreshingInventory, setIsRefreshingInventory] = useState(false);
   // Use IST (UTC+5:30) so the dashboard date matches the NSE trading day
@@ -208,7 +208,7 @@ function App() {
     gw('getFundamentalsSettings').then((r: any) => setFundConfigured(r)).catch(() => {});
 
     // Sector map for watchlist segmentation (symbol -> sector), from the active universe.
-    const unsubSectors = onSnapshot(collection(db, 'universes', 'dynamic', 'members'), (snap: any) => {
+    const unsubSectors = onSnapshot(collection(db, 'universes', 'eligible', 'members'), (snap: any) => {
       const map: Record<string, string> = {};
       snap.docs.forEach((d: any) => { const m = d.data(); if (m?.symbol) map[m.symbol] = m.sector || 'Unknown'; });
       setSectorMap(map);

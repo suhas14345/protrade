@@ -410,7 +410,13 @@ async function evaluateSepaSignal(
   // (it is not part of Minervini's 8-point template).
   const trendTemplate = align ? trendStructure : (trendStructure && close > sma10);
   const nearHigh = close >= high252 * (1 - hiProx);
-  const rsLeader = Number.isFinite(rsRank126) && rsRank126 <= rsTop;
+  // Minervini Trend-Template rule #8: RS rating >= 70. rsScore is the 0-99 RS percentile from the
+  // RS-rank stage; use it directly. Fall back to the absolute momentum rank only when rsScore is
+  // not yet available (e.g. a name's first day in the universe, before its first RS-rank pass).
+  const rsRating = Number(features.rsScore);
+  const rsLeader = Number.isFinite(rsRating)
+    ? rsRating >= SEPA_CONFIG.RS_MIN_RATING
+    : (Number.isFinite(rsRank126) && rsRank126 <= rsTop);
 
   // VCP logic: Ensure volume dry-up (VDU) or liquidity thresholds are met on pullback
   const vduActive = features.vduActive === true;
