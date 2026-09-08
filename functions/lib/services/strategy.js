@@ -397,10 +397,16 @@ async function evaluateSepaSignal(db, jobId, symbol, dateId, features, regime, a
     // final contraction, so requiring it here would hide exactly the setups we want to track.
     const trendStructure = close > sma50 && sma50 > sma150 && sma150 > sma200 &&
         sma50Rising && sma150Rising && sma200Rising && aboveLowOk && priceFloorOk;
-    // Strict trend template (gates the actual BUY) — adds the 10-DMA timing filter.
-    const trendTemplate = trendStructure && close > sma10;
-    const nearHigh = close >= high252 * (1 - runtime_1.SEPA_CONFIG.HI_PROX);
-    const rsLeader = Number.isFinite(rsRank126) && rsRank126 <= runtime_1.SEPA_CONFIG.RS_TOP;
+    // Minervini-aligned gate thresholds (config-flagged). When ON: RS top-20%, near-high 25%,
+    // drop the extra 10-DMA timing filter, and make ATR-compression optional (VCP core kept).
+    const align = runtime_1.SEPA_CONFIG.MINERVINI_ALIGN;
+    const rsTop = align ? runtime_1.SEPA_CONFIG.RS_TOP_ALIGNED : runtime_1.SEPA_CONFIG.RS_TOP;
+    const hiProx = align ? runtime_1.SEPA_CONFIG.HI_PROX_ALIGNED : runtime_1.SEPA_CONFIG.HI_PROX;
+    // Strict trend template (gates the actual BUY). The 10-DMA timing filter is dropped when aligned
+    // (it is not part of Minervini's 8-point template).
+    const trendTemplate = align ? trendStructure : (trendStructure && close > sma10);
+    const nearHigh = close >= high252 * (1 - hiProx);
+    const rsLeader = Number.isFinite(rsRank126) && rsRank126 <= rsTop;
     // VCP logic: Ensure volume dry-up (VDU) or liquidity thresholds are met on pullback
     const vduActive = features.vduActive === true;
     // VCP logic: Progressive contraction limits
@@ -413,7 +419,11 @@ async function evaluateSepaSignal(db, jobId, symbol, dateId, features, regime, a
     // VCP dry-up is evaluated strictly before the signal bar: the final contraction
     // must be materially quieter than its base, while the breakout bar expands.
     const vcpVolumeDryUp = features.vcpVolumeDryUp === true;
-    const vcpPassed = vcpVolumeDryUp && isValidContraction && atrCompressing;
+    // ATR-compression is a hard requirement in legacy mode; when Minervini-aligned it becomes a
+    // quality booster (optional) since it largely overlaps the range-contraction test.
+    const vcpPassed = align
+        ? (vcpVolumeDryUp && isValidContraction)
+        : (vcpVolumeDryUp && isValidContraction && atrCompressing);
     // ---- Pivot state machine (IndiaPulse-style) ----
     const pivot = Number(features.vcpPivot);
     const structuralLow = Number(features.vcpStructuralLow);

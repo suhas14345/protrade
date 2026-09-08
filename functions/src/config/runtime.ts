@@ -33,6 +33,14 @@ export const SEPA_CONFIG = {
   // flagging the signal as regime-ignored so it stands out. Set SEPA_IGNORE_REGIME=0 to restore
   // the strict index-up gate. Defaults ON per the current paper-trading configuration.
   IGNORE_REGIME_GATE: process.env.SEPA_IGNORE_REGIME !== '0',
+  // Minervini-aligned gate thresholds (backtest 2022-2026: baseline gave only 8 trades/4.5yr —
+  // impractically sparse; aligning to Minervini's published rules ~triples frequency). When ON:
+  // RS uses top-20% (RS_TOP_ALIGNED), near-high uses 25% (HI_PROX_ALIGNED), the extra 10-DMA
+  // timing filter is dropped, and ATR-compression becomes optional (VCP core = dry-up + contraction
+  // is still required). Set SEPA_MINERVINI_ALIGN=0 to restore the stricter legacy gates.
+  MINERVINI_ALIGN: process.env.SEPA_MINERVINI_ALIGN !== '0',
+  RS_TOP_ALIGNED: 80,           // Minervini RS Rating >= 80th percentile (top 20% of the universe)
+  HI_PROX_ALIGNED: 0.25,        // Minervini trend template: within 25% of the 52-week high
 };
 
 // VCP watchlist / pivot state machine (IndiaPulse-style). Governs how symbols are
