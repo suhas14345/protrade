@@ -5,7 +5,7 @@
     "lint": "eslint --ext .js,.ts .",
     "build": "tsc",
     "validate-rules": "ts-node src/services/regCheck.ts",
-    "bundle": "npm run validate-rules && esbuild src/index.ts --bundle --platform=node --target=node20 --outfile=index.js --external:firebase-admin --external:firebase-functions --external:cors --external:axios --external:kiteconnect --external:technicalindicators --external:totp-generator --external:@google-cloud/tasks",
+    "bundle": "npm run validate-rules && esbuild src/index.ts --bundle --platform=node --target=node22 --outfile=index.js --external:firebase-admin --external:firebase-functions --external:cors --external:axios --external:kiteconnect --external:technicalindicators --external:totp-generator --external:@google-cloud/tasks",
     "test": "jest",
     "test:local": "node test_local.js",
     "serve": "npm run build && node -e \"process.env.JAVA_TOOL_OPTIONS='-Xmx4g'; require('child_process').execSync('firebase emulators:start --only functions,firestore', {stdio: 'inherit'})\"",
@@ -16,7 +16,7 @@
     "regression": "npm run build && node -e \"process.env.GCLOUD_PROJECT='suhas-ag'; require('./lib/services/regression').runSystemRegression().then(() => process.exit(0)).catch(e => { console.error(e); process.exit(1); })\""
   },
   "engines": {
-    "node": "20"
+    "node": "22"
   },
   "main": "lib/index.js",
   "dependencies": {
