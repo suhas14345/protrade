@@ -177,7 +177,7 @@ async function doScreenUniverse(req, res) {
             return;
         }
         survivors.push({ symbol, sector, ret126: (_a = s.ret126) !== null && _a !== void 0 ? _a : -Infinity });
-    }, 20);
+    }, runtime_1.SCREEN_CONFIG.CONCURRENCY);
     // Top-momentum cut, then the budget cap: keep the strongest MOMENTUM_TOP_PCT by 126-day return.
     survivors.sort((a, b) => b.ret126 - a.ret126);
     const keepByPct = Math.max(1, Math.ceil(survivors.length * runtime_1.SCREEN_CONFIG.MOMENTUM_TOP_PCT));

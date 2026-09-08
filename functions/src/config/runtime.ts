@@ -430,6 +430,7 @@ export const SCREEN_CONFIG = {
   REQUIRE_ABOVE_200DMA: true,          // must be above the 200-DMA (stage-2 uptrend)
   MOMENTUM_TOP_PCT: 0.20,              // keep only the top 20% by 126-day momentum (RS leadership)
   WINDOW: 260,                         // trailing bars to read per symbol for the screen
+  CONCURRENCY: Number(process.env.SCREEN_CONCURRENCY) || 80, // parallel window reads (scales to full-NSE within the 540s fn cap)
   // Phase 4 — two-speed pools, TTL and budget guardrails.
   ELIGIBLE_TARGET: 'eligible',         // slow pool: everything passing the necessary preconditions
   TRADE_TARGET: 'dynamic',             // fast pool: top-momentum cut the hunt actually trades

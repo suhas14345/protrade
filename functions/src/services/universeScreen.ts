@@ -154,7 +154,7 @@ export async function doScreenUniverse(req: any, res: any): Promise<void> {
     const s = evaluateScreenStats(bars);
     if (!s.eligibleBase) { if (s.failedGate) gateFails[s.failedGate] = (gateFails[s.failedGate] || 0) + 1; return; }
     survivors.push({ symbol, sector, ret126: s.ret126 ?? -Infinity });
-  }, 20);
+  }, SCREEN_CONFIG.CONCURRENCY);
 
   // Top-momentum cut, then the budget cap: keep the strongest MOMENTUM_TOP_PCT by 126-day return.
   survivors.sort((a, b) => b.ret126 - a.ret126);
