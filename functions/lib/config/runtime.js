@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.EARNINGS_QUALITY_CONFIG = exports.SECURITY_CONFIG = exports.REGIME_RSI_THRESHOLDS = exports.BEAR_STRATEGY_CONFIG = exports.RS_STRATEGY_THRESHOLDS = exports.STRATEGY_MIN_SCORES = exports.REGIME_HARDENING = exports.DATA_VALIDATION = exports.INDIAN_FEE_CONFIG = exports.MARKET_HOURS = exports.ORCH_CONFIG = exports.GAP_STRESS_CONFIG = exports.VOL_TARGET_CONFIG = exports.SHORT_CONFIG = exports.ADV_LIMITS = exports.EVENT_CONFIG = exports.EXIT_PROFILES = exports.RISK_LIMITS = exports.SLIPPAGE_CONFIG = exports.DRAWDOWN_CONFIG = exports.GAP_RISK_CONFIG = exports.VDU_CONFIG = exports.RS_CONFIG = exports.CORR_CONFIG = exports.STRATEGY_V11 = exports.EQUITY_STRATEGIES = exports.ATH_CONFIG = exports.METALS_CONFIG = exports.VCP_CONFIG = exports.SEPA_CONFIG = exports.RUNTIME_CONFIG = void 0;
+exports.EARNINGS_QUALITY_CONFIG = exports.SCREEN_CONFIG = exports.SECURITY_CONFIG = exports.REGIME_RSI_THRESHOLDS = exports.BEAR_STRATEGY_CONFIG = exports.RS_STRATEGY_THRESHOLDS = exports.STRATEGY_MIN_SCORES = exports.REGIME_HARDENING = exports.DATA_VALIDATION = exports.INDIAN_FEE_CONFIG = exports.MARKET_HOURS = exports.ORCH_CONFIG = exports.GAP_STRESS_CONFIG = exports.VOL_TARGET_CONFIG = exports.SHORT_CONFIG = exports.ADV_LIMITS = exports.EVENT_CONFIG = exports.EXIT_PROFILES = exports.RISK_LIMITS = exports.SLIPPAGE_CONFIG = exports.DRAWDOWN_CONFIG = exports.GAP_RISK_CONFIG = exports.VDU_CONFIG = exports.RS_CONFIG = exports.CORR_CONFIG = exports.STRATEGY_V11 = exports.EQUITY_STRATEGIES = exports.ATH_CONFIG = exports.METALS_CONFIG = exports.VCP_CONFIG = exports.SEPA_CONFIG = exports.RUNTIME_CONFIG = void 0;
 exports.RUNTIME_CONFIG = {
     TRADING_ENABLED: true,
     PAPER_ONLY: true,
@@ -376,6 +376,20 @@ exports.SECURITY_CONFIG = {
     API_KEY_HEADER: 'x-api-key', // Header name for API key auth
     REQUIRE_AUTH: false, // Enable for production (disable for local dev)
     SCHEDULER_USER_AGENT: 'Google-Cloud-Scheduler', // Trusted scheduler UA
+};
+// Dynamic universe screener (Phase 1). Prunes a broad source pool to the candidate set
+// using ONLY SEPA's necessary preconditions — anything cut would have failed a mandatory
+// entry gate anyway, so the prune is lossless (no winner dropped). Survivors are written to
+// universes/dynamic/members and can be run alongside midsmall400 via startEod universe=dynamic.
+exports.SCREEN_CONFIG = {
+    SOURCE_UNIVERSE: process.env.SCREEN_SOURCE || 'nifty500', // broad pool to prune (expand to all-NSE later)
+    MIN_PRICE: 50, // ₹ price floor (avoid penny names)
+    MIN_MED_TRADED_VALUE: 30000000, // ₹3 Cr/day median traded value (liquidity)
+    MIN_BARS: 200, // need ≥200 bars for the 200-DMA / trend template
+    NEAR_HIGH_PCT: 0.25, // within 25% of the 52-week high (Minervini)
+    REQUIRE_ABOVE_200DMA: true, // must be above the 200-DMA (stage-2 uptrend)
+    MOMENTUM_TOP_PCT: 0.20, // keep only the top 20% by 126-day momentum (RS leadership)
+    WINDOW: 260, // trailing bars to read per symbol for the screen
 };
 // Phase 1a: Minervini earnings-quality red-flag thresholds. This is a VETO/DOWNGRADE
 // layer (distinct from the positive growth scorer): it flags accounting/governance

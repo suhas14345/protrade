@@ -412,6 +412,21 @@ export const SECURITY_CONFIG = {
   SCHEDULER_USER_AGENT: 'Google-Cloud-Scheduler', // Trusted scheduler UA
 };
 
+// Dynamic universe screener (Phase 1). Prunes a broad source pool to the candidate set
+// using ONLY SEPA's necessary preconditions — anything cut would have failed a mandatory
+// entry gate anyway, so the prune is lossless (no winner dropped). Survivors are written to
+// universes/dynamic/members and can be run alongside midsmall400 via startEod universe=dynamic.
+export const SCREEN_CONFIG = {
+  SOURCE_UNIVERSE: process.env.SCREEN_SOURCE || 'nifty500', // broad pool to prune (expand to all-NSE later)
+  MIN_PRICE: 50,                       // ₹ price floor (avoid penny names)
+  MIN_MED_TRADED_VALUE: 30_000_000,    // ₹3 Cr/day median traded value (liquidity)
+  MIN_BARS: 200,                       // need ≥200 bars for the 200-DMA / trend template
+  NEAR_HIGH_PCT: 0.25,                 // within 25% of the 52-week high (Minervini)
+  REQUIRE_ABOVE_200DMA: true,          // must be above the 200-DMA (stage-2 uptrend)
+  MOMENTUM_TOP_PCT: 0.20,              // keep only the top 20% by 126-day momentum (RS leadership)
+  WINDOW: 260,                         // trailing bars to read per symbol for the screen
+};
+
 // Phase 1a: Minervini earnings-quality red-flag thresholds. This is a VETO/DOWNGRADE
 // layer (distinct from the positive growth scorer): it flags accounting/governance
 // irregularities in as-reported filings — no consensus estimates required. Ratios are

@@ -232,6 +232,11 @@ export const gateway = functions.runWith(v1Options).https.onRequest(async (req, 
                 await getFundamentalsSettings(req, res);
                 break;
             }
+            case 'screenUniverse': {
+                const { doScreenUniverse } = await import('./services/universeScreen');
+                await doScreenUniverse(req, res);
+                break;
+            }
 
             // V3.0: System health & scheduler
             case 'getKiteSettings': {

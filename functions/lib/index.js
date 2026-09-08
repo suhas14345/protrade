@@ -263,6 +263,11 @@ exports.gateway = functions.runWith(v1Options).https.onRequest(async (req, res) 
                 await getFundamentalsSettings(req, res);
                 break;
             }
+            case 'screenUniverse': {
+                const { doScreenUniverse } = await Promise.resolve().then(() => __importStar(require('./services/universeScreen')));
+                await doScreenUniverse(req, res);
+                break;
+            }
             // V3.0: System health & scheduler
             case 'getKiteSettings': {
                 const kdb = admin.apps.length ? admin.firestore() : admin.initializeApp() && admin.firestore();
