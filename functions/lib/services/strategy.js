@@ -368,9 +368,6 @@ async function evaluateSepaSignal(db, jobId, symbol, dateId, features, regime, a
     // NOTE: rsRank126 is produced by the RS-rank FINALIZE stage (after signals), so it can be
     // missing at signal-time. It must NOT gate the watchlist — only the actual BUY (rsLeader).
     const rsRank126 = Number(features.rsRank126);
-    if (symbol === 'EICHERMOT.NS') {
-        await logger_1.logger.info(`[VCPDBG] entered SEPA_ONLY=${runtime_1.SEPA_CONFIG.SEPA_ONLY} vcpPivot=${features.vcpPivot} sma50=${features.sma50} high252=${features.high252} guardPass=${[sma50, sma150, sma200, high252].every(Number.isFinite)}`, 'Strategy', { jobId, symbol, dateId });
-    }
     if (![sma50, sma150, sma200, high252].every(Number.isFinite))
         return;
     const bars = await getRecentBarsOnOrBefore(db, symbol, dateId, 1);
@@ -470,7 +467,7 @@ async function evaluateSepaSignal(db, jobId, symbol, dateId, features, regime, a
     // index-regime gate (a market-blocked structure is still worth tracking); the gate only
     // blocks the actual BUY below. INVALIDATED rows are kept as a short history of misses.
     if (vcpState) {
-        await logger_1.logger.info(`[Watchlist] ${symbol} ${vcpState} (trendStruct=${trendStructure}, dist=${(distToPivotPct * 100).toFixed(1)}%)`, 'Strategy', { jobId, symbol, dateId });
+        console.log(`[Watchlist] ${symbol} ${vcpState} (trendStruct=${trendStructure}, dist=${(distToPivotPct * 100).toFixed(1)}%)`);
     }
     if (vcpState && (trendStructure || vcpState === 'TRIGGERED')) {
         const watchlistRef = db.collection('watchlist').doc(dateId).collection('items').doc(`${symbol}_SepaBreakoutEOD`);

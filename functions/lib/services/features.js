@@ -41,7 +41,6 @@ exports.doComputeFeatures = doComputeFeatures;
 const functionsV1 = __importStar(require("firebase-functions"));
 const admin = __importStar(require("firebase-admin"));
 const firestore_1 = require("firebase-admin/firestore");
-const logger_1 = require("./logger");
 const runtime_1 = require("../config/runtime");
 const barCache_1 = require("./barCache");
 // Lazy load technicalindicators inside functions to avoid deployment timeouts
@@ -308,7 +307,9 @@ async function doComputeFeatures(jobId, symbol, runDate) {
     if (runtime_1.SEPA_CONFIG.SEPA_ONLY && Number.isFinite(Number(sepaFields.athHigh))) {
         await db.collection('features').doc(symbol).set({ athHigh: sepaFields.athHigh, athHighFullScan: true, athUpdatedAt: firestore_1.Timestamp.now() }, { merge: true });
     }
-    await logger_1.logger.info(`Features computed for ${symbol}: Trend=${trendState}, RSI=${rsi14.toFixed(2)}`, 'Features', { jobId, symbol });
+    // Per-symbol INFO is high-frequency (every symbol, every run); keep it in Cloud Logging
+    // only (console) rather than a Firestore log write, to avoid ~1.2k DB writes/day.
+    console.log(`[Features] ${symbol}: Trend=${trendState}, RSI=${rsi14.toFixed(2)}`);
 }
 /**
  * V2.2: Compute liquidity bucket from actual median traded value (not hardcoded 'A').

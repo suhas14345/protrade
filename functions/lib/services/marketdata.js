@@ -307,7 +307,7 @@ async function doFetchCandles(jobId, symbol, runDate, instrumentToken, forceDays
         console.error(`[MarketData] Job ${jobId} symbol ${symbol}: Batch commit FAILED:`, err);
         throw err;
     }
-    await logger_1.logger.info(`Uploaded ${validCandles.length} candles for ${symbol} (Historical Backfill)`, 'MarketData', { jobId, symbol });
+    console.log(`[MarketData] Uploaded ${validCandles.length} candles for ${symbol}`);
     return true;
 }
 async function fetchCandlesTask(req, res) {
@@ -431,9 +431,9 @@ async function fetchFromKite(symbol, runDate, apiKey, accessToken, instrumentTok
     if (!providedStartDate) {
         startDate.setDate(endDate.getDate() - 60);
     }
-    await logger_1.logger.info(`Fetching data for ${symbol} from Kite: ${startDate.toISOString()} to ${endDate.toISOString()}`, 'MarketData', { jobId, symbol });
+    console.log(`[MarketData] Fetching ${symbol} from Kite: ${startDate.toISOString().split('T')[0]} to ${endDate.toISOString().split('T')[0]}`);
     const results = await fetchWithRetry(() => scheduleKiteRequest(() => kite.getHistoricalData(token, 'day', startDate, endDate)), symbol);
-    await logger_1.logger.info(`Raw result count for ${symbol}: ${results.length}`, 'MarketData', { jobId, symbol });
+    console.log(`[MarketData] Raw result count for ${symbol}: ${results.length}`);
     return results.map((row) => ({
         open: row.open,
         high: row.high,

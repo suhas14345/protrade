@@ -279,7 +279,7 @@ export async function doFetchCandles(jobId: string, symbol: string, runDate: str
     console.error(`[MarketData] Job ${jobId} symbol ${symbol}: Batch commit FAILED:`, err);
     throw err;
   }
-  await logger.info(`Uploaded ${validCandles.length} candles for ${symbol} (Historical Backfill)`, 'MarketData', { jobId, symbol });
+  console.log(`[MarketData] Uploaded ${validCandles.length} candles for ${symbol}`);
   return true;
 }
 
@@ -416,14 +416,14 @@ async function fetchFromKite(symbol: string, runDate: string, apiKey: string, ac
     startDate.setDate(endDate.getDate() - 60);
   }
 
-  await logger.info(`Fetching data for ${symbol} from Kite: ${startDate.toISOString()} to ${endDate.toISOString()}`, 'MarketData', { jobId, symbol });
+  console.log(`[MarketData] Fetching ${symbol} from Kite: ${startDate.toISOString().split('T')[0]} to ${endDate.toISOString().split('T')[0]}`);
 
   const results = await fetchWithRetry(
     () => scheduleKiteRequest(() => kite.getHistoricalData(token, 'day', startDate, endDate)),
     symbol
   ) as Bar[];
   
-  await logger.info(`Raw result count for ${symbol}: ${results.length}`, 'MarketData', { jobId, symbol });
+  console.log(`[MarketData] Raw result count for ${symbol}: ${results.length}`);
 
   return results.map((row: any) => ({
     open: row.open,

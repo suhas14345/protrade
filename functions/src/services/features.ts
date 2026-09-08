@@ -2,7 +2,6 @@ import * as functionsV1 from 'firebase-functions';
 import * as admin from 'firebase-admin';
 import { Timestamp } from 'firebase-admin/firestore';
 import { Features, Bar } from '../models';
-import { logger } from './logger';
 import { VDU_CONFIG, GAP_RISK_CONFIG, SEPA_CONFIG, VCP_CONFIG } from '../config/runtime';
 import { getWindowOnOrBefore, maxHighOnOrBefore } from './barCache';
 
@@ -320,7 +319,9 @@ export async function doComputeFeatures(jobId: string, symbol: string, runDate: 
     );
   }
 
-  await logger.info(`Features computed for ${symbol}: Trend=${trendState}, RSI=${rsi14.toFixed(2)}`, 'Features', { jobId, symbol });
+  // Per-symbol INFO is high-frequency (every symbol, every run); keep it in Cloud Logging
+  // only (console) rather than a Firestore log write, to avoid ~1.2k DB writes/day.
+  console.log(`[Features] ${symbol}: Trend=${trendState}, RSI=${rsi14.toFixed(2)}`);
 }
 
 /**
