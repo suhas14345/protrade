@@ -76,22 +76,61 @@ function istTodayDateId(): string {
   return ist.toISOString().slice(0, 10).replace(/-/g, '');
 }
 
+/** Calendar-day gap between two YYYYMMDD ids (a - b). */
+function daysBetween(aId: string, bId: string): number {
+  const p = (s: string) => Date.UTC(+s.slice(0, 4), +s.slice(4, 6) - 1, +s.slice(6, 8));
+  return Math.round((p(aId) - p(bId)) / 86_400_000);
+}
+
 async function pool<T>(items: T[], worker: (item: T) => Promise<void>, concurrency: number): Promise<void> {
   let i = 0;
   const run = async () => { while (i < items.length) { const idx = i++; try { await worker(items[idx]); } catch { /* fail-soft per symbol */ } } };
   await Promise.all(Array.from({ length: concurrency }, run));
 }
 
+async function rewriteMembers(
+  targetRef: FirebaseFirestore.CollectionReference,
+  rows: { symbol: string; sector: string }[],
+): Promise<void> {
+  const existing = await targetRef.get();
+  for (let i = 0; i < existing.docs.length; i += 400) {
+    const batch = targetRef.firestore.batch();
+    existing.docs.slice(i, i + 400).forEach((d) => batch.delete(d.ref));
+    await batch.commit();
+  }
+  const now = admin.firestore.Timestamp.now();
+  for (let i = 0; i < rows.length; i += 400) {
+    const batch = targetRef.firestore.batch();
+    rows.slice(i, i + 400).forEach((c) => batch.set(targetRef.doc(c.symbol), { symbol: c.symbol, sector: c.sector, liquidityBucket: 'A', screenedAt: now }));
+    await batch.commit();
+  }
+}
+
 /**
- * Screen the source pool into a pruned candidate universe (universes/dynamic/members).
- * Lossless: only SEPA necessary preconditions gate, plus a top-momentum cut. Non-disruptive —
- * writes only the `dynamic` universe; the live default path is untouched.
+ * Screen the source pool into two universes (Phase 4, two-speed):
+ *   - universes/{ELIGIBLE_TARGET}  slow pool — everything passing the necessary preconditions
+ *   - universes/{TRADE_TARGET}     fast pool — the top-momentum cut the hunt trades (the default universe)
+ * Lossless: only SEPA necessary preconditions gate. Guardrails: stale-bar TTL skip, MAX_CANDIDATES
+ * budget cap, and a MIN_CANDIDATES fail-safe floor (never wipe the live universe on a bad data day).
+ * Non-disruptive to bars — read-only over barsD.
  */
 export async function doScreenUniverse(req: any, res: any): Promise<void> {
   const db = getDb();
   const source = (req.body?.source as string) || SCREEN_CONFIG.SOURCE_UNIVERSE;
-  const target = (req.body?.target as string) || 'dynamic';
+  const target = (req.body?.target as string) || SCREEN_CONFIG.TRADE_TARGET;
+  const eligibleTarget = (req.body?.eligibleTarget as string) || SCREEN_CONFIG.ELIGIBLE_TARGET;
   const dateId = req.body?.date ? String(req.body.date).replace(/-/g, '') : istTodayDateId();
+  const force = req.body?.force === true || req.body?.force === '1';
+
+  // TTL: skip a redundant rebuild if the trade pool was screened within TTL_HOURS (unless forced).
+  if (!force) {
+    const meta = await db.collection('universes').doc(target).collection('members').limit(1).get();
+    const screenedAt = meta.docs[0]?.data()?.screenedAt as admin.firestore.Timestamp | undefined;
+    if (screenedAt && (Date.now() - screenedAt.toMillis()) < SCREEN_CONFIG.TTL_HOURS * 3600_000) {
+      res.status(200).send({ skipped: 'fresh', ageMs: Date.now() - screenedAt.toMillis(), target });
+      return;
+    }
+  }
 
   const memSnap = await db.collection('universes').doc(source).collection('members').get();
   const members = memSnap.docs.map((d) => ({ symbol: d.id, sector: (d.data() as any)?.sector || 'UNKNOWN' }));
@@ -103,37 +142,39 @@ export async function doScreenUniverse(req: any, res: any): Promise<void> {
   const gateFails: Record<string, number> = { history: 0, price: 0, liquidity: 0, below_200dma: 0, far_from_high: 0 };
   const survivors: { symbol: string; sector: string; ret126: number }[] = [];
   let screened = 0;
+  let stale = 0;
 
   await pool(members, async ({ symbol, sector }) => {
     const bars = await getWindowOnOrBefore(db, symbol, dateId, SCREEN_CONFIG.WINDOW);
     screened++;
+    // TTL/staleness: a symbol whose latest stored bar is too old (dropped from the daily
+    // delta, delisted, or token-fail) must not enter either pool.
+    const lastId = bars.length ? (bars[bars.length - 1] as any).dateId : null;
+    if (!lastId || daysBetween(dateId, String(lastId)) > SCREEN_CONFIG.MAX_BAR_STALENESS_DAYS) { stale++; return; }
     const s = evaluateScreenStats(bars);
     if (!s.eligibleBase) { if (s.failedGate) gateFails[s.failedGate] = (gateFails[s.failedGate] || 0) + 1; return; }
     survivors.push({ symbol, sector, ret126: s.ret126 ?? -Infinity });
   }, 20);
 
-  // Top-momentum cut: keep the strongest MOMENTUM_TOP_PCT by 126-day return (RS leadership).
+  // Top-momentum cut, then the budget cap: keep the strongest MOMENTUM_TOP_PCT by 126-day return.
   survivors.sort((a, b) => b.ret126 - a.ret126);
-  const keep = Math.max(1, Math.ceil(survivors.length * SCREEN_CONFIG.MOMENTUM_TOP_PCT));
-  const candidates = survivors.slice(0, keep);
+  const keepByPct = Math.max(1, Math.ceil(survivors.length * SCREEN_CONFIG.MOMENTUM_TOP_PCT));
+  const candidates = survivors.slice(0, Math.min(keepByPct, SCREEN_CONFIG.MAX_CANDIDATES));
 
-  // Rewrite the target universe members (clear then write).
-  const targetRef = db.collection('universes').doc(target).collection('members');
-  const existing = await targetRef.get();
-  for (let i = 0; i < existing.docs.length; i += 400) {
-    const batch = db.batch();
-    existing.docs.slice(i, i + 400).forEach((d) => batch.delete(d.ref));
-    await batch.commit();
-  }
-  for (let i = 0; i < candidates.length; i += 400) {
-    const batch = db.batch();
-    candidates.slice(i, i + 400).forEach((c) => batch.set(targetRef.doc(c.symbol), { symbol: c.symbol, sector: c.sector, liquidityBucket: 'A', screenedAt: admin.firestore.Timestamp.now() }));
-    await batch.commit();
+  // Fail-safe: a too-small candidate set signals a bad data day — do NOT wipe the live universe.
+  if (candidates.length < SCREEN_CONFIG.MIN_CANDIDATES) {
+    await logger.warn(`[Screen] Aborting rewrite: only ${candidates.length} candidates (< MIN ${SCREEN_CONFIG.MIN_CANDIDATES}); keeping prior '${target}'`, 'Screen', { source, target, dateId, screened, stale });
+    res.status(200).send({ aborted: 'too_few_candidates', screened, stale, eligibleBase: survivors.length, candidates: candidates.length, gateFails });
+    return;
   }
 
-  await logger.info(`[Screen] ${source}→${target}: ${screened} screened, ${survivors.length} eligible, ${candidates.length} candidates`, 'Screen', { source, target, dateId });
+  // Two-speed write: full eligible pool, then the traded momentum cut.
+  await rewriteMembers(db.collection('universes').doc(eligibleTarget).collection('members'), survivors.map((s) => ({ symbol: s.symbol, sector: s.sector })));
+  await rewriteMembers(db.collection('universes').doc(target).collection('members'), candidates.map((c) => ({ symbol: c.symbol, sector: c.sector })));
+
+  await logger.info(`[Screen] ${source}→${eligibleTarget}(${survivors.length})/${target}(${candidates.length}): ${screened} screened, ${stale} stale`, 'Screen', { source, target, eligibleTarget, dateId });
   res.status(200).send({
-    source, target, dateId, screened,
+    source, eligibleTarget, target, dateId, screened, stale,
     eligibleBase: survivors.length,
     candidates: candidates.length,
     gateFails,

@@ -23,7 +23,7 @@ const KNOWN_ACTIONS = new Set([
   'watchlistStats',
   'ingestFundamentals', 'syncFundamentals', 'getFundamentalsQuality',
   'updateFundamentalsSettings', 'getFundamentalsSettings',
-  'screenUniverse',
+  'screenUniverse', 'scheduledScreen',
 ]);
 
 export function validateRequest(body: Record<string, unknown>): { valid: boolean; error?: string } {

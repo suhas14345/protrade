@@ -3,7 +3,7 @@ import { Timestamp } from 'firebase-admin/firestore';
 import { taskClient } from './tasks';
 import { CalendarService } from './calendar';
 import { logger } from './logger';
-import { ORCH_CONFIG, MARKET_HOURS, RUNTIME_CONFIG, METALS_CONFIG } from '../config/runtime';
+import { ORCH_CONFIG, MARKET_HOURS, RUNTIME_CONFIG, METALS_CONFIG, DEFAULT_UNIVERSE, SCREEN_CONFIG } from '../config/runtime';
 import { isMarketClosed } from './marketdata';
 import { raiseAlert, AlertType } from './alerting';
 
@@ -84,7 +84,7 @@ async function getInstrumentTokenMap(apiKey: string, accessToken: string): Promi
  * HTTP Triggers for Dashboard/Scheduler
  */
 export async function doStartEodRun(req: any, res: any) {
-  const { date, universe = 'midsmall400', forceRegime, force } = { ...req.query, ...req.body } as any;
+  const { date, universe = DEFAULT_UNIVERSE, forceRegime, force } = { ...req.query, ...req.body } as any;
   if (!date) {
     res.status(400).send({ error: 'Missing "date" query parameter (YYYY-MM-DD)' });
     return;
@@ -240,7 +240,7 @@ async function runDeepSyncLogic(jobId: string, universeId: string, forceDays: nu
 }
 
 export async function doStartMorningExecution(req: any, res: any) {
-  const { date, universe = 'midsmall400' } = req.query as any;
+  const { date, universe = DEFAULT_UNIVERSE } = req.query as any;
   if (!date) {
     res.status(400).send({ error: 'Missing "date"' });
     return;
@@ -310,7 +310,7 @@ export async function terminateJob(req: any, res: any) {
 /**
  * Core Logic: EOD Run (Refactored Gap B4)
  */
-export async function runEodLogic(targetDate: string, targetJobId: string, targetUniverse: string = 'midsmall400', forceRegime?: string) {
+export async function runEodLogic(targetDate: string, targetJobId: string, targetUniverse: string = DEFAULT_UNIVERSE, forceRegime?: string) {
   const db = getDb();
   const dateId = toDateId(targetDate);
   
@@ -334,7 +334,16 @@ export async function runEodLogic(targetDate: string, targetJobId: string, targe
   }
 
   const universeSnap = await db.collection('universes').doc(targetUniverse).collection('members').get();
-  const symbols: string[] = universeSnap.docs.map((d: any) => d.id).filter((s: string) => s !== '^NSEI');
+  let symbols: string[] = universeSnap.docs.map((d: any) => d.id).filter((s: string) => s !== '^NSEI');
+  // Fail-safe: never run the hunt on an empty universe (a stale/failed screen would silently
+  // trade nothing and leave positions unmanaged). Fall back to the broad source pool + alert.
+  if (symbols.length === 0) {
+    await raiseAlert(AlertType.JOB_FAILED, 'WARN', `Universe '${targetUniverse}' empty — falling back to '${SCREEN_CONFIG.SOURCE_UNIVERSE}'`, { jobId: targetJobId, universe: targetUniverse });
+    await logger.warn(`[Orchestrator] Universe '${targetUniverse}' empty; falling back to '${SCREEN_CONFIG.SOURCE_UNIVERSE}'`, 'Orchestrator', { jobId: targetJobId });
+    targetUniverse = SCREEN_CONFIG.SOURCE_UNIVERSE;
+    const fbSnap = await db.collection('universes').doc(targetUniverse).collection('members').get();
+    symbols = fbSnap.docs.map((d: any) => d.id).filter((s: string) => s !== '^NSEI');
+  }
   // Metals sleeve ETFs are always part of the daily run, independent of universe membership.
   if (METALS_CONFIG.ENABLED) {
     for (const m of METALS_CONFIG.SYMBOLS) if (!symbols.includes(m)) symbols.push(m);
@@ -364,6 +373,17 @@ export async function runEodLogic(targetDate: string, targetJobId: string, targe
       await doComputeRegime(targetDate, targetJobId, indexSymbol, targetUniverse);
     }
  
+    // Phase 2: batched-quote prefetch of today's bar for the whole universe (one getQuote per
+    // ~200 symbols). No-op unless FETCH_BATCHED_QUOTES=1; when on, the per-symbol FETCH below
+    // sees the bar already current and skips its own Kite call.
+    try {
+      const { prefetchDailyBarsBatch } = await import('./marketdata');
+      const pf = await prefetchDailyBarsBatch(targetJobId, symbols, targetDate);
+      if (pf.enabled) await logger.info(`[Orchestrator] Batched prefetch: ${pf.written} written / ${pf.skipped} skipped`, 'Orchestrator', { jobId: targetJobId });
+    } catch (pfErr: any) {
+      await logger.warn(`[Orchestrator] Batched prefetch failed (non-blocking): ${pfErr.message}`, 'Orchestrator', { jobId: targetJobId });
+    }
+
     // 4. Dispatch tasks (Gap B4.1)
     await db.collection('jobs').doc(targetJobId).update({ stage: 'SIGNALS' });
     await logger.info(`[Orchestrator] Dispatching tasks for ${symbols.length} symbols`, 'Orchestrator', { jobId: targetJobId });
@@ -385,7 +405,7 @@ export async function runEodLogic(targetDate: string, targetJobId: string, targe
 /**
  * Morning Execution logic
  */
-export async function runMorningLogic(targetDate: string, targetJobId: string, targetUniverse: string = 'midsmall400') {
+export async function runMorningLogic(targetDate: string, targetJobId: string, targetUniverse: string = DEFAULT_UNIVERSE) {
   const db = getDb();
   const universeSnap = await db.collection('universes').doc(targetUniverse).collection('members').get();
   const symbols = universeSnap.docs.map(d => d.id);
@@ -465,7 +485,7 @@ export async function processSymbolTask(req: any) {
     const jobData = jobSnapForType.data();
     if (jobData?.type === 'EOD_RUN' && !await isStageCompleted(db, jobId, symbol, 'SIGNALS')) {
       const { doEvaluateSignals } = await import('./strategy');
-      await doEvaluateSignals(jobId, symbol, date, forceRegime, universe || jobData?.universeId || 'midsmall400');
+      await doEvaluateSignals(jobId, symbol, date, forceRegime, universe || jobData?.universeId || DEFAULT_UNIVERSE);
       await markStageCompleted(db, jobId, symbol, 'SIGNALS');
     }
 
@@ -567,7 +587,7 @@ async function checkAndFinalizeJob(db: any, jobRef: any, jobId: string, dateId: 
     const { doPlaceOrders } = await import('./paperBroker');
 
     // RS Rankings
-    const universeId = jobData.universeId || 'midsmall400';
+    const universeId = jobData.universeId || DEFAULT_UNIVERSE;
     try {
       await jobRef.update({ stage: 'RS_RANK' });
       const { doComputeRsRanking } = await import('./rsRanking');

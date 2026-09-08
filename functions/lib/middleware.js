@@ -61,7 +61,7 @@ const KNOWN_ACTIONS = new Set([
     'watchlistStats',
     'ingestFundamentals', 'syncFundamentals', 'getFundamentalsQuality',
     'updateFundamentalsSettings', 'getFundamentalsSettings',
-    'screenUniverse',
+    'screenUniverse', 'scheduledScreen',
 ]);
 function validateRequest(body) {
     const action = body === null || body === void 0 ? void 0 : body.action;

@@ -1,5 +1,6 @@
 import * as functions from 'firebase-functions/v1';
 import * as admin from 'firebase-admin';
+import { DEFAULT_UNIVERSE } from './config/runtime';
 
 // --- Shared Execution Options ---
 const v1Options = {
@@ -237,6 +238,18 @@ export const gateway = functions.runWith(v1Options).https.onRequest(async (req, 
                 await doScreenUniverse(req, res);
                 break;
             }
+            case 'scheduledScreen': {
+                // Auto-refresh the dynamic/eligible universes after the daily bar fill. Holiday-guarded.
+                const scanDate = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+                const { isTradingDay } = await import('./services/scheduler');
+                if (!isTradingDay(scanDate)) {
+                    res.status(200).send({ message: `Skipped: ${scanDate} is not a trading day` });
+                    break;
+                }
+                const { doScreenUniverse } = await import('./services/universeScreen');
+                await doScreenUniverse({ body: { ...req.body, force: true } }, res);
+                break;
+            }
 
             // V3.0: System health & scheduler
             case 'getKiteSettings': {
@@ -361,7 +374,7 @@ export const gateway = functions.runWith(v1Options).https.onRequest(async (req, 
                 }
                 console.log(`[Scheduler] Starting scheduled EOD for ${todayEod}`);
                 const { doStartEodRun } = await import('./services/orchestrator');
-                await doStartEodRun({ body: { date: todayEod, universe: 'midsmall400', force: true }, query: {} }, res);
+                await doStartEodRun({ body: { date: todayEod, universe: DEFAULT_UNIVERSE, force: true }, query: {} }, res);
                 break;
             }
             case 'scheduledMorning': {
@@ -385,13 +398,13 @@ export const gateway = functions.runWith(v1Options).https.onRequest(async (req, 
                 }
                 console.log(`[Scheduler] Starting morning fill simulation for ${morningDate}`);
                 const { doStartMorningExecution } = await import('./services/orchestrator');
-                await doStartMorningExecution({ query: { date: morningDate, universe: 'midsmall400' } }, res);
+                await doStartMorningExecution({ query: { date: morningDate, universe: DEFAULT_UNIVERSE } }, res);
                 break;
             }
             case 'startMorningExecution': {
-                // Manual trigger defaults to the live MidSmall 400 universe.
+                // Manual trigger defaults to the live hunt universe.
                 const { doStartMorningExecution } = await import('./services/orchestrator');
-                await doStartMorningExecution({ query: { date: req.body?.date, universe: req.body?.universe || 'midsmall400' } }, res);
+                await doStartMorningExecution({ query: { date: req.body?.date, universe: req.body?.universe || DEFAULT_UNIVERSE } }, res);
                 break;
             }
 
@@ -559,7 +572,7 @@ export const scheduledEod = functions
             console.warn('[Scheduler] Native EOD event sync failed:', error);
         }
         const { doStartEodRun } = await import('./services/orchestrator');
-        await doStartEodRun({ body: { date, universe: 'midsmall400', force: true }, query: {} }, scheduledResponse());
+        await doStartEodRun({ body: { date, universe: DEFAULT_UNIVERSE, force: true }, query: {} }, scheduledResponse());
         return null;
     });
 
@@ -582,6 +595,6 @@ export const scheduledMorning = functions
             return null;
         }
         const { doStartMorningExecution } = await import('./services/orchestrator');
-        await doStartMorningExecution({ query: { date, universe: 'midsmall400' } }, scheduledResponse());
+        await doStartMorningExecution({ query: { date, universe: DEFAULT_UNIVERSE } }, scheduledResponse());
         return null;
     });

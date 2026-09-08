@@ -417,6 +417,74 @@ export async function fetchHistoricalBars(
   return fetchFromKite(symbol, endISO, apiKey, accessToken, instrumentToken, 'historical-backfill', new Date(startISO));
 }
 
+/**
+ * Phase 2 — batched Kite quote prefetch. Appends TODAY's bar for a whole universe using ONE
+ * getQuote call per CHUNK_SIZE symbols (vs one historicalData call per symbol), so the per-symbol
+ * FETCH stage then sees the bar already current and skips its own Kite call. Idempotent (only writes
+ * a symbol that already has prior bars and lacks today's, with valid OHLC). Quote `ohlc.close` is the
+ * PREVIOUS close, so today's close is taken from `last_price` — valid ONLY after the 15:30 cash close.
+ * Gated by BATCHED_QUOTE_CONFIG.ENABLED; safe no-op when disabled or market still open.
+ */
+export async function prefetchDailyBarsBatch(
+  jobId: string,
+  symbols: string[],
+  runDate: string,
+): Promise<{ enabled: boolean; written: number; skipped: number; chunks: number }> {
+  const { BATCHED_QUOTE_CONFIG } = await import('../config/runtime');
+  if (!BATCHED_QUOTE_CONFIG.ENABLED) return { enabled: false, written: 0, skipped: 0, chunks: 0 };
+  if (!isMarketClosed()) {
+    await logger.warn('[MarketData] Batched-quote prefetch skipped: market not yet closed', 'MarketData', { jobId });
+    return { enabled: true, written: 0, skipped: symbols.length, chunks: 0 };
+  }
+
+  const db = getDb();
+  const settingsSnap = await db.collection('settings').doc('kite').get();
+  const settings = settingsSnap.exists ? settingsSnap.data() : null;
+  if (!settings?.apiKey || !settings?.accessToken) return { enabled: true, written: 0, skipped: symbols.length, chunks: 0 };
+
+  const kite = await getKite(settings.apiKey, settings.accessToken);
+  const dateId = runDate.replace(/-/g, '');
+  // Quote key "NSE:<tradingsymbol>" ← strip .NS; the cash index has no tradable quote here.
+  const tradables = symbols.filter((s) => s !== 'NIFTY 50' && !s.startsWith('^'));
+  const keyOf = (s: string) => `NSE:${s.endsWith('.NS') ? s.slice(0, -3) : s}`;
+
+  let written = 0, skipped = 0, chunks = 0;
+  for (let i = 0; i < tradables.length; i += BATCHED_QUOTE_CONFIG.CHUNK_SIZE) {
+    const slice = tradables.slice(i, i + BATCHED_QUOTE_CONFIG.CHUNK_SIZE);
+    const keys = slice.map(keyOf);
+    chunks++;
+    let quotes: Record<string, any> = {};
+    try {
+      quotes = await scheduleKiteRequest(() => kite.getQuote(keys));
+    } catch (err) {
+      await logger.warn(`[MarketData] Batched getQuote failed for chunk ${chunks}`, 'MarketData', { jobId, error: err instanceof Error ? err.message : String(err) });
+      skipped += slice.length;
+      continue;
+    }
+    const batch = db.batch();
+    let batchCount = 0;
+    for (const symbol of slice) {
+      const q = quotes[keyOf(symbol)];
+      const o = q?.ohlc;
+      const close = Number(q?.last_price);
+      if (!o || !Number.isFinite(close) || close <= 0 || !(o.open > 0) || !(o.high > 0) || !(o.low > 0) || o.high < o.low) { skipped++; continue; }
+      // Only append for symbols already tracked and missing today's bar (idempotent, non-destructive).
+      const daysRef = db.collection('barsD').doc(symbol).collection('days');
+      const lastSnap = await daysRef.orderBy(admin.firestore.FieldPath.documentId(), 'desc').limit(1).get();
+      if (lastSnap.empty || lastSnap.docs[0].id >= dateId) { skipped++; continue; }
+      batch.set(daysRef.doc(dateId), {
+        open: Number(o.open), high: Number(o.high), low: Number(o.low), close,
+        volume: Number(q.volume) || 0, timestamp: Timestamp.fromDate(new Date(`${runDate}T10:00:00Z`)), dateId,
+      });
+      batch.set(db.collection('barsD').doc(symbol), { lastUpdated: admin.firestore.FieldValue.serverTimestamp(), type: 'EQUITY' }, { merge: true });
+      batchCount++; written++;
+    }
+    if (batchCount > 0) await batch.commit();
+  }
+  await logger.info(`[MarketData] Batched-quote prefetch: ${written} written, ${skipped} skipped, ${chunks} chunks`, 'MarketData', { jobId, runDate });
+  return { enabled: true, written, skipped, chunks };
+}
+
 export async function updateKiteToken(req: any, res: any) {
   const db = getDb();
   let { requestToken, apiKey, apiSecret } = req.body;

@@ -36,6 +36,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.scheduledMorning = exports.scheduledEod = exports.scheduledKiteRenew = exports.orchestrateDeepSyncTask = exports.orchestrateEodTask = exports.processSymbolTask = exports.taskDispatcher = exports.gateway = void 0;
 const functions = __importStar(require("firebase-functions/v1"));
 const admin = __importStar(require("firebase-admin"));
+const runtime_1 = require("./config/runtime");
 // --- Shared Execution Options ---
 const v1Options = {
     timeoutSeconds: 540, // Max for Cloud Functions v1
@@ -268,6 +269,18 @@ exports.gateway = functions.runWith(v1Options).https.onRequest(async (req, res) 
                 await doScreenUniverse(req, res);
                 break;
             }
+            case 'scheduledScreen': {
+                // Auto-refresh the dynamic/eligible universes after the daily bar fill. Holiday-guarded.
+                const scanDate = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+                const { isTradingDay } = await Promise.resolve().then(() => __importStar(require('./services/scheduler')));
+                if (!isTradingDay(scanDate)) {
+                    res.status(200).send({ message: `Skipped: ${scanDate} is not a trading day` });
+                    break;
+                }
+                const { doScreenUniverse } = await Promise.resolve().then(() => __importStar(require('./services/universeScreen')));
+                await doScreenUniverse({ body: Object.assign(Object.assign({}, req.body), { force: true }) }, res);
+                break;
+            }
             // V3.0: System health & scheduler
             case 'getKiteSettings': {
                 const kdb = admin.apps.length ? admin.firestore() : admin.initializeApp() && admin.firestore();
@@ -399,7 +412,7 @@ exports.gateway = functions.runWith(v1Options).https.onRequest(async (req, res) 
                 }
                 console.log(`[Scheduler] Starting scheduled EOD for ${todayEod}`);
                 const { doStartEodRun } = await Promise.resolve().then(() => __importStar(require('./services/orchestrator')));
-                await doStartEodRun({ body: { date: todayEod, universe: 'midsmall400', force: true }, query: {} }, res);
+                await doStartEodRun({ body: { date: todayEod, universe: runtime_1.DEFAULT_UNIVERSE, force: true }, query: {} }, res);
                 break;
             }
             case 'scheduledMorning': {
@@ -423,13 +436,13 @@ exports.gateway = functions.runWith(v1Options).https.onRequest(async (req, res) 
                 }
                 console.log(`[Scheduler] Starting morning fill simulation for ${morningDate}`);
                 const { doStartMorningExecution } = await Promise.resolve().then(() => __importStar(require('./services/orchestrator')));
-                await doStartMorningExecution({ query: { date: morningDate, universe: 'midsmall400' } }, res);
+                await doStartMorningExecution({ query: { date: morningDate, universe: runtime_1.DEFAULT_UNIVERSE } }, res);
                 break;
             }
             case 'startMorningExecution': {
-                // Manual trigger defaults to the live MidSmall 400 universe.
+                // Manual trigger defaults to the live hunt universe.
                 const { doStartMorningExecution } = await Promise.resolve().then(() => __importStar(require('./services/orchestrator')));
-                await doStartMorningExecution({ query: { date: (_d = req.body) === null || _d === void 0 ? void 0 : _d.date, universe: ((_e = req.body) === null || _e === void 0 ? void 0 : _e.universe) || 'midsmall400' } }, res);
+                await doStartMorningExecution({ query: { date: (_d = req.body) === null || _d === void 0 ? void 0 : _d.date, universe: ((_e = req.body) === null || _e === void 0 ? void 0 : _e.universe) || runtime_1.DEFAULT_UNIVERSE } }, res);
                 break;
             }
             case 'syncNseHolidays': {
@@ -587,7 +600,7 @@ exports.scheduledEod = functions
         console.warn('[Scheduler] Native EOD event sync failed:', error);
     }
     const { doStartEodRun } = await Promise.resolve().then(() => __importStar(require('./services/orchestrator')));
-    await doStartEodRun({ body: { date, universe: 'midsmall400', force: true }, query: {} }, scheduledResponse());
+    await doStartEodRun({ body: { date, universe: runtime_1.DEFAULT_UNIVERSE, force: true }, query: {} }, scheduledResponse());
     return null;
 });
 /** Native morning fill schedule; supersedes the manually-created gateway scheduler job. */
@@ -609,7 +622,7 @@ exports.scheduledMorning = functions
         return null;
     }
     const { doStartMorningExecution } = await Promise.resolve().then(() => __importStar(require('./services/orchestrator')));
-    await doStartMorningExecution({ query: { date, universe: 'midsmall400' } }, scheduledResponse());
+    await doStartMorningExecution({ query: { date, universe: runtime_1.DEFAULT_UNIVERSE } }, scheduledResponse());
     return null;
 });
 //# sourceMappingURL=index.js.map

@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.EARNINGS_QUALITY_CONFIG = exports.SCREEN_CONFIG = exports.SECURITY_CONFIG = exports.REGIME_RSI_THRESHOLDS = exports.BEAR_STRATEGY_CONFIG = exports.RS_STRATEGY_THRESHOLDS = exports.STRATEGY_MIN_SCORES = exports.REGIME_HARDENING = exports.DATA_VALIDATION = exports.INDIAN_FEE_CONFIG = exports.MARKET_HOURS = exports.ORCH_CONFIG = exports.GAP_STRESS_CONFIG = exports.VOL_TARGET_CONFIG = exports.SHORT_CONFIG = exports.ADV_LIMITS = exports.EVENT_CONFIG = exports.EXIT_PROFILES = exports.RISK_LIMITS = exports.SLIPPAGE_CONFIG = exports.DRAWDOWN_CONFIG = exports.GAP_RISK_CONFIG = exports.VDU_CONFIG = exports.RS_CONFIG = exports.CORR_CONFIG = exports.STRATEGY_V11 = exports.EQUITY_STRATEGIES = exports.ATH_CONFIG = exports.METALS_CONFIG = exports.VCP_CONFIG = exports.SEPA_CONFIG = exports.RUNTIME_CONFIG = void 0;
+exports.EARNINGS_QUALITY_CONFIG = exports.BATCHED_QUOTE_CONFIG = exports.SCREEN_CONFIG = exports.SECURITY_CONFIG = exports.REGIME_RSI_THRESHOLDS = exports.BEAR_STRATEGY_CONFIG = exports.RS_STRATEGY_THRESHOLDS = exports.STRATEGY_MIN_SCORES = exports.REGIME_HARDENING = exports.DATA_VALIDATION = exports.INDIAN_FEE_CONFIG = exports.MARKET_HOURS = exports.ORCH_CONFIG = exports.GAP_STRESS_CONFIG = exports.VOL_TARGET_CONFIG = exports.SHORT_CONFIG = exports.ADV_LIMITS = exports.EVENT_CONFIG = exports.EXIT_PROFILES = exports.RISK_LIMITS = exports.SLIPPAGE_CONFIG = exports.DRAWDOWN_CONFIG = exports.GAP_RISK_CONFIG = exports.VDU_CONFIG = exports.RS_CONFIG = exports.CORR_CONFIG = exports.STRATEGY_V11 = exports.EQUITY_STRATEGIES = exports.ATH_CONFIG = exports.METALS_CONFIG = exports.VCP_CONFIG = exports.SEPA_CONFIG = exports.DEFAULT_UNIVERSE = exports.RUNTIME_CONFIG = void 0;
 exports.RUNTIME_CONFIG = {
     TRADING_ENABLED: true,
     PAPER_ONLY: true,
@@ -11,6 +11,10 @@ exports.RUNTIME_CONFIG = {
     EXIT_EXECUTION_MODEL: 'NEXT_OPEN',
     KILL_SWITCH: false, // V3: Emergency halt — blocks ALL new entries when true
 };
+// Live hunt/EOD universe. The dynamic screener (screenUniverse) rebuilds
+// universes/dynamic each evening from the fresh nifty500 bars; the EOD/morning runs
+// hunt on it. Set env DEFAULT_UNIVERSE to override (e.g. 'midsmall400' to revert).
+exports.DEFAULT_UNIVERSE = process.env.DEFAULT_UNIVERSE || 'dynamic';
 // SEPA (Minervini-style) faithful port. When SEPA_ONLY is true the signal engine
 // runs the SEPA strategy (alongside the metals sleeve) and the legacy multi-
 // strategy equity path is bypassed. This is now the LIVE daily configuration —
@@ -390,6 +394,22 @@ exports.SCREEN_CONFIG = {
     REQUIRE_ABOVE_200DMA: true, // must be above the 200-DMA (stage-2 uptrend)
     MOMENTUM_TOP_PCT: 0.20, // keep only the top 20% by 126-day momentum (RS leadership)
     WINDOW: 260, // trailing bars to read per symbol for the screen
+    // Phase 4 — two-speed pools, TTL and budget guardrails.
+    ELIGIBLE_TARGET: 'eligible', // slow pool: everything passing the necessary preconditions
+    TRADE_TARGET: 'dynamic', // fast pool: top-momentum cut the hunt actually trades
+    MAX_CANDIDATES: 120, // hard cap on the trade pool (budget guardrail)
+    MIN_CANDIDATES: 10, // floor: below this the screen result is rejected (fail-safe)
+    MAX_BAR_STALENESS_DAYS: 5, // skip symbols whose latest bar is older than this (TTL/staleness)
+    TTL_HOURS: 20, // rebuild dynamic if the last screen is older than this
+};
+// Phase 2 — batched Kite quote prefetch. When enabled, the EOD orchestrator makes ONE
+// getQuote call per ~200-symbol chunk at dispatch time to append today's bar for the whole
+// universe, so the per-symbol FETCH stage sees the bar already current and skips its own
+// Kite call (1 call/200 symbols vs 200 calls). Quote OHLC is only final AFTER the 15:30
+// close, so this is gated OFF by default until validated against the historicalData path.
+exports.BATCHED_QUOTE_CONFIG = {
+    ENABLED: process.env.FETCH_BATCHED_QUOTES === '1',
+    CHUNK_SIZE: 200, // Kite getQuote accepts up to ~500 instruments/call; stay conservative
 };
 // Phase 1a: Minervini earnings-quality red-flag thresholds. This is a VETO/DOWNGRADE
 // layer (distinct from the positive growth scorer): it flags accounting/governance

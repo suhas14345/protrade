@@ -122,7 +122,7 @@ async function getInstrumentTokenMap(apiKey, accessToken) {
  * HTTP Triggers for Dashboard/Scheduler
  */
 async function doStartEodRun(req, res) {
-    const { date, universe = 'nifty50', forceRegime, force } = Object.assign(Object.assign({}, req.query), req.body);
+    const { date, universe = runtime_1.DEFAULT_UNIVERSE, forceRegime, force } = Object.assign(Object.assign({}, req.query), req.body);
     if (!date) {
         res.status(400).send({ error: 'Missing "date" query parameter (YYYY-MM-DD)' });
         return;
@@ -162,7 +162,7 @@ async function doStartEodRun(req, res) {
  * Task Handler: Main EOD Orchestration Loop
  */
 async function orchestrateEodTask(req) {
-    const { jobId, date, universe = 'nifty50', forceRegime } = req.body;
+    const { jobId, date, universe = 'midsmall400', forceRegime } = req.body;
     if (!jobId || !date) {
         console.error('[Orchestrator] Missing jobId or date in task body');
         return;
@@ -185,7 +185,7 @@ async function orchestrateEodTask(req) {
  * Deep Sync: Force-fetches historical data (e.g. 90 days) for all symbols in a universe.
  */
 async function doStartDeepSync(req, res) {
-    const { days = 90, universe = 'nifty500' } = Object.assign(Object.assign({}, req.query), req.body);
+    const { days = 90, universe = 'midsmall400' } = Object.assign(Object.assign({}, req.query), req.body);
     const jobId = `deepsync_${new Date().toISOString().split('T')[0]}_${universe}_${Date.now()}`;
     const db = getDb();
     const runningJobs = await db.collection('jobs').where('status', '==', 'RUNNING').limit(1).get();
@@ -216,7 +216,7 @@ async function doStartDeepSync(req, res) {
  * Task Handler: Deep Sync Orchestration Loop
  */
 async function orchestrateDeepSyncTask(req) {
-    const { jobId, universe = 'nifty500', days } = req.body;
+    const { jobId, universe = 'midsmall400', days } = req.body;
     if (!jobId || !universe) {
         console.error('[Orchestrator] Missing jobId or universe in Deep Sync task body');
         return;
@@ -257,7 +257,7 @@ async function runDeepSyncLogic(jobId, universeId, forceDays) {
     }
 }
 async function doStartMorningExecution(req, res) {
-    const { date, universe = 'nifty50' } = req.query;
+    const { date, universe = runtime_1.DEFAULT_UNIVERSE } = req.query;
     if (!date) {
         res.status(400).send({ error: 'Missing "date"' });
         return;
@@ -329,7 +329,7 @@ async function terminateJob(req, res) {
 /**
  * Core Logic: EOD Run (Refactored Gap B4)
  */
-async function runEodLogic(targetDate, targetJobId, targetUniverse = 'nifty50', forceRegime) {
+async function runEodLogic(targetDate, targetJobId, targetUniverse = runtime_1.DEFAULT_UNIVERSE, forceRegime) {
     const db = getDb();
     const dateId = toDateId(targetDate);
     const settingsSnap = await db.collection('settings').doc('kite').get();
@@ -352,7 +352,16 @@ async function runEodLogic(targetDate, targetJobId, targetUniverse = 'nifty50', 
         return;
     }
     const universeSnap = await db.collection('universes').doc(targetUniverse).collection('members').get();
-    const symbols = universeSnap.docs.map((d) => d.id).filter((s) => s !== '^NSEI');
+    let symbols = universeSnap.docs.map((d) => d.id).filter((s) => s !== '^NSEI');
+    // Fail-safe: never run the hunt on an empty universe (a stale/failed screen would silently
+    // trade nothing and leave positions unmanaged). Fall back to the broad source pool + alert.
+    if (symbols.length === 0) {
+        await (0, alerting_1.raiseAlert)(alerting_1.AlertType.JOB_FAILED, 'WARN', `Universe '${targetUniverse}' empty — falling back to '${runtime_1.SCREEN_CONFIG.SOURCE_UNIVERSE}'`, { jobId: targetJobId, universe: targetUniverse });
+        await logger_1.logger.warn(`[Orchestrator] Universe '${targetUniverse}' empty; falling back to '${runtime_1.SCREEN_CONFIG.SOURCE_UNIVERSE}'`, 'Orchestrator', { jobId: targetJobId });
+        targetUniverse = runtime_1.SCREEN_CONFIG.SOURCE_UNIVERSE;
+        const fbSnap = await db.collection('universes').doc(targetUniverse).collection('members').get();
+        symbols = fbSnap.docs.map((d) => d.id).filter((s) => s !== '^NSEI');
+    }
     // Metals sleeve ETFs are always part of the daily run, independent of universe membership.
     if (runtime_1.METALS_CONFIG.ENABLED) {
         for (const m of runtime_1.METALS_CONFIG.SYMBOLS)
@@ -380,6 +389,18 @@ async function runEodLogic(targetDate, targetJobId, targetUniverse = 'nifty50', 
         else {
             await doComputeRegime(targetDate, targetJobId, indexSymbol, targetUniverse);
         }
+        // Phase 2: batched-quote prefetch of today's bar for the whole universe (one getQuote per
+        // ~200 symbols). No-op unless FETCH_BATCHED_QUOTES=1; when on, the per-symbol FETCH below
+        // sees the bar already current and skips its own Kite call.
+        try {
+            const { prefetchDailyBarsBatch } = await Promise.resolve().then(() => __importStar(require('./marketdata')));
+            const pf = await prefetchDailyBarsBatch(targetJobId, symbols, targetDate);
+            if (pf.enabled)
+                await logger_1.logger.info(`[Orchestrator] Batched prefetch: ${pf.written} written / ${pf.skipped} skipped`, 'Orchestrator', { jobId: targetJobId });
+        }
+        catch (pfErr) {
+            await logger_1.logger.warn(`[Orchestrator] Batched prefetch failed (non-blocking): ${pfErr.message}`, 'Orchestrator', { jobId: targetJobId });
+        }
         // 4. Dispatch tasks (Gap B4.1)
         await db.collection('jobs').doc(targetJobId).update({ stage: 'SIGNALS' });
         await logger_1.logger.info(`[Orchestrator] Dispatching tasks for ${symbols.length} symbols`, 'Orchestrator', { jobId: targetJobId });
@@ -401,7 +422,7 @@ async function runEodLogic(targetDate, targetJobId, targetUniverse = 'nifty50', 
 /**
  * Morning Execution logic
  */
-async function runMorningLogic(targetDate, targetJobId, targetUniverse = 'nifty50') {
+async function runMorningLogic(targetDate, targetJobId, targetUniverse = runtime_1.DEFAULT_UNIVERSE) {
     const db = getDb();
     const universeSnap = await db.collection('universes').doc(targetUniverse).collection('members').get();
     const symbols = universeSnap.docs.map(d => d.id);
@@ -478,7 +499,7 @@ async function processSymbolTask(req) {
         const jobData = jobSnapForType.data();
         if ((jobData === null || jobData === void 0 ? void 0 : jobData.type) === 'EOD_RUN' && !await isStageCompleted(db, jobId, symbol, 'SIGNALS')) {
             const { doEvaluateSignals } = await Promise.resolve().then(() => __importStar(require('./strategy')));
-            await doEvaluateSignals(jobId, symbol, date, forceRegime, universe || (jobData === null || jobData === void 0 ? void 0 : jobData.universeId) || 'nifty500');
+            await doEvaluateSignals(jobId, symbol, date, forceRegime, universe || (jobData === null || jobData === void 0 ? void 0 : jobData.universeId) || runtime_1.DEFAULT_UNIVERSE);
             await markStageCompleted(db, jobId, symbol, 'SIGNALS');
         }
         // Atomic update and wrap-up check
@@ -578,7 +599,7 @@ async function checkAndFinalizeJob(db, jobRef, jobId, dateId, date, jobData) {
         const { generateJobReport } = await Promise.resolve().then(() => __importStar(require('./reporting')));
         const { doPlaceOrders } = await Promise.resolve().then(() => __importStar(require('./paperBroker')));
         // RS Rankings
-        const universeId = jobData.universeId || 'nifty500';
+        const universeId = jobData.universeId || runtime_1.DEFAULT_UNIVERSE;
         try {
             await jobRef.update({ stage: 'RS_RANK' });
             const { doComputeRsRanking } = await Promise.resolve().then(() => __importStar(require('./rsRanking')));
@@ -643,6 +664,19 @@ async function checkAndFinalizeJob(db, jobRef, jobId, dateId, date, jobData) {
         }
         catch (wrapSubErr) {
             await logger_1.logger.error(`[Orchestrator] Non-critical wrap-up task failed: ${wrapSubErr.message}`, 'Orchestrator', { jobId });
+        }
+        // Daily Telegram digest (EOD only). No-op unless settings/telegram is enabled.
+        try {
+            const { sendDailyDigest } = await Promise.resolve().then(() => __importStar(require('./telegram')));
+            const tg = await sendDailyDigest(date);
+            if (tg.sent)
+                await logger_1.logger.info(`[Orchestrator] Telegram digest sent for ${date}`, 'Orchestrator', { jobId });
+            else if (tg.reason && tg.reason !== 'disabled' && tg.reason !== 'not_configured') {
+                await logger_1.logger.warn(`[Orchestrator] Telegram digest not sent: ${tg.reason}`, 'Orchestrator', { jobId });
+            }
+        }
+        catch (tgErr) {
+            await logger_1.logger.warn(`[Orchestrator] Telegram digest error: ${tgErr.message}`, 'Orchestrator', { jobId });
         }
         await logger_1.logger.info(`[Orchestrator] Job ${jobId} Completed. Done: ${done}, Failed: ${failed}, Total: ${total}`, 'Orchestrator', { jobId, date, done, failed, total });
         await auditLog(db, jobId, 'JOB_COMPLETE', { done, failed, total });

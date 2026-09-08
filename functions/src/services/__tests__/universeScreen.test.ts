@@ -1,9 +1,7 @@
 import { evaluateScreenStats } from '../universeScreen';
+import { SCREEN_CONFIG } from '../../config/runtime';
 
-const cfg = {
-  SOURCE_UNIVERSE: 'nifty500', MIN_PRICE: 50, MIN_MED_TRADED_VALUE: 30_000_000,
-  MIN_BARS: 200, NEAR_HIGH_PCT: 0.25, REQUIRE_ABOVE_200DMA: true, MOMENTUM_TOP_PCT: 0.20, WINDOW: 260,
-};
+const cfg = SCREEN_CONFIG;
 
 // Build 252 bars: rising series ending near its high, with given latest close + volume.
 function series(n: number, start: number, step: number, vol: number) {
