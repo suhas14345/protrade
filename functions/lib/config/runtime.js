@@ -31,6 +31,10 @@ exports.SEPA_CONFIG = {
     BOOK_PCT: 0.70, // SEPA capital book: gross deployed capital capped at this fraction of
     // equity (metals sleeve gets the rest via ALLOC_PCT). Prevents the two
     // strategies from jointly committing > 100% of equity (implicit leverage).
+    // Paper-study mode: stage fully-qualified SEPA setups even when the index regime is down,
+    // flagging the signal as regime-ignored so it stands out. Set SEPA_IGNORE_REGIME=0 to restore
+    // the strict index-up gate. Defaults ON per the current paper-trading configuration.
+    IGNORE_REGIME_GATE: process.env.SEPA_IGNORE_REGIME !== '0',
 };
 // VCP watchlist / pivot state machine (IndiaPulse-style). Governs how symbols are
 // classified on the pre-breakout watchlist and when a breakout is "triggered".

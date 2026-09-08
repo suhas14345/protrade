@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { db } from './firebase'
 import { collection, doc, onSnapshot, query, orderBy, limit } from 'firebase/firestore'
 import { LayoutDashboard, Activity, Zap, Download, History, PieChart as PieIcon, BarChart3, LogOut, Terminal, Play, CheckCircle2, XCircle, Loader2, Settings } from 'lucide-react'
-import { ResponsiveContainer, BarChart, Bar, LineChart, Line, XAxis, YAxis, Tooltip, CartesianGrid } from 'recharts'
+import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid } from 'recharts'
 import Login from './components/Login'
 
 const GATEWAY_URL = 'https://us-central1-suhas-ag.cloudfunctions.net/gateway';
@@ -71,6 +71,7 @@ function App() {
   const [watchlist, setWatchlist] = useState<any[]>([])
   const [wlStats, setWlStats] = useState<any>(null)
   const [qualityMap, setQualityMap] = useState<Record<string, { status: string; flags: any[] }>>({})
+  const [sectorMap, setSectorMap] = useState<Record<string, string>>({})
   const [wlStatsLoading, setWlStatsLoading] = useState(false)
   const [logs, setLogs] = useState<any[]>([])
   const [stats, setStats] = useState({ equity: 1000000, realizedPnl: 0, openPositions: 0, winRate: 0 })
@@ -79,7 +80,6 @@ function App() {
   const universe = 'midsmall400'
   const [inventory, setInventory] = useState<any>(null);
   const [isRefreshingInventory, setIsRefreshingInventory] = useState(false);
-  const [equitySeries, setEquitySeries] = useState<any[]>([]);
   // Use IST (UTC+5:30) so the dashboard date matches the NSE trading day
   const [selectedDate, setSelectedDate] = useState(() => {
     const now = new Date();
@@ -191,16 +191,6 @@ function App() {
       }));
     });
 
-    // 7. Listen for the persisted daily equity time-series (real equity curve,
-    //    written every EOD at stats/equityCurve/days/{dateId}).
-    const equityQuery = query(collection(db, 'stats', 'equityCurve', 'days'), orderBy('__name__', 'desc'), limit(120));
-    const unsubEquity = onSnapshot(equityQuery, (snap: any) => {
-      const rows = snap.docs
-        .map((d: any) => ({ dateId: d.id, ...(d.data() as any) }))
-        .reverse();
-      setEquitySeries(rows);
-    });
-
     // 8. Listen for fundamentals earnings-quality badges (per-symbol, not date-scoped)
     const unsubQuality = onSnapshot(collection(db, 'fundamentalsQuality'), (snap: any) => {
       const map: Record<string, { status: string; flags: any[] }> = {};
@@ -214,13 +204,20 @@ function App() {
     // Fundamentals vendor configuration status (never returns the key)
     gw('getFundamentalsSettings').then((r: any) => setFundConfigured(r)).catch(() => {});
 
+    // Sector map for watchlist segmentation (symbol -> sector), from the active universe.
+    const unsubSectors = onSnapshot(collection(db, 'universes', 'midsmall400', 'members'), (snap: any) => {
+      const map: Record<string, string> = {};
+      snap.docs.forEach((d: any) => { const m = d.data(); if (m?.symbol) map[m.symbol] = m.sector || 'Unknown'; });
+      setSectorMap(map);
+    });
+
     return () => {
       unsubPos();
       unsubJobs();
       unsubAccount();
       unsubStats();
-      unsubEquity();
       unsubQuality();
+      unsubSectors();
     };
   }, [authToken])
 
@@ -476,28 +473,19 @@ function App() {
     pnl: p.realizedPnl
   }));
 
-  // Calculate Equity Curve Data
-  // Prefer the persisted daily equity snapshots (stats/equityCurve/days) which track
-  // real account equity (initial + realized + open MTM) every EOD. Fall back to the
-  // closed-trade cumulative PnL only when no snapshots exist yet.
-  let equityCurveData: any[];
-  if (equitySeries.length > 0) {
-    equityCurveData = equitySeries.map((r) => ({
-      name: `${r.dateId?.slice(4, 6)}/${r.dateId?.slice(6, 8)}`,
-      totalPnL: Math.round(Number(r.equity) || 0),
-      symbol: r.dateId,
-    }));
-  } else {
-    const sortedHistory = [...history].sort((a, b) => (a.lastUpdatedAt?.seconds || 0) - (b.lastUpdatedAt?.seconds || 0));
-    let runningPnL = 0;
-    equityCurveData = sortedHistory.map((p, i) => {
-      runningPnL += (p.realizedPnl || 0);
-      return { name: i + 1, totalPnL: runningPnL, symbol: p.symbol };
-    });
-    if (equityCurveData.length > 0) {
-      equityCurveData.unshift({ name: 0, totalPnL: 0, symbol: 'START' });
+  // Watchlist segmentation by sector (replaces the equity curve). Counts total tracked names,
+  // plus how many are fully SEPA-qualified (the standout rows) per sector.
+  const sectorSegments = (() => {
+    const acc: Record<string, { sector: string; total: number; ready: number; triggered: number }> = {};
+    for (const w of watchlist) {
+      const sector = sectorMap[w.symbol] || 'Unknown';
+      if (!acc[sector]) acc[sector] = { sector, total: 0, ready: 0, triggered: 0 };
+      acc[sector].total++;
+      if (w.sepaQualified) acc[sector].ready++;
+      if (w.status === 'TRIGGERED') acc[sector].triggered++;
     }
-  }
+    return Object.values(acc).sort((a, b) => b.total - a.total);
+  })();
 
   // Portfolio breakdown — all reconcile by construction: equity = cash + deployed + unrealized.
   const inr = (n: number) => '₹' + Number(n || 0).toLocaleString('en-IN', { maximumFractionDigits: 2 });
@@ -934,6 +922,11 @@ function App() {
                           </div>
                         </div>
                         <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                          {w.sepaQualified && (
+                            <span title={w.regimeIgnored ? 'Fully SEPA-qualified — staged despite down market (regime ignored)' : 'Fully SEPA-qualified setup'} style={{ fontSize: '0.6rem', fontWeight: 700, padding: '0.15rem 0.4rem', borderRadius: '4px', color: '#0f172a', background: '#fbbf24', whiteSpace: 'nowrap' }}>
+                              ⭐ SEPA{w.regimeIgnored ? ' • REGIME-IGN' : ''}
+                            </span>
+                          )}
                           <span title={qTip} style={{ fontSize: '0.6rem', fontWeight: 700, padding: '0.15rem 0.4rem', borderRadius: '4px', color: qColor, border: `1px solid ${qColor}`, whiteSpace: 'nowrap' }}>
                             Q: {qLabel}
                           </span>
@@ -1067,24 +1060,30 @@ function App() {
 
           <div className="charts-area">
             <section className="card">
-              <h3 style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '1.5rem' }}>
-                <Activity size={18} /> Equity Curve
+              <h3 style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '1rem' }}>
+                <Activity size={18} /> Watchlist by Sector
               </h3>
-              <div style={{ height: '200px' }}>
-                <ResponsiveContainer width="100%" height="100%">
-                  <LineChart data={equityCurveData}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#334155" vertical={false} />
-                    <XAxis dataKey="name" stroke="#64748b" fontSize={10} axisLine={false} tickLine={false} />
-                    <YAxis stroke="#64748b" fontSize={10} axisLine={false} tickLine={false} />
-                    <Tooltip 
-                      contentStyle={{ background: '#1e293b', border: 'none', borderRadius: '8px' }}
-                      labelStyle={{ color: '#94a3b8' }}
-                      formatter={(value: any) => [`₹${Number(value).toLocaleString()}`, equitySeries.length > 0 ? 'Equity' : 'Cumulative PnL']}
-                    />
-                    <Line type="monotone" dataKey="totalPnL" stroke="#10b981" strokeWidth={2} dot={{ fill: '#10b981', r: 3 }} activeDot={{ r: 5 }} />
-                  </LineChart>
-                </ResponsiveContainer>
-              </div>
+              {sectorSegments.length === 0 ? (
+                <div style={{ padding: '2rem', textAlign: 'center', color: '#64748b', fontSize: '0.85rem' }}>No watchlist names for this date.</div>
+              ) : (
+                <div style={{ maxHeight: '220px', overflowY: 'auto' }}>
+                  <table className="table" style={{ fontSize: '0.8rem' }}>
+                    <thead>
+                      <tr><th>Sector</th><th style={{ textAlign: 'right' }}>Tracked</th><th style={{ textAlign: 'right' }}>⭐ Ready</th><th style={{ textAlign: 'right' }}>Triggered</th></tr>
+                    </thead>
+                    <tbody>
+                      {sectorSegments.map((s) => (
+                        <tr key={s.sector}>
+                          <td>{s.sector}</td>
+                          <td style={{ textAlign: 'right' }}>{s.total}</td>
+                          <td style={{ textAlign: 'right', color: s.ready > 0 ? '#fbbf24' : '#64748b', fontWeight: s.ready > 0 ? 700 : 400 }}>{s.ready}</td>
+                          <td style={{ textAlign: 'right', color: s.triggered > 0 ? '#10b981' : '#64748b' }}>{s.triggered}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
             </section>
 
 

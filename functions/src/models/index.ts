@@ -169,6 +169,8 @@ export interface Signal {
   rr?: number;
   checklist: Record<string, boolean>;
   reasons: Record<string, any>;
+  // Set when a SEPA setup was staged despite a down index regime (paper-study mode).
+  regimeOverride?: boolean;
   status: 'NEW' | 'APPROVED' | 'REJECTED' | 'ORDERED' | 'IN_TRADE' | 'DONE' | 'REJECTED_BY_RISK' | 'CANCELLED';
   riskApproval?: {
     status: 'APPROVED' | 'REJECTED';

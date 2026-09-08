@@ -436,6 +436,11 @@ async function evaluateSepaSignal(
     Number(lastBar.volume) >= VCP_CONFIG.TRIGGER_VOL_MULT * Number(features.vol50 || 0) &&
     closeTopFrac >= (1 - VCP_CONFIG.TRIGGER_CLOSE_TOP_PCT);
 
+  // Full SEPA entry qualification (everything except the index-regime gate). Computed here so
+  // the watchlist row can flag a genuinely buy-ready setup even when the market is blocked.
+  const entryConfirmed = Number.isFinite(pivot) ? breakoutTriggered : nearHigh;
+  const sepaFullyQualified = trendTemplate && nearHigh && rsLeader && entryConfirmed && vcpPassed;
+
   // Classify the structure state for the watchlist.
   let vcpState: 'TRIGGERED' | 'EXTENDED' | 'READY' | 'SETUP' | 'INVALIDATED' | null = null;
   if (Number.isFinite(distToPivotPct)) {
@@ -466,6 +471,9 @@ async function evaluateSepaSignal(
       strategy: 'SepaBreakoutEOD',
       status: vcpState,
       marketBlocked: !indexUp,
+      // Fully passes every SEPA entry gate except (possibly) the index regime — the standout row.
+      sepaQualified: sepaFullyQualified,
+      regimeIgnored: sepaFullyQualified && !indexUp,
       close,
       pivot: Number.isFinite(pivot) ? pivot : null,
       structuralLow: Number.isFinite(structuralLow) ? structuralLow : null,
@@ -486,8 +494,12 @@ async function evaluateSepaSignal(
     });
   }
 
-  // ---- Entry gates (produce an APPROVED BUY only when the market gate is open) ----
-  if (!indexUp) return;
+  // ---- Entry gates ----
+  // Regime gate: SEPA normally buys only while the index is in a confirmed uptrend. In paper-
+  // study mode (IGNORE_REGIME_GATE) we still stage fully-qualified setups in a down market and
+  // flag the signal as regime-ignored so it stands out.
+  const regimeIgnored = !indexUp;
+  if (regimeIgnored && !SEPA_CONFIG.IGNORE_REGIME_GATE) return;
 
   // Fundamentals veto — a confirmed CRITICAL earnings-quality flag blocks the buy
   // (the watchlist row is still tracked/badged above). Fail-soft on missing data.
@@ -507,7 +519,6 @@ async function evaluateSepaSignal(
   // Entry gate: require the near-high + RS leadership + trend template, PLUS a genuine
   // breakout through the pivot when a pivot is available (falls back to near-high when
   // pivot data is missing so thinly-seeded symbols still behave as before).
-  const entryConfirmed = Number.isFinite(pivot) ? breakoutTriggered : nearHigh;
   if (!(trendTemplate && nearHigh && rsLeader && entryConfirmed)) return;
 
   // A valid final volume contraction is a non-negotiable VCP entry requirement.
@@ -535,9 +546,10 @@ async function evaluateSepaSignal(
     indicativeStopPrice: close - stopDistance,
     indicativeTargets: [],
     indicativeRr: 0,
-    checklist: { regime: true, trendTemplate: true, nearHigh: true, rsLeader: true },
+    checklist: { regime: indexUp, trendTemplate: true, nearHigh: true, rsLeader: true },
     reasons: {
       marketState: regime.marketState,
+      regimeIgnored,
       rsRank126,
       pctFrom52wHigh: (((close - high252) / high252) * 100).toFixed(1) + '%',
       pivot: Number.isFinite(pivot) ? pivot : undefined,
@@ -549,12 +561,13 @@ async function evaluateSepaSignal(
     atrRef: stopDistance,
     stopAtrMult: 1,
     targetAtrMult: 1000,
+    regimeOverride: regimeIgnored,
     riskApproval: { status: 'APPROVED', sizedQty, riskAmount },
   };
 
   const signalId = `${symbol}_${dateId}_SepaBreakoutEOD`;
   await db.collection('signals').doc(dateId).collection('items').doc(signalId).set(signal);
-  await logger.info(`[Strategy] SEPA APPROVED ${symbol} rank126=${rsRank126} qty=${sizedQty}`, 'Strategy', { jobId, symbol, dateId });
+  await logger.info(`[Strategy] SEPA APPROVED ${symbol} rank126=${rsRank126} qty=${sizedQty}${regimeIgnored ? ' (REGIME-IGNORED)' : ''}`, 'Strategy', { jobId, symbol, dateId, regimeIgnored });
 }
 
 /**
