@@ -273,6 +273,8 @@ export interface PaperPosition {
   mfeAtr?: number;
   entryDateId?: string;
   riskAmount?: number;
+  // Entry taken from a SEPA setup staged despite a down index regime (paper-study mode).
+  regimeOverride?: boolean;
   signalId?: string;
   signalPath?: string;
 

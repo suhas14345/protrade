@@ -379,6 +379,8 @@ async function doOpenFillSimulation(jobId, runDate, symbol) {
                 riskAmount: order.risk.riskAmount, signalId: order.createdFromSignalId, signalPath,
                 // V2.4: Strategy field for per-strategy exit profiles
                 strategy: signal.strategy,
+                // Carry the regime-ignored flag so active trades can show it stood against the market.
+                regimeOverride: signal.regimeOverride === true,
                 // V3.1: fee/qty basis for realised-P&L attribution across (partial) exits
                 entryFee: feeEstimate,
                 entryQty: order.intendedQty,

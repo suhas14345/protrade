@@ -43,6 +43,7 @@ interface Position {
   targets?: number[];
   stopPrice?: number;
   entryDate?: string;
+  regimeOverride?: boolean;
 }
 
 interface Job {
@@ -858,7 +859,12 @@ function App() {
                       
                       return (
                         <tr key={p.symbol}>
-                          <td><span className="symbol-tag">{p.symbol}</span></td>
+                          <td>
+                            <span className="symbol-tag">{p.symbol}</span>
+                            {p.regimeOverride && (
+                              <span title="Entered against a down index regime (regime-ignored SEPA stage)" style={{ marginLeft: '0.4rem', fontSize: '0.6rem', fontWeight: 700, padding: '0.1rem 0.35rem', borderRadius: '4px', color: '#0f172a', background: '#f59e0b', whiteSpace: 'nowrap' }}>⚠ REGIME</span>
+                            )}
+                          </td>
                           <td>{p.direction || 'BUY'} × {p.qty}</td>
                           <td>₹{entry.toFixed(2)}</td>
                           <td>{p.currentPrice != null ? `₹${p.currentPrice.toFixed(2)}` : '—'}</td>
