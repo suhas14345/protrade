@@ -505,6 +505,10 @@ async function evaluateSepaSignal(db, jobId, symbol, dateId, features, regime, a
             updatedAt: admin.firestore.FieldValue.serverTimestamp(),
         });
     }
+    else {
+        // Self-cleaning: drop any stale row from an earlier run so the watchlist stays focused on quality.
+        await db.collection('watchlist').doc(dateId).collection('items').doc(`${symbol}_SepaBreakoutEOD`).delete().catch(() => { });
+    }
     // ---- Entry gates ----
     // Regime gate: SEPA normally buys only while the index is in a confirmed uptrend. In paper-
     // study mode (IGNORE_REGIME_GATE) we still stage fully-qualified setups in a down market and

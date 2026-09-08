@@ -511,6 +511,9 @@ async function evaluateSepaSignal(
       },
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     });
+  } else {
+    // Self-cleaning: drop any stale row from an earlier run so the watchlist stays focused on quality.
+    await db.collection('watchlist').doc(dateId).collection('items').doc(`${symbol}_SepaBreakoutEOD`).delete().catch(() => {});
   }
 
   // ---- Entry gates ----
