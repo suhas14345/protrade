@@ -52,7 +52,7 @@ Cloud Scheduler (cron, IST)
 
 ## Quick start
 
-Prerequisites: Node 20, Firebase CLI (`npm i -g firebase-tools`).
+Prerequisites: Node 22 (matches `engines.node` / the deployed `nodejs22` runtime), Firebase CLI (`npm i -g firebase-tools`).
 
 ```bash
 # Backend
@@ -65,8 +65,9 @@ cd ../dashboard && npm install
 ### Deploy
 
 ```bash
-# Functions — MUST build first; firebase.json has NO predeploy hook
-cd functions && npm run build && cd .. && firebase deploy --only functions --project suhas-ag
+# Functions — MUST build first; firebase.json has NO predeploy hook.
+# --force skips the interactive Artifact Registry cleanup-policy prompt that otherwise hangs the deploy.
+cd functions && npm run build && cd .. && firebase deploy --only functions --project suhas-ag --force
 
 # Dashboard
 cd dashboard && npm run build && cd .. && firebase deploy --only hosting --project suhas-ag
