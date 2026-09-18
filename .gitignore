@@ -72,6 +72,9 @@ node_modules/
 .tools/
 dashboard/dist/
 
+# Editor
+.vscode/
+
 # Local scratch / debug artifacts (do not commit) — see AGENTS.md "Gotchas"
 *_logs.txt
 logs*.txt
