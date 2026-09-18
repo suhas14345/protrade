@@ -147,6 +147,7 @@ protrade/
 
 | File | Contents |
 |------|----------|
+| [TECHNICAL_SPEC.md](TECHNICAL_SPEC.md) | **Full technical spec** — architecture, functions, gateway API, data model, strategies, config |
 | [AGENTS.md](AGENTS.md) | **Agent context** — tooling, deploy, schedulers, universes, gotchas |
 | [CONTEXT.md](CONTEXT.md) | Live system state + operational setup (auth, universes, data) |
 | [STRATEGIES.md](STRATEGIES.md) | Current live strategies (SEPA + Metals) and the dormant legacy set |
