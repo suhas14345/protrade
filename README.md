@@ -46,7 +46,6 @@ Cloud Scheduler (cron, IST)
 | `quote-fill` | `45 18 * * 1-5` | `scheduledQuoteFill` (liquidnse) | Cheap batched‑quote daily bar top‑up for the all‑NSE liquid pool |
 | `screen-universe` | `30 19 * * 1-5` | `scheduledScreen` | Rebuild `eligible`/`dynamic` from the source pool |
 | `stale-cleanup` | `0 2 * * *` | `cleanupStale` | Retention cleanup |
-| `morning-fill` | `15 9 * * 1-5` | `scheduledMorning` | **PAUSED / retired** — fills now run inside `eod-scan` |
 
 > The `.pubsub.schedule()` functions in `index.ts` are **not** deployed by the Firebase CLI
 > (gen1 quirk). The real schedules are the Cloud Scheduler jobs above, which POST to the gateway.

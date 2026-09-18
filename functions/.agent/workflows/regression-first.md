@@ -63,7 +63,7 @@ This workflow MUST be followed BEFORE and AFTER every code change or deployment 
    - Verify no 429 rate limit errors from Kite API.
 
 7. **Scheduling & Sign-Off**
-   - **Rule: Next-Open Fills** - Fills run INSIDE the EOD (`processSymbolTask` FILL stage), not a pre-open job. Confirm prior-day `ACCEPTED` orders flip to `FILLED` during the EOD run. The 09:15 `morning-fill` scheduler is PAUSED/retired — do not re-enable it.
+   - **Rule: Next-Open Fills** - Fills run INSIDE the EOD (`processSymbolTask` FILL stage), not a pre-open job. Confirm prior-day `ACCEPTED` orders flip to `FILLED` during the EOD run. The 09:15 `morning-fill` scheduler was retired and **deleted** (2026-09-18) — do not recreate it.
    - **Rule: Schedules** - Confirm Cloud Scheduler jobs are intact: `eod-scan` 16:30, `history-fill-500` 18:30 (nifty500, days=0 strict-delta), `kite-auto-renew` 08:30, `stale-cleanup` 02:00 (all Asia/Kolkata).
    - Job must reach `status: DONE` for the change to be considered safe.
    - If any check fails, roll back and diagnose before re-attempting.

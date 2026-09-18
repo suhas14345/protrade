@@ -53,7 +53,6 @@ falls back to `nifty500`. Members: `universes/{id}/members/{SYM.NS}`. Metals bar
 | `quote-fill` | `45 18 * * 1-5` | `{"action":"scheduledQuoteFill","universe":"liquidnse"}` | ENABLED |
 | `screen-universe` | `30 19 * * 1-5` | `{"action":"scheduledScreen","source":"liquidnse"}` | ENABLED |
 | `stale-cleanup` | `0 2 * * *` | `{"action":"cleanupStale"}` | ENABLED |
-| `morning-fill` | `15 9 * * 1-5` | `{"action":"scheduledMorning"}` | **PAUSED** (retired) |
 
 `history-fill-500` uses `days=0` = **strict delta** (fetches each symbol from its last stored
 bar → today), so it self‑heals gaps of any length instead of a fixed 5‑day window. It runs at
