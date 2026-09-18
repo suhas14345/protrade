@@ -37,11 +37,13 @@ Common issues and their solutions.
 - **Cause**: TOTP secret must be the **base32 seed string** from Kite's 2FA setup page (not the 6-digit code).
 - **Fix**: In Kite settings, when setting up TOTP, copy the secret key (e.g., `JBSWY3DPEHPK3PXP`), not the generated code. Update via Settings tab.
 - **Warning**: Zerodha locks account after ~5 failed TOTP attempts. Wait for lockout reset.
+- **Validate first (0 attempts)**: Dashboard → Settings → **Validate Seed (no attempt)** (action `validateTotpSecret`) checks the base32 format and shows the OTP locally to compare with your authenticator app — it never contacts Kite. Always do this before **Renew Kite Session Now**.
+- **Circuit breaker**: after `KITE_MAX_RENEW_FAILURES` (default 2) consecutive failures, `settings/kite.autoRenewDisabled=true` and the scheduled 08:30 renew stops (a CRITICAL `SESSION_EXPIRED` alert is raised) so it can't burn attempts. Re‑arm it by **Save Credentials** (or a successful manual renew); the dashboard shows a red "auto‑renewal paused" banner while disabled.
 
 ### "Universe is empty" Warning
 - **Symptom**: Logs show "universe is empty" or 0 symbols evaluated.
-- **Cause**: Universe collection `universes/nifty200/members` (hunt) or `universes/nifty500/members` (fill) not seeded, or a path mismatch.
-- **Fix**: Reseed the members subcollection (`universes/{id}/members/{SYM}.NS`) from `ind_nifty{200,500}list.csv`. Confirm the member count matches the CSV.
+- **Cause**: Universe collection `universes/eligible/members` (hunt) or `universes/nifty500/members` (fill) not seeded, or a path mismatch. `eligible` is rebuilt nightly by the `screen-universe` job; if empty, the hunt falls back to `nifty500`.
+- **Fix**: Reseed the members subcollection (`universes/{id}/members/{SYM}.NS`) from `ind_nifty{200,500}list.csv`, or run `screenUniverse` to rebuild `eligible`. Confirm the member count is non‑zero.
 
 ### "DATA_STALE" Error
 - **Symptom**: Signal evaluation throws "Last bar date does not match run date".

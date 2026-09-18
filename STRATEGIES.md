@@ -14,7 +14,7 @@ Config lives in [functions/src/config/runtime.ts](functions/src/config/runtime.t
 ## 1. SEPA — `SepaBreakoutEOD` (BUY, equities)
 
 A faithful port of Minervini‑style **trend‑template + relative‑strength leadership**. Hunts the
-`nifty200` universe; only the strongest leaders near new highs get bought.
+`eligible` universe (the dynamic trend‑template pool, ~700); only the strongest leaders near new highs get bought.
 
 **Index filter (market gate):** Nifty close > its EMA200, EMA200 slope > 0, and regime ≠ `BEAR`.
 
@@ -22,7 +22,7 @@ A faithful port of Minervini‑style **trend‑template + relative‑strength le
 |------|-----------|
 | Trend template | `close > SMA50 > SMA150 > SMA200` **and** SMA200 rising (slope over last 20 bars) |
 | Near 52‑week high | `close ≥ high252 × (1 − 0.15)` — within **15%** of the 52‑week high |
-| RS leadership | `rsRank126 ≤ 40` — top‑40 by 126‑day momentum (`RS_TOP`) |
+| RS leadership | `rsScore ≥ 70` — RS rating percentile (`RS_MIN_RATING`); falls back to `rsRank126 ≤ RS_TOP` on first‑day warmup |
 | Feature window | ≥ 260 trailing bars (for SMA150/200, 52w‑high, 200‑slope) |
 
 **Sizing & risk**
@@ -65,7 +65,7 @@ liquidity/RS/sector gates. Metals bars are stored under `barsD/GOLDBEES` / `bars
 ## Signal → position flow
 
 ```
-Day D (16:30 IST)  EOD hunt on nifty200 (+ metals): signals → APPROVED → paperOrders/{D} (ACCEPTED)
+Day D (16:30 IST)  EOD hunt on eligible (+ metals): signals → APPROVED → paperOrders/{D} (ACCEPTED)
 Day D+1 (16:30)    EOD FILL stage: fills paperOrders/{D} at D+1's OPEN (+ slippage, clamped to [low,high])
                    → position OPEN in portfolio/default/positions
 Daily              tradeManager marks P&L, applies trailing/hard stops and trend‑gate exits

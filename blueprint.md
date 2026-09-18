@@ -10,8 +10,9 @@ EOD Swing • Paper-First • Firestore • Automated via Cloud Scheduler
     below is the LEGACY path — it still exists in strategy.ts but is GATED OFF
     (SEPA_CONFIG.SEPA_ONLY, default ON). Treat sections 6–8 as historical.
 
-    Hunt universe = nifty200 (EOD + morning). History-fill universe = nifty500
-    (superset). Next-open fills run INSIDE the evening EOD (the per-symbol FILL
+    Hunt universe = eligible (DEFAULT_UNIVERSE; the dynamic trend-template pool the
+    nightly screener prunes from nifty500/liquidnse, ~700). History-fill universe = nifty500.
+    Next-open fills run INSIDE the evening EOD (the per-symbol FILL
     stage), not a pre-open 09:15 job. See CONTEXT.md for live state/schedules.
     Sections 5 and 10 (data pipeline + Firestore schema) remain accurate.
 ------------------------------------------------------------------------------

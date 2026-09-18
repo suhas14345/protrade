@@ -32,15 +32,18 @@ Cloud Scheduler (cron, IST)
 - **Orchestrator** fans work out to per‑symbol Cloud Tasks; a finalize step runs once all symbols report in.
 - **Fills are folded into the EOD run** (the `FILL` stage) — each symbol fills the *previous*
   day's `ACCEPTED` orders at *today's* just‑fetched open, then hunts today for tomorrow.
-- **Hunt universe:** `nifty200` (200 members). **History‑fill universe:** `nifty500` (504, a superset).
+- **Hunt universe:** `eligible` (`DEFAULT_UNIVERSE`, ~700 — the dynamic trend‑template pool the
+  nightly screener prunes from `nifty500`/`liquidnse`; env `DEFAULT_UNIVERSE` overrides). If
+  `eligible` is empty the hunt falls back to `nifty500`. **History‑fill universe:** `nifty500` (504).
 
 ## Daily automation (Cloud Scheduler, weekdays, Asia/Kolkata)
 
 | Job | Schedule | Action | Purpose |
 |-----|----------|--------|---------|
 | `kite-auto-renew` | `30 8 * * 1-5` | `scheduledKiteRenew` | Headless Kite session renewal (TOTP) |
-| `eod-scan` | `30 16 * * 1-5` | `scheduledEod` | Full EOD pipeline on **nifty200** (fetch → fill → hunt) |
+| `eod-scan` | `30 16 * * 1-5` | `scheduledEod` | Full EOD pipeline on **`eligible`** (fetch → fill → hunt) |
 | `history-fill-500` | `30 18 * * 1-5` | `startDeepSync` (nifty500, `days=0`) | Strict‑delta history top‑up for the full 500 |
+| `screen-universe` | `30 19 * * 1-5` | `scheduledScreen` | Rebuild `eligible`/`dynamic` from the source pool |
 | `stale-cleanup` | `0 2 * * *` | `cleanupStale` | Retention cleanup |
 | `morning-fill` | `15 9 * * 1-5` | `scheduledMorning` | **PAUSED / retired** — fills now run inside `eod-scan` |
 
@@ -82,7 +85,7 @@ curl -X POST https://us-central1-suhas-ag.cloudfunctions.net/gateway \
 ### Tests
 
 ```bash
-cd functions && npx jest            # 168 tests across 15 suites
+cd functions && npx jest            # 297 tests across 26 suites
 npm run validate-rules              # static rule/guardrail checks
 ```
 

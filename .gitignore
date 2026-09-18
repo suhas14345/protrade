@@ -71,3 +71,26 @@ node_modules/
 # Local agent tooling
 .tools/
 dashboard/dist/
+
+# Local scratch / debug artifacts (do not commit) — see AGENTS.md "Gotchas"
+*_logs.txt
+logs*.txt
+*_output.txt
+raw_logs.txt
+massive_logs.txt
+latest_logs.txt
+final_debug_logs.txt
+debug_skip_logs.txt
+bar_check_output.txt
+the_vcp_output.txt
+deploy_debug.txt
+gw_deploy.txt
+dep2.txt
+test_list*.txt
+tmp*.txt
+output.txt
+search_results.txt
+payload.json
+jest.json
+patch.js
+clean_and_run.js
