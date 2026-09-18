@@ -38,6 +38,11 @@ firebase deploy --only functions --project suhas-ag --force   # --force: skip th
   trading day's `ACCEPTED` paper orders at *today's* just‑fetched open. This replaced a 09:15
   "morning-fill" job that ran before the day's bar existed (`getBarOn` is exact‑date match →
   returned null → orders were stranded `ACCEPTED`). Do not reintroduce a pre‑open fill.
+- **Telegram daily digest:** sent once at **EOD finalize** (orchestrator wrap‑up, after
+  `generateJobReport`) via `telegram.ts` `sendDailyDigest` → `snapshot.ts` `formatSnapshotText`.
+  **No‑op unless `settings/telegram.enabled`**; EOD runs only (not deep‑syncs). Bot token is a
+  secret — never log it. Gateway actions: `getTelegramSettings`/`updateTelegram`/`testTelegram`/
+  `sendDigest`. User‑facing content/sample is in [README.md](README.md#notifications--daily-telegram-digest).
 
 ## Universes & strategies
 
@@ -60,7 +65,7 @@ firebase deploy --only functions --project suhas-ag --force   # --force: skip th
 
 - `barsD/{symbol}/days/{YYYYMMDD}` — OHLCV. `features/{symbol}/days/{dateId}` — indicators.
 - `regime/{dateId}`, `signals/{dateId}/items`, `paperOrders/{dateId}/items`, `paperFills/{dateId}/items`.
-- `portfolio/default/positions/{symbol}`, `config/account`, `settings/kite`, `jobs/{jobId}`.
+- `portfolio/default/positions/{symbol}`, `config/account`, `settings/kite`, `settings/telegram`, `jobs/{jobId}`.
 - **Fetch semantics** (`marketdata.ts` `doFetchCandles`): with no `forceDays` it does a
   **strict delta** (last stored bar + 1 → runDate; skips if already current). With `forceDays`
   it force‑fetches the last N days. `startDeepSync days=0` ⇒ strict‑delta (gap‑proof);
