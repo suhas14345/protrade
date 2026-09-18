@@ -1,12 +1,12 @@
 # Strategies — ProTrade Alpha
 
-The live daily configuration runs **two strategies together**: **SEPA** (equities) and a
-**Metals rotation** sleeve (2 ETFs). A legacy 6‑strategy engine remains in `strategy.ts` but is
-**dormant** — gated off by `SEPA_CONFIG.SEPA_ONLY` (default ON). All entries are decided at the
-close (EOD) and filled at the **next open** during the following evening's EOD `FILL` stage.
+The live daily configuration runs **three strategies together**: **SEPA** and **ATH‑Pullback**
+(equities) plus a **Metals rotation** sleeve (2 ETFs). A legacy 6‑strategy engine remains in
+`strategy.ts` but is **dormant** — gated off by `SEPA_CONFIG.SEPA_ONLY` (default ON). All entries are
+decided at the close (EOD) and filled at the **next open** during the following evening's EOD `FILL` stage.
 
 Config lives in [functions/src/config/runtime.ts](functions/src/config/runtime.ts)
-(`SEPA_CONFIG`, `METALS_CONFIG`); evaluators in
+(`SEPA_CONFIG`, `ATH_CONFIG`, `METALS_CONFIG`); evaluators in
 [functions/src/services/strategy.ts](functions/src/services/strategy.ts).
 
 ---
@@ -36,7 +36,31 @@ Exits (trend/stop/trail) are managed in `tradeManager.ts`.
 
 ---
 
-## 2. Metals rotation — `MetalsRotation` (BUY, ETFs)
+## 2. ATH‑Pullback — `ATHPullbackEOD` (BUY, equities)
+
+Buys market **leaders near all‑time highs on an orderly pullback** into support — the inverse
+trigger to SEPA's breakout (models advisory "buy‑the‑dip on a leader" calls). Runs alongside SEPA on
+equities and **shares the equity capital book** (`SEPA_CONFIG.BOOK_PCT`). Default ON; set `ATH=0` to disable.
+
+| Gate | Condition |
+|------|-----------|
+| RS leadership | `rsRank126 ≤ 60` (`RS_TOP`, looser than SEPA's 40) |
+| Pulled back from high | 3–15% below the 52‑week high (`HI_PROX_MIN`/`HI_PROX_MAX`) — a real dip, still a leader |
+| In the buy zone | close within −3% to +6% of the 50‑SMA (`SUPPORT_BAND_LO`/`HI`) |
+| Healthy RSI | `RSI14` between 40 and 58 (`RSI_LO`/`RSI_HI`) |
+| Feature window | ≥ 260 trailing bars |
+
+**Sizing & risk**
+
+- Risk **1%** of equity per trade (`RISK_PCT`), **10%** hard stop (`HARD_STOP_PCT`).
+- Once up **10%** (`LOCK_AT_PCT`), trail **15%** below the highest close (`TRAIL_PCT`).
+- Max **5** concurrent ATH‑pullback positions (`MAX_POS`).
+
+Exits are managed in `tradeManager.ts`.
+
+---
+
+## 3. Metals rotation — `MetalsRotation` (BUY, ETFs)
 
 A small, self‑contained trend‑follower on the whitelisted metal ETFs **`GOLDBEES`** and
 **`SILVERBEES`**. It runs **alongside** SEPA and is deliberately **exempt** from the equity

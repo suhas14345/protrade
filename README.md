@@ -8,8 +8,9 @@ positions to exit — fully automated via Cloud Scheduler.
 - **Live:** [suhas-ag.web.app](https://suhas-ag.web.app) · GCP project `suhas-ag` · region `us-central1`
 - **Mode:** `PAPER_LIVE` / `PAPER_ONLY` — no real money is traded.
 
-> **Live strategies today:** **SEPA** (Minervini‑style breakout, `SepaBreakoutEOD`) plus a
-> 2‑ETF **Metals rotation** sleeve (`MetalsRotation` on `GOLDBEES`/`SILVERBEES`).
+> **Live strategies today:** **SEPA** (Minervini‑style breakout, `SepaBreakoutEOD`) +
+> **ATH‑Pullback** (buy leaders on a dip into support, `ATHPullbackEOD`) on equities, plus a 2‑ETF
+> **Metals rotation** sleeve (`MetalsRotation` on `GOLDBEES`/`SILVERBEES`).
 > A legacy 6‑strategy engine still exists in the code but is **gated OFF** by default
 > (`SEPA_ONLY`). See [STRATEGIES.md](STRATEGIES.md).
 

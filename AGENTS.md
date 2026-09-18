@@ -56,9 +56,11 @@ firebase deploy --only functions --project suhas-ag --force   # --force: skip th
   screener always has fresh bars. Members live at `universes/{id}/members/{SYM.NS}`.
 - Constituent CSVs at repo root: `ind_nifty{50,200,500}list.csv` (col 3 = Symbol; append `.NS`).
   **Keep CSVs current for renames/demergers** (see Gotchas); re‑seed with `reseed_universes.js`.
-- **Live strategies:** SEPA (`SepaBreakoutEOD`) + Metals rotation (`MetalsRotation`,
+- **Live strategies:** SEPA (`SepaBreakoutEOD`) + ATH‑Pullback (`ATHPullbackEOD`, equities, buys
+  leaders on a dip; shares the SEPA capital book) + Metals rotation (`MetalsRotation`,
   `GOLDBEES`/`SILVERBEES`, no `.NS`). Toggles in `config/runtime.ts`: `SEPA_CONFIG.SEPA_ONLY`
-  (default ON; env `SEPA_ONLY=0` re‑enables the dormant legacy 6‑strategy path), `METALS_CONFIG.ENABLED`.
+  (default ON; env `SEPA_ONLY=0` re‑enables the dormant legacy 6‑strategy path), `ATH_CONFIG.ENABLED`
+  (env `ATH=0` off), `METALS_CONFIG.ENABLED`.
 - Metals ETFs are appended to the dispatch list by the orchestrator regardless of universe.
 
 ## Data model (Firestore, Native)
