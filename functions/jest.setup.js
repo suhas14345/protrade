@@ -37,6 +37,13 @@ const firestoreMockNamespace = Object.assign(jest.fn(() => mockFirestore), {
   },
   FieldPath: {
     documentId: jest.fn(() => '__name__'),
+  },
+  FieldValue: {
+    delete: jest.fn(() => '__delete__'),
+    increment: jest.fn((n) => ({ __increment__: n })),
+    serverTimestamp: jest.fn(() => '__serverTimestamp__'),
+    arrayUnion: jest.fn((...v) => ({ __arrayUnion__: v })),
+    arrayRemove: jest.fn((...v) => ({ __arrayRemove__: v })),
   }
 });
 

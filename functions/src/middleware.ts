@@ -14,7 +14,7 @@ const KNOWN_ACTIONS = new Set([
   'probeInventory', 'auditJobs', 'downloadReport',
   'auditSignals', 'snapshot',
   'scheduledKiteRenew', 'scheduledEod', 'scheduledMorning',
-  'startMorningExecution', 'getKiteSettings',
+  'startMorningExecution', 'getKiteSettings', 'validateTotpSecret',
   'getTelegramSettings', 'updateTelegram', 'testTelegram', 'sendDigest',
   'syncNseHolidays', 'syncCorporateEvents',
   'backfillHistorical',

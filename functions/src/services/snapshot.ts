@@ -31,6 +31,7 @@ export function formatSnapshotText(s: DailySnapshot): string {
   lines.push('');
   lines.push(`Equity ${inr(a.equity)} | Cash ${inr(a.cash)} | Deployed ${inr(a.deployed)}`);
   lines.push(`Realized ${inr(a.realized)} | Unrealized ${inr(a.unrealized)}`);
+  lines.push(`Total P&L ${inr((a.realized || 0) + (a.unrealized || 0))}`);
   lines.push('');
   if (s.positions.length === 0) {
     lines.push('Active trades: none');

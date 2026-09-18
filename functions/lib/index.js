@@ -58,7 +58,7 @@ async function checkRuntimeKillSwitch() {
  * V3.0: Wired middleware — validation, auth, rate limiting, kill switch
  */
 exports.gateway = functions.runWith(v1Options).https.onRequest(async (req, res) => {
-    var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k, _l, _m, _o;
+    var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k, _l, _m, _o, _p, _q, _r, _s;
     // CORS: allow dashboard origin
     res.set('Access-Control-Allow-Origin', '*');
     res.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
@@ -330,8 +330,17 @@ exports.gateway = functions.runWith(v1Options).https.onRequest(async (req, res) 
                     lastError: kdata.lastError || null,
                     lastAutoRenew: kdata.lastAutoRenew || null,
                     updatedAt: kdata.updatedAt || null,
+                    renewFailCount: kdata.renewFailCount || 0,
+                    autoRenewDisabled: !!kdata.autoRenewDisabled,
                     hasAllFields: !!(kdata.apiKey && kdata.apiSecret && kdata.userId && kdata.password && kdata.totpSecret),
                 });
+                break;
+            }
+            case 'validateTotpSecret': {
+                const { validateTotpSecret } = await Promise.resolve().then(() => __importStar(require('./services/kite_automation')));
+                const seed = ((_d = (_c = req.body) === null || _c === void 0 ? void 0 : _c.totpSecret) !== null && _d !== void 0 ? _d : (_e = req.query) === null || _e === void 0 ? void 0 : _e.totpSecret);
+                const result = await validateTotpSecret(seed);
+                res.status(200).send(result);
                 break;
             }
             case 'getTelegramSettings': {
@@ -371,7 +380,7 @@ exports.gateway = functions.runWith(v1Options).https.onRequest(async (req, res) 
             }
             case 'sendDigest': {
                 const { sendDailyDigest } = await Promise.resolve().then(() => __importStar(require('./services/telegram')));
-                const digestDate = (((_c = req.body) === null || _c === void 0 ? void 0 : _c.date) || ((_d = req.query) === null || _d === void 0 ? void 0 : _d.date));
+                const digestDate = (((_f = req.body) === null || _f === void 0 ? void 0 : _f.date) || ((_g = req.query) === null || _g === void 0 ? void 0 : _g.date));
                 const result = await sendDailyDigest(digestDate);
                 if (result.sent)
                     res.status(200).send({ message: 'Digest sent' });
@@ -401,18 +410,18 @@ exports.gateway = functions.runWith(v1Options).https.onRequest(async (req, res) 
             }
             // V3.1: Scheduled actions — called by Cloud Scheduler
             case 'scheduledKiteRenew': {
-                console.log('[Scheduler] Auto-renewing Kite session...');
+                const manual = !!((_h = req.body) === null || _h === void 0 ? void 0 : _h.manual);
+                console.log(`[Scheduler] ${manual ? 'Manual' : 'Auto'}-renewing Kite session...`);
                 const { autoRenewKiteSessionHandler } = await Promise.resolve().then(() => __importStar(require('./services/kite_automation')));
-                await autoRenewKiteSessionHandler({});
-                // Check if renewal succeeded
-                const renewDb = admin.apps.length ? admin.firestore() : admin.initializeApp() && admin.firestore();
-                const renewSnap = await renewDb.collection('settings').doc('kite').get();
-                const renewData = renewSnap.data();
-                if ((renewData === null || renewData === void 0 ? void 0 : renewData.status) === 'ERROR') {
-                    res.status(500).send({ error: 'Auto-renewal failed', details: renewData.lastError });
+                const result = await autoRenewKiteSessionHandler({ manual });
+                if (result.status === 'ACTIVE') {
+                    res.status(200).send({ message: result.message, status: 'ACTIVE' });
+                }
+                else if (result.status === 'SKIPPED') {
+                    res.status(409).send({ error: result.message, disabled: true, failCount: result.failCount });
                 }
                 else {
-                    res.status(200).send({ message: 'Kite session auto-renewed', status: renewData === null || renewData === void 0 ? void 0 : renewData.status });
+                    res.status(500).send({ error: 'Auto-renewal failed', details: result.message, disabled: result.disabled, failCount: result.failCount });
                 }
                 break;
             }
@@ -475,7 +484,7 @@ exports.gateway = functions.runWith(v1Options).https.onRequest(async (req, res) 
             case 'startMorningExecution': {
                 // Manual trigger defaults to the live hunt universe.
                 const { doStartMorningExecution } = await Promise.resolve().then(() => __importStar(require('./services/orchestrator')));
-                await doStartMorningExecution({ query: { date: (_e = req.body) === null || _e === void 0 ? void 0 : _e.date, universe: ((_f = req.body) === null || _f === void 0 ? void 0 : _f.universe) || runtime_1.DEFAULT_UNIVERSE } }, res);
+                await doStartMorningExecution({ query: { date: (_j = req.body) === null || _j === void 0 ? void 0 : _j.date, universe: ((_k = req.body) === null || _k === void 0 ? void 0 : _k.universe) || runtime_1.DEFAULT_UNIVERSE } }, res);
                 break;
             }
             case 'syncNseHolidays': {
@@ -487,7 +496,7 @@ exports.gateway = functions.runWith(v1Options).https.onRequest(async (req, res) 
             }
             case 'syncCorporateEvents': {
                 const { syncAllCorporateEvents } = await Promise.resolve().then(() => __importStar(require('./services/eventSync')));
-                const lookAhead = Number((_g = req.body) === null || _g === void 0 ? void 0 : _g.lookAheadDays) || 30;
+                const lookAhead = Number((_l = req.body) === null || _l === void 0 ? void 0 : _l.lookAheadDays) || 30;
                 const result = await syncAllCorporateEvents(lookAhead);
                 res.status(200).send({
                     message: 'Corporate events synced',
@@ -500,10 +509,10 @@ exports.gateway = functions.runWith(v1Options).https.onRequest(async (req, res) 
             case 'backfillHistorical': {
                 const { runHistoricalBackfill } = await Promise.resolve().then(() => __importStar(require('./services/historicalBackfill')));
                 const result = await runHistoricalBackfill({
-                    universeId: ((_h = req.body) === null || _h === void 0 ? void 0 : _h.universe) || 'midsmall400',
-                    startISO: (_j = req.body) === null || _j === void 0 ? void 0 : _j.start,
-                    endISO: (_k = req.body) === null || _k === void 0 ? void 0 : _k.end,
-                    maxSymbols: Number((_l = req.body) === null || _l === void 0 ? void 0 : _l.maxSymbols) || 500,
+                    universeId: ((_m = req.body) === null || _m === void 0 ? void 0 : _m.universe) || 'midsmall400',
+                    startISO: (_o = req.body) === null || _o === void 0 ? void 0 : _o.start,
+                    endISO: (_p = req.body) === null || _p === void 0 ? void 0 : _p.end,
+                    maxSymbols: Number((_q = req.body) === null || _q === void 0 ? void 0 : _q.maxSymbols) || 500,
                 });
                 res.status(200).send(result);
                 break;
@@ -511,14 +520,14 @@ exports.gateway = functions.runWith(v1Options).https.onRequest(async (req, res) 
             case 'resetTradingState': {
                 const { runResetTradingState } = await Promise.resolve().then(() => __importStar(require('./services/resetState')));
                 const result = await runResetTradingState({
-                    equity: Number((_m = req.body) === null || _m === void 0 ? void 0 : _m.equity) || 1000000,
+                    equity: Number((_r = req.body) === null || _r === void 0 ? void 0 : _r.equity) || 1000000,
                 });
                 res.status(200).send(result);
                 break;
             }
             case 'cleanupStale': {
                 const { runStaleCleanup } = await Promise.resolve().then(() => __importStar(require('./services/cleanupStale')));
-                const result = await runStaleCleanup((_o = req.body) === null || _o === void 0 ? void 0 : _o.retention);
+                const result = await runStaleCleanup((_s = req.body) === null || _s === void 0 ? void 0 : _s.retention);
                 res.status(200).send({ message: 'Stale data cleaned', deleted: result });
                 break;
             }

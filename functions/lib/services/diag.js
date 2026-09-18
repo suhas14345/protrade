@@ -212,8 +212,21 @@ exports.probeInventory = (0, https_1.onRequest)({ cors: true, invoker: 'public',
         });
         const groupings = Object.entries(buckets)
             .map(([range, symbols]) => ({ bars: range, symbols }));
-        // 2. Signal Metrics for Today
-        const signalsSnap = await db.collection('signals').doc(dateId).collection('items').get();
+        // 2. Signal Metrics — use today, but fall back to the most recent date that has
+        //    signals so the panel isn't confusingly empty on regime-blocked / no-signal days.
+        let signalsDateId = dateId;
+        let signalsSnap = await db.collection('signals').doc(dateId).collection('items').get();
+        if (signalsSnap.empty) {
+            const recent = await db.collection('signals').orderBy(admin.firestore.FieldPath.documentId(), 'desc').limit(30).get();
+            for (const dayDoc of recent.docs) {
+                const itemsSnap = await db.collection('signals').doc(dayDoc.id).collection('items').get();
+                if (!itemsSnap.empty) {
+                    signalsSnap = itemsSnap;
+                    signalsDateId = dayDoc.id;
+                    break;
+                }
+            }
+        }
         const signalsByStrategy = {};
         const signalsByStatus = {};
         signalsSnap.docs.forEach(doc => {
@@ -223,6 +236,7 @@ exports.probeInventory = (0, https_1.onRequest)({ cors: true, invoker: 'public',
         });
         const signalStats = {
             total: signalsSnap.size,
+            asOfDate: signalsDateId,
             byStrategy: Object.entries(signalsByStrategy).map(([name, count]) => ({ name, count })),
             byStatus: Object.entries(signalsByStatus).map(([name, count]) => ({ name, count })),
         };

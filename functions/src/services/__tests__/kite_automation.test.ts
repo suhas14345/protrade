@@ -2,6 +2,8 @@ import { generateHeadlessRequestToken } from '../kite_automation';
 import axios from 'axios';
 import { TOTP } from 'totp-generator';
 
+import { validateTotpSecretFormat } from '../kite_automation';
+
 jest.mock('axios');
 jest.mock('totp-generator');
 
@@ -104,5 +106,30 @@ describe('Kite Automation Service - Headless Login', () => {
 
     await expect(generateHeadlessRequestToken('user', 'pass', 'secret', 'apikey'))
       .rejects.toThrow(/Exhausted redirect hops/);
+  });
+});
+
+describe('validateTotpSecretFormat', () => {
+  it('accepts a valid 32-char base32 seed', () => {
+    const r = validateTotpSecretFormat('LFJVRL4JTFODGGQMOUUIBJNU2KFBC6K4');
+    expect(r).toEqual({ valid: true, format: 'base32', length: 32 });
+  });
+
+  it('accepts a short base32 seed with padding', () => {
+    expect(validateTotpSecretFormat('JBSWY3DPEHPK3PXP').valid).toBe(true);
+  });
+
+  it('rejects a 6-digit rotating code (common mistake)', () => {
+    const r = validateTotpSecretFormat('123456');
+    expect(r.valid).toBe(false);
+    expect(r.format).toBe('digits');
+  });
+
+  it('rejects garbage / non-base32 characters', () => {
+    expect(validateTotpSecretFormat('not a secret!').format).toBe('invalid');
+  });
+
+  it('reports missing for empty input', () => {
+    expect(validateTotpSecretFormat('  ').format).toBe('missing');
   });
 });

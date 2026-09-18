@@ -92,6 +92,7 @@ function App() {
   const [settingsForm, setSettingsForm] = useState({ apiKey: '', apiSecret: '', userId: '', password: '', totpSecret: '' });
   const [settingsStatus, setSettingsStatus] = useState<string | null>(null);
   const [settingsSaving, setSettingsSaving] = useState(false);
+  const [settingsValidation, setSettingsValidation] = useState<{ valid: boolean; otp?: string; message: string } | null>(null);
   const [telegramForm, setTelegramForm] = useState({ botToken: '', chatId: '', enabled: false });
   const [telegramStatus, setTelegramStatus] = useState<string | null>(null);
   const [fundForm, setFundForm] = useState({ eodhdApiKey: '' });
@@ -1381,20 +1382,59 @@ function App() {
                 {settingsSaving ? <Loader2 size={14} className="spin" /> : null}
                 Save Credentials
               </button>
+              <button
+                className="btn-premium"
+                style={{ marginTop: '0.5rem', marginLeft: '0.5rem', background: 'rgba(255,255,255,0.08)' }}
+                onClick={async () => {
+                  setSettingsValidation(null);
+                  setSettingsStatus(null);
+                  try {
+                    // Validate the typed seed if present, else the stored one. Spends NO Kite attempt.
+                    const res = await gw('validateTotpSecret', settingsForm.totpSecret ? { totpSecret: settingsForm.totpSecret } : {}) as any;
+                    setSettingsValidation({ valid: !!res.valid, otp: res.otp, message: res.message });
+                  } catch (err: any) {
+                    setSettingsValidation({ valid: false, message: err.message });
+                  }
+                }}
+              >
+                🔎 Validate Seed (no attempt)
+              </button>
+              {settingsValidation && (
+                <div style={{ marginTop: '0.75rem', fontSize: '0.8rem', color: settingsValidation.valid ? '#10b981' : '#ef4444' }}>
+                  <p style={{ margin: 0 }}>{settingsValidation.valid ? '✅' : '❌'} {settingsValidation.message}</p>
+                  {settingsValidation.otp && (
+                    <p style={{ margin: '0.5rem 0 0', color: '#e2e8f0' }}>
+                      Offline OTP: <code style={{ fontSize: '1.1rem', letterSpacing: '2px', color: '#38bdf8' }}>{settingsValidation.otp}</code>
+                      <span style={{ color: '#64748b' }}> — should match your authenticator app right now (rotates every 30s).</span>
+                    </p>
+                  )}
+                </div>
+              )}
               {settingsStatus && <p style={{ marginTop: '0.75rem', fontSize: '0.8rem', color: settingsStatus.startsWith('✅') ? '#10b981' : '#ef4444' }}>{settingsStatus}</p>}
             </div>
 
             <div className="card" style={{ marginBottom: '1.5rem' }}>
               <h3 style={{ color: '#94a3b8', marginBottom: '1rem' }}>🔄 Test Auto-Renewal</h3>
+              {kiteMeta?.autoRenewDisabled && (
+                <div style={{ marginBottom: '1rem', padding: '0.75rem', borderRadius: '6px', background: 'rgba(239,68,68,0.12)', border: '1px solid rgba(239,68,68,0.4)' }}>
+                  <p style={{ margin: 0, color: '#f87171', fontSize: '0.85rem', fontWeight: 600 }}>
+                    ⛔ Scheduled auto-renewal is PAUSED after {kiteMeta?.renewFailCount || 0} consecutive failures.
+                  </p>
+                  <p style={{ margin: '0.4rem 0 0', color: '#fca5a5', fontSize: '0.78rem' }}>
+                    Fix the TOTP secret / credentials above and click <b>Save Credentials</b> to re-enable it. Validate the seed offline first to avoid burning Kite login attempts.
+                  </p>
+                  {kiteMeta?.lastError && <p style={{ margin: '0.4rem 0 0', color: '#64748b', fontSize: '0.72rem', wordBreak: 'break-word' }}>Last error: {String(kiteMeta.lastError)}</p>}
+                </div>
+              )}
               <p style={{ color: '#64748b', fontSize: '0.8rem', marginBottom: '1rem' }}>
-                Trigger a manual Kite session refresh using saved TOTP credentials.
+                Trigger a manual Kite session refresh using saved TOTP credentials. Each run spends one Kite login attempt — validate the seed offline first.
               </p>
               <button
                 className="btn-premium"
                 onClick={async () => {
                   setSettingsStatus(null);
                   try {
-                    const res = await gw('scheduledKiteRenew');
+                    const res = await gw('scheduledKiteRenew', { manual: true });
                     setSettingsStatus(`✅ ${(res as any)?.message || 'Kite session renewed'}`);
                   } catch (err: any) {
                     setSettingsStatus(`❌ Auto-renew failed: ${err.message}`);

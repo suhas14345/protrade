@@ -618,7 +618,10 @@ export async function updateKiteToken(req: any, res: any) {
       apiSecret,
       accessToken: response.access_token,
       updatedAt: admin.firestore.Timestamp.now(),
-      status: 'ACTIVE'
+      status: 'ACTIVE',
+      renewFailCount: 0,
+      autoRenewDisabled: admin.firestore.FieldValue.delete(),
+      lastError: admin.firestore.FieldValue.delete(),
     }, { merge: true });
 
     res.status(200).send({ message: 'Kite session updated and ACTIVE' });
@@ -645,6 +648,11 @@ export async function updateKiteCredentials(req: any, res: any) {
   if (password) data.password = password;
   if (totpSecret) data.totpSecret = totpSecret;
   if (typeof req.body.disableFallback === 'boolean') data.disableFallback = req.body.disableFallback;
+
+  // Saving credentials counts as a manual fix — re-arm the auto-renew circuit breaker.
+  data.renewFailCount = 0;
+  data.autoRenewDisabled = admin.firestore.FieldValue.delete();
+  data.lastError = admin.firestore.FieldValue.delete();
 
   await db.collection('settings').doc('kite').set(data, { merge: true });
   res.status(200).send({ message: 'Kite credentials saved' });

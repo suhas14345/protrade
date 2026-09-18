@@ -294,8 +294,17 @@ export const gateway = functions.runWith(v1Options).https.onRequest(async (req, 
                   lastError: kdata.lastError || null,
                   lastAutoRenew: kdata.lastAutoRenew || null,
                   updatedAt: kdata.updatedAt || null,
+                  renewFailCount: kdata.renewFailCount || 0,
+                  autoRenewDisabled: !!kdata.autoRenewDisabled,
                   hasAllFields: !!(kdata.apiKey && kdata.apiSecret && kdata.userId && kdata.password && kdata.totpSecret),
                 });
+                break;
+            }
+            case 'validateTotpSecret': {
+                const { validateTotpSecret } = await import('./services/kite_automation');
+                const seed = (req.body?.totpSecret ?? req.query?.totpSecret) as string | undefined;
+                const result = await validateTotpSecret(seed);
+                res.status(200).send(result);
                 break;
             }
             case 'getTelegramSettings': {
@@ -359,17 +368,16 @@ export const gateway = functions.runWith(v1Options).https.onRequest(async (req, 
 
             // V3.1: Scheduled actions — called by Cloud Scheduler
             case 'scheduledKiteRenew': {
-                console.log('[Scheduler] Auto-renewing Kite session...');
+                const manual = !!(req.body?.manual);
+                console.log(`[Scheduler] ${manual ? 'Manual' : 'Auto'}-renewing Kite session...`);
                 const { autoRenewKiteSessionHandler } = await import('./services/kite_automation');
-                await autoRenewKiteSessionHandler({});
-                // Check if renewal succeeded
-                const renewDb = admin.apps.length ? admin.firestore() : admin.initializeApp() && admin.firestore();
-                const renewSnap = await renewDb.collection('settings').doc('kite').get();
-                const renewData = renewSnap.data();
-                if (renewData?.status === 'ERROR') {
-                    res.status(500).send({ error: 'Auto-renewal failed', details: renewData.lastError });
+                const result = await autoRenewKiteSessionHandler({ manual });
+                if (result.status === 'ACTIVE') {
+                    res.status(200).send({ message: result.message, status: 'ACTIVE' });
+                } else if (result.status === 'SKIPPED') {
+                    res.status(409).send({ error: result.message, disabled: true, failCount: result.failCount });
                 } else {
-                    res.status(200).send({ message: 'Kite session auto-renewed', status: renewData?.status });
+                    res.status(500).send({ error: 'Auto-renewal failed', details: result.message, disabled: result.disabled, failCount: result.failCount });
                 }
                 break;
             }

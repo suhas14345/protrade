@@ -6,6 +6,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 const kite_automation_1 = require("../kite_automation");
 const axios_1 = __importDefault(require("axios"));
 const totp_generator_1 = require("totp-generator");
+const kite_automation_2 = require("../kite_automation");
 jest.mock('axios');
 jest.mock('totp-generator');
 describe('Kite Automation Service - Headless Login', () => {
@@ -84,6 +85,26 @@ describe('Kite Automation Service - Headless Login', () => {
         }
         await expect((0, kite_automation_1.generateHeadlessRequestToken)('user', 'pass', 'secret', 'apikey'))
             .rejects.toThrow(/Exhausted redirect hops/);
+    });
+});
+describe('validateTotpSecretFormat', () => {
+    it('accepts a valid 32-char base32 seed', () => {
+        const r = (0, kite_automation_2.validateTotpSecretFormat)('LFJVRL4JTFODGGQMOUUIBJNU2KFBC6K4');
+        expect(r).toEqual({ valid: true, format: 'base32', length: 32 });
+    });
+    it('accepts a short base32 seed with padding', () => {
+        expect((0, kite_automation_2.validateTotpSecretFormat)('JBSWY3DPEHPK3PXP').valid).toBe(true);
+    });
+    it('rejects a 6-digit rotating code (common mistake)', () => {
+        const r = (0, kite_automation_2.validateTotpSecretFormat)('123456');
+        expect(r.valid).toBe(false);
+        expect(r.format).toBe('digits');
+    });
+    it('rejects garbage / non-base32 characters', () => {
+        expect((0, kite_automation_2.validateTotpSecretFormat)('not a secret!').format).toBe('invalid');
+    });
+    it('reports missing for empty input', () => {
+        expect((0, kite_automation_2.validateTotpSecretFormat)('  ').format).toBe('missing');
     });
 });
 //# sourceMappingURL=kite_automation.test.js.map
