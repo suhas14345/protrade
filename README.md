@@ -43,6 +43,7 @@ Cloud Scheduler (cron, IST)
 | `kite-auto-renew` | `30 8 * * 1-5` | `scheduledKiteRenew` | Headless Kite session renewal (TOTP) |
 | `eod-scan` | `30 16 * * 1-5` | `scheduledEod` | Full EOD pipeline on **`eligible`** (fetch → fill → hunt) |
 | `history-fill-500` | `30 18 * * 1-5` | `startDeepSync` (nifty500, `days=0`) | Strict‑delta history top‑up for the full 500 |
+| `quote-fill` | `45 18 * * 1-5` | `scheduledQuoteFill` (liquidnse) | Cheap batched‑quote daily bar top‑up for the all‑NSE liquid pool |
 | `screen-universe` | `30 19 * * 1-5` | `scheduledScreen` | Rebuild `eligible`/`dynamic` from the source pool |
 | `stale-cleanup` | `0 2 * * *` | `cleanupStale` | Retention cleanup |
 | `morning-fill` | `15 9 * * 1-5` | `scheduledMorning` | **PAUSED / retired** — fills now run inside `eod-scan` |

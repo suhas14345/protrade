@@ -50,7 +50,8 @@ falls back to `nifty500`. Members: `universes/{id}/members/{SYM.NS}`. Metals bar
 | `kite-auto-renew` | `30 8 * * 1-5` | `{"action":"scheduledKiteRenew"}` | ENABLED |
 | `eod-scan` | `30 16 * * 1-5` | `{"action":"scheduledEod"}` | ENABLED |
 | `history-fill-500` | `30 18 * * 1-5` | `{"action":"startDeepSync","universe":"nifty500","days":0}` | ENABLED |
-| `screen-universe` | `30 19 * * 1-5` | `{"action":"scheduledScreen"}` | ENABLED |
+| `quote-fill` | `45 18 * * 1-5` | `{"action":"scheduledQuoteFill","universe":"liquidnse"}` | ENABLED |
+| `screen-universe` | `30 19 * * 1-5` | `{"action":"scheduledScreen","source":"liquidnse"}` | ENABLED |
 | `stale-cleanup` | `0 2 * * *` | `{"action":"cleanupStale"}` | ENABLED |
 | `morning-fill` | `15 9 * * 1-5` | `{"action":"scheduledMorning"}` | **PAUSED** (retired) |
 
