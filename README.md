@@ -50,6 +50,35 @@ Cloud Scheduler (cron, IST)
 > The `.pubsub.schedule()` functions in `index.ts` are **not** deployed by the Firebase CLI
 > (gen1 quirk). The real schedules are the Cloud Scheduler jobs above, which POST to the gateway.
 
+## Notifications — daily Telegram digest
+
+At the end of each **EOD run** (after `eod-scan` finalizes, ~16:30 IST) the system sends a plain‑text
+**daily digest** to a Telegram chat. It's a **no‑op unless enabled** in Firestore `settings/telegram`,
+and it only fires for EOD runs (not deep‑syncs). It summarizes account equity, P&L, open positions,
+and the day's activity ([snapshot.ts](functions/src/services/snapshot.ts) `formatSnapshotText`).
+
+Sample:
+
+```
+ProTrade snapshot — 20260918
+Health [OK]
+
+Equity ₹10,32,450 | Cash ₹4,10,000 | Deployed ₹6,22,450
+Realized ₹12,300 | Unrealized ₹8,150
+Total P&L ₹20,450
+
+Active trades (2):
+  CUPID.NS (SepaBreakoutEOD) x120 @ ₹412 -> ₹438  ₹3,120 (+6.3%)  stop ₹383
+  GOLDBEES (MetalsRotation) x599 @ ₹126 -> ₹129  ₹1,797 (+2.4%)  stop ₹94
+
+Today: 711 signals (12 approved; SepaBreakoutEOD:11, MetalsRotation:1), 3 orders, 2 entries / 1 exits filled
+```
+
+**Enable:** Dashboard → Settings → *Telegram Daily Digest* → paste bot token + chat ID → enable →
+**Send Test**. Config is stored in `settings/telegram` `{botToken, chatId, enabled}`; the bot token is
+kept server‑side and never displayed back. Manual resend: POST `{"action":"sendDigest"}` (optional `"date"`).
+Gateway actions: `getTelegramSettings`, `updateTelegram`, `testTelegram`, `sendDigest`.
+
 ## Quick start
 
 Prerequisites: Node 22 (matches `engines.node` / the deployed `nodejs22` runtime), Firebase CLI (`npm i -g firebase-tools`).

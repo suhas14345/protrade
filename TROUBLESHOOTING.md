@@ -71,7 +71,7 @@ Common issues and their solutions.
 - **Symptom**: EOD run completes but 0 signals.
 - **Cause**: Legitimate when no setup qualifies. For the live SEPA + Metals config, check:
   1. Index gate — SEPA needs Nifty above its EMA200 with a rising slope and regime ≠ BEAR.
-  2. RS leadership — only the top‑40 by 126‑day momentum (`rsRank126 ≤ 40`) qualify for SEPA.
+  2. RS leadership — SEPA needs `rsScore ≥ 70` (RS rating percentile, `RS_MIN_RATING`; falls back to `rsRank126 ≤ RS_TOP` on first‑day warmup).
   3. Near‑high gate — SEPA entries must be within 15% of the 52‑week high.
   4. Equity‑curve throttle — no new SEPA buys past 6% drawdown‑from‑peak.
   5. Metals — trend gate (close > 200‑SMA) and positive risk‑adjusted momentum.
@@ -91,6 +91,19 @@ Common issues and their solutions.
 - **Symptom**: Browser console shows CORS/preflight errors.
 - **Cause**: Gateway CORS headers not matching origin.
 - **Fix**: Gateway allows all origins (`*`). If still failing, check the request includes `Content-Type: application/json`.
+
+---
+
+## Notifications
+
+### Not Receiving the Daily Telegram Digest
+- **Symptom**: No Telegram message after the EOD run.
+- **Cause**: `settings/telegram` is disabled/unconfigured, wrong `chatId`, an invalid/revoked bot token, or the bot was never started by the recipient.
+- **Fix**:
+  1. Dashboard → Settings → *Telegram Daily Digest* → confirm bot token + chat ID are set and **enabled**, then **Send Test**.
+  2. The recipient must have sent `/start` to the bot at least once (Telegram won't deliver to a chat that never messaged the bot).
+  3. Manual resend for a date: `{"action":"sendDigest","date":"YYYY-MM-DD"}`. A `not_configured`/`disabled` reason means it's intentionally off.
+- **Note**: The digest only fires at **EOD finalize** (not deep‑syncs), so an EOD run that failed before finalize sends nothing — check the job completed.
 
 ---
 

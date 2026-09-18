@@ -81,6 +81,13 @@ Fills are **inside** the EOD run because the day's bar only exists after the fet
 - 494/498 nifty500 non‑subset symbols current; 4 fail Kite instrument‑token resolution
   (`AKZOINDIA`, `GSPL`, `GUJGASLTD`, `JBCHEPHARM`) — renamed/mismatched tickers.
 
+## Notifications (Telegram daily digest)
+
+- **When:** at EOD finalize (orchestrator wrap‑up, after the job report) — EOD runs only, not deep‑syncs.
+- **Config:** `settings/telegram` `{botToken, chatId, enabled}`. No‑op if `enabled` is false or unconfigured; the bot token is never logged or displayed back.
+- **Content** (`snapshot.ts` `formatSnapshotText`): a critic health tag, equity/cash/deployed, realized/unrealized, total P&L, open positions (entry→current, P&L, stop), and the day's signal/order/fill counts.
+- **Gateway actions:** `getTelegramSettings`, `updateTelegram`, `testTelegram`, `sendDigest` (optional `date`). Configure via Dashboard → Settings → Telegram card.
+
 ## Auth for admin/REST scripts
 
 Firestore & Cloud Scheduler REST calls need a Google OAuth access token minted from the local
