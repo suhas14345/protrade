@@ -104,6 +104,8 @@ function App() {
   const [settingsStatus, setSettingsStatus] = useState<string | null>(null);
   const [settingsSaving, setSettingsSaving] = useState(false);
   const [settingsValidation, setSettingsValidation] = useState<{ valid: boolean; otp?: string; message: string } | null>(null);
+  const [strategySettings, setStrategySettings] = useState<{ ignoreRegimeGate: boolean; source?: string } | null>(null);
+  const [strategyStatus, setStrategyStatus] = useState<string | null>(null);
   const [telegramForm, setTelegramForm] = useState({ botToken: '', chatId: '', enabled: false });
   const [telegramStatus, setTelegramStatus] = useState<string | null>(null);
   const [fundForm, setFundForm] = useState({ eodhdApiKey: '' });
@@ -373,6 +375,11 @@ function App() {
     checkHealth();
     const interval = setInterval(checkHealth, 300000); // Every 5 mins
     return () => clearInterval(interval);
+  }, [authToken]);
+
+  useEffect(() => {
+    if (!authToken) return;
+    gw('getStrategySettings').then((r: any) => setStrategySettings({ ignoreRegimeGate: !!r.ignoreRegimeGate, source: r.source })).catch(() => {});
   }, [authToken]);
 
   const handleUpdateConfig = async () => {
@@ -1348,6 +1355,38 @@ function App() {
 
         {view === 'SETTINGS' && (
           <div style={{ maxWidth: '640px' }}>
+            <div className="card" style={{ marginBottom: '1.5rem' }}>
+              <h3 style={{ color: '#94a3b8', marginBottom: '1rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                <Settings size={18} /> Strategy — Market Regime Filter
+              </h3>
+              <p style={{ color: '#64748b', fontSize: '0.8rem', marginBottom: '1rem' }}>
+                When <b>ON</b>, SEPA/ATH only trade while the index is in a confirmed uptrend — no new entries in a
+                down/BEAR market, and open leaders are liquidated when the uptrend breaks. When <b>OFF</b> (always-hunt),
+                the regime is ignored on both sides: setups are entered regardless of the tape and positions exit only on
+                their own stop/trail.
+              </p>
+              {strategySettings ? (
+                <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+                  <button
+                    className="btn-premium"
+                    style={{ background: strategySettings.ignoreRegimeGate ? 'rgba(239,68,68,0.15)' : 'rgba(16,185,129,0.15)', border: `1px solid ${strategySettings.ignoreRegimeGate ? 'rgba(239,68,68,0.5)' : 'rgba(16,185,129,0.5)'}` }}
+                    onClick={async () => {
+                      const newIgnore = !strategySettings.ignoreRegimeGate; // toggling the FILTER flips the ignore flag
+                      setStrategyStatus(null);
+                      try {
+                        await gw('updateStrategySettings', { ignoreRegimeGate: newIgnore });
+                        setStrategySettings({ ...strategySettings, ignoreRegimeGate: newIgnore, source: 'firestore' });
+                        setStrategyStatus(`✅ Regime filter ${newIgnore ? 'OFF (always hunt)' : 'ON (respect regime)'} — applies from the next EOD run`);
+                      } catch (err: any) { setStrategyStatus(`❌ ${err.message}`); }
+                    }}
+                  >
+                    Regime filter: {strategySettings.ignoreRegimeGate ? '🔴 OFF (always hunt)' : '🟢 ON (respect regime)'}
+                  </button>
+                  <span style={{ color: '#64748b', fontSize: '0.72rem' }}>click to toggle</span>
+                </div>
+              ) : <p style={{ color: '#64748b', fontSize: '0.8rem' }}>Loading…</p>}
+              {strategyStatus && <p style={{ marginTop: '0.75rem', fontSize: '0.8rem', color: strategyStatus.startsWith('✅') ? '#10b981' : '#ef4444' }}>{strategyStatus}</p>}
+            </div>
             <div className="card" style={{ marginBottom: '1.5rem' }}>
               <h3 style={{ color: '#94a3b8', marginBottom: '1rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                 <Settings size={18} /> Kite Connect Credentials

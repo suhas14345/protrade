@@ -58,7 +58,7 @@ async function checkRuntimeKillSwitch() {
  * V3.0: Wired middleware — validation, auth, rate limiting, kill switch
  */
 exports.gateway = functions.runWith(v1Options).https.onRequest(async (req, res) => {
-    var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k, _l, _m, _o, _p, _q, _r, _s;
+    var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k, _l, _m, _o, _p, _q, _r, _s, _t, _u, _v;
     // CORS: allow dashboard origin
     res.set('Access-Control-Allow-Origin', '*');
     res.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
@@ -343,6 +343,30 @@ exports.gateway = functions.runWith(v1Options).https.onRequest(async (req, res) 
                 res.status(200).send(result);
                 break;
             }
+            case 'getStrategySettings': {
+                const sdb = admin.apps.length ? admin.firestore() : admin.initializeApp() && admin.firestore();
+                const sdata = (await sdb.collection('settings').doc('strategy').get()).data() || {};
+                const { SEPA_CONFIG } = await Promise.resolve().then(() => __importStar(require('./config/runtime')));
+                const stored = typeof sdata.ignoreRegimeGate === 'boolean' ? sdata.ignoreRegimeGate : null;
+                res.status(200).send({
+                    ignoreRegimeGate: stored !== null ? stored : SEPA_CONFIG.IGNORE_REGIME_GATE,
+                    source: stored !== null ? 'firestore' : 'env-default',
+                    envDefault: SEPA_CONFIG.IGNORE_REGIME_GATE,
+                });
+                break;
+            }
+            case 'updateStrategySettings': {
+                const sdb = admin.apps.length ? admin.firestore() : admin.initializeApp() && admin.firestore();
+                const raw = ((_g = (_f = req.body) === null || _f === void 0 ? void 0 : _f.ignoreRegimeGate) !== null && _g !== void 0 ? _g : (_h = req.query) === null || _h === void 0 ? void 0 : _h.ignoreRegimeGate);
+                const val = (raw === true || raw === 'true') ? true : ((raw === false || raw === 'false') ? false : null);
+                if (val === null) {
+                    res.status(400).send({ error: 'ignoreRegimeGate must be a boolean' });
+                    break;
+                }
+                await sdb.collection('settings').doc('strategy').set({ ignoreRegimeGate: val, updatedAt: admin.firestore.Timestamp.now() }, { merge: true });
+                res.status(200).send({ message: 'Strategy settings saved', ignoreRegimeGate: val });
+                break;
+            }
             case 'getTelegramSettings': {
                 const tdb = admin.apps.length ? admin.firestore() : admin.initializeApp() && admin.firestore();
                 const tsnap = await tdb.collection('settings').doc('telegram').get();
@@ -380,7 +404,7 @@ exports.gateway = functions.runWith(v1Options).https.onRequest(async (req, res) 
             }
             case 'sendDigest': {
                 const { sendDailyDigest } = await Promise.resolve().then(() => __importStar(require('./services/telegram')));
-                const digestDate = (((_f = req.body) === null || _f === void 0 ? void 0 : _f.date) || ((_g = req.query) === null || _g === void 0 ? void 0 : _g.date));
+                const digestDate = (((_j = req.body) === null || _j === void 0 ? void 0 : _j.date) || ((_k = req.query) === null || _k === void 0 ? void 0 : _k.date));
                 const result = await sendDailyDigest(digestDate);
                 if (result.sent)
                     res.status(200).send({ message: 'Digest sent' });
@@ -410,7 +434,7 @@ exports.gateway = functions.runWith(v1Options).https.onRequest(async (req, res) 
             }
             // V3.1: Scheduled actions — called by Cloud Scheduler
             case 'scheduledKiteRenew': {
-                const manual = !!((_h = req.body) === null || _h === void 0 ? void 0 : _h.manual);
+                const manual = !!((_l = req.body) === null || _l === void 0 ? void 0 : _l.manual);
                 console.log(`[Scheduler] ${manual ? 'Manual' : 'Auto'}-renewing Kite session...`);
                 const { autoRenewKiteSessionHandler } = await Promise.resolve().then(() => __importStar(require('./services/kite_automation')));
                 const result = await autoRenewKiteSessionHandler({ manual });
@@ -484,7 +508,7 @@ exports.gateway = functions.runWith(v1Options).https.onRequest(async (req, res) 
             case 'startMorningExecution': {
                 // Manual trigger defaults to the live hunt universe.
                 const { doStartMorningExecution } = await Promise.resolve().then(() => __importStar(require('./services/orchestrator')));
-                await doStartMorningExecution({ query: { date: (_j = req.body) === null || _j === void 0 ? void 0 : _j.date, universe: ((_k = req.body) === null || _k === void 0 ? void 0 : _k.universe) || runtime_1.DEFAULT_UNIVERSE } }, res);
+                await doStartMorningExecution({ query: { date: (_m = req.body) === null || _m === void 0 ? void 0 : _m.date, universe: ((_o = req.body) === null || _o === void 0 ? void 0 : _o.universe) || runtime_1.DEFAULT_UNIVERSE } }, res);
                 break;
             }
             case 'syncNseHolidays': {
@@ -496,7 +520,7 @@ exports.gateway = functions.runWith(v1Options).https.onRequest(async (req, res) 
             }
             case 'syncCorporateEvents': {
                 const { syncAllCorporateEvents } = await Promise.resolve().then(() => __importStar(require('./services/eventSync')));
-                const lookAhead = Number((_l = req.body) === null || _l === void 0 ? void 0 : _l.lookAheadDays) || 30;
+                const lookAhead = Number((_p = req.body) === null || _p === void 0 ? void 0 : _p.lookAheadDays) || 30;
                 const result = await syncAllCorporateEvents(lookAhead);
                 res.status(200).send({
                     message: 'Corporate events synced',
@@ -509,10 +533,10 @@ exports.gateway = functions.runWith(v1Options).https.onRequest(async (req, res) 
             case 'backfillHistorical': {
                 const { runHistoricalBackfill } = await Promise.resolve().then(() => __importStar(require('./services/historicalBackfill')));
                 const result = await runHistoricalBackfill({
-                    universeId: ((_m = req.body) === null || _m === void 0 ? void 0 : _m.universe) || 'midsmall400',
-                    startISO: (_o = req.body) === null || _o === void 0 ? void 0 : _o.start,
-                    endISO: (_p = req.body) === null || _p === void 0 ? void 0 : _p.end,
-                    maxSymbols: Number((_q = req.body) === null || _q === void 0 ? void 0 : _q.maxSymbols) || 500,
+                    universeId: ((_q = req.body) === null || _q === void 0 ? void 0 : _q.universe) || 'midsmall400',
+                    startISO: (_r = req.body) === null || _r === void 0 ? void 0 : _r.start,
+                    endISO: (_s = req.body) === null || _s === void 0 ? void 0 : _s.end,
+                    maxSymbols: Number((_t = req.body) === null || _t === void 0 ? void 0 : _t.maxSymbols) || 500,
                 });
                 res.status(200).send(result);
                 break;
@@ -520,14 +544,14 @@ exports.gateway = functions.runWith(v1Options).https.onRequest(async (req, res) 
             case 'resetTradingState': {
                 const { runResetTradingState } = await Promise.resolve().then(() => __importStar(require('./services/resetState')));
                 const result = await runResetTradingState({
-                    equity: Number((_r = req.body) === null || _r === void 0 ? void 0 : _r.equity) || 1000000,
+                    equity: Number((_u = req.body) === null || _u === void 0 ? void 0 : _u.equity) || 1000000,
                 });
                 res.status(200).send(result);
                 break;
             }
             case 'cleanupStale': {
                 const { runStaleCleanup } = await Promise.resolve().then(() => __importStar(require('./services/cleanupStale')));
-                const result = await runStaleCleanup((_s = req.body) === null || _s === void 0 ? void 0 : _s.retention);
+                const result = await runStaleCleanup((_v = req.body) === null || _v === void 0 ? void 0 : _v.retention);
                 res.status(200).send({ message: 'Stale data cleaned', deleted: result });
                 break;
             }

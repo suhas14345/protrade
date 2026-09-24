@@ -307,6 +307,27 @@ export const gateway = functions.runWith(v1Options).https.onRequest(async (req, 
                 res.status(200).send(result);
                 break;
             }
+            case 'getStrategySettings': {
+                const sdb = admin.apps.length ? admin.firestore() : admin.initializeApp() && admin.firestore();
+                const sdata = (await sdb.collection('settings').doc('strategy').get()).data() || {};
+                const { SEPA_CONFIG } = await import('./config/runtime');
+                const stored = typeof sdata.ignoreRegimeGate === 'boolean' ? sdata.ignoreRegimeGate : null;
+                res.status(200).send({
+                    ignoreRegimeGate: stored !== null ? stored : SEPA_CONFIG.IGNORE_REGIME_GATE,
+                    source: stored !== null ? 'firestore' : 'env-default',
+                    envDefault: SEPA_CONFIG.IGNORE_REGIME_GATE,
+                });
+                break;
+            }
+            case 'updateStrategySettings': {
+                const sdb = admin.apps.length ? admin.firestore() : admin.initializeApp() && admin.firestore();
+                const raw = (req.body?.ignoreRegimeGate ?? req.query?.ignoreRegimeGate);
+                const val = (raw === true || raw === 'true') ? true : ((raw === false || raw === 'false') ? false : null);
+                if (val === null) { res.status(400).send({ error: 'ignoreRegimeGate must be a boolean' }); break; }
+                await sdb.collection('settings').doc('strategy').set({ ignoreRegimeGate: val, updatedAt: admin.firestore.Timestamp.now() }, { merge: true });
+                res.status(200).send({ message: 'Strategy settings saved', ignoreRegimeGate: val });
+                break;
+            }
             case 'getTelegramSettings': {
                 const tdb = admin.apps.length ? admin.firestore() : admin.initializeApp() && admin.firestore();
                 const tsnap = await tdb.collection('settings').doc('telegram').get();

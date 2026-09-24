@@ -40,6 +40,7 @@ const admin = __importStar(require("firebase-admin"));
 const calendar_1 = require("./calendar");
 const runtime_1 = require("../config/runtime");
 const barCache_1 = require("./barCache");
+const strategy_1 = require("./strategy");
 const getDb = () => {
     if (admin.apps.length === 0)
         admin.initializeApp();
@@ -71,7 +72,8 @@ async function doManageTrades(dateId, jobId) {
     // exist yet); a genuinely missing prior regime is treated as NOT off, so we never
     // liquidate on absent data — only on a confirmed index-uptrend break.
     let sepaRegimeOff = false;
-    if (runtime_1.SEPA_CONFIG.SEPA_ONLY && !runtime_1.SEPA_CONFIG.IGNORE_REGIME_GATE) {
+    const ignoreRegime = await (0, strategy_1.getIgnoreRegimeGate)(db);
+    if (runtime_1.SEPA_CONFIG.SEPA_ONLY && !ignoreRegime) {
         const regimeDateId = (await calendar_1.CalendarService.getPrevTradingDateId(dateId)) || dateId;
         const regimeSnap = await db.collection('regime').doc(regimeDateId).get();
         const rd = regimeSnap.exists ? regimeSnap.data() : null;

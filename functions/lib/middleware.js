@@ -53,6 +53,7 @@ const KNOWN_ACTIONS = new Set([
     'auditSignals', 'snapshot',
     'scheduledKiteRenew', 'scheduledEod', 'scheduledMorning',
     'startMorningExecution', 'getKiteSettings', 'validateTotpSecret',
+    'getStrategySettings', 'updateStrategySettings',
     'getTelegramSettings', 'updateTelegram', 'testTelegram', 'sendDigest',
     'syncNseHolidays', 'syncCorporateEvents',
     'backfillHistorical',

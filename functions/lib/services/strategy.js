@@ -34,6 +34,7 @@ var __importStar = (this && this.__importStar) || (function () {
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.evaluateSignalsTask = void 0;
+exports.getIgnoreRegimeGate = getIgnoreRegimeGate;
 exports.athPullbackSetup = athPullbackSetup;
 exports.doEvaluateSignals = doEvaluateSignals;
 const functionsV1 = __importStar(require("firebase-functions"));
@@ -351,6 +352,22 @@ async function doRiskApproval(signal, account, regime, openPositions, sessionApp
     };
 }
 /**
+ * Effective "ignore market regime" flag: the dashboard-controlled Firestore setting
+ * (settings/strategy.ignoreRegimeGate) overrides the SEPA_IGNORE_REGIME env default.
+ * Governs BOTH entry staging and the exit-side regime liquidation (kept consistent).
+ */
+async function getIgnoreRegimeGate(db) {
+    var _a;
+    try {
+        const snap = await db.collection('settings').doc('strategy').get();
+        const v = snap.exists ? (_a = snap.data()) === null || _a === void 0 ? void 0 : _a.ignoreRegimeGate : undefined;
+        if (typeof v === 'boolean')
+            return v;
+    }
+    catch ( /* fall back to env default */_b) { /* fall back to env default */ }
+    return runtime_1.SEPA_CONFIG.IGNORE_REGIME_GATE;
+}
+/**
  * SEPA (Minervini) faithful entry evaluator. Runs ONLY when SEPA_CONFIG.SEPA_ONLY
  * is true and fully replaces the multi-strategy logic. Pillars: index-regime gate,
  * trend template (close>50>150>200 SMA, 200 rising), within HI_PROX of the 52-week
@@ -358,7 +375,7 @@ async function doRiskApproval(signal, account, regime, openPositions, sessionApp
  * sizing, and a tight equity-curve throttle. Writes an APPROVED SepaBreakoutEOD
  * signal; the percent lock/trail exit and regime-off liquidation live in tradeManager.
  */
-async function evaluateSepaSignal(db, jobId, symbol, dateId, features, regime, account, openPositions) {
+async function evaluateSepaSignal(db, jobId, symbol, dateId, features, regime, account, openPositions, ignoreRegime) {
     var _a;
     // Feature availability + current close — needed by BOTH the watchlist and the entry gates.
     const sma50 = Number(features.sma50);
@@ -383,7 +400,7 @@ async function evaluateSepaSignal(db, jobId, symbol, dateId, features, regime, a
     const indexUpRaw = !!m && Number(m.close) > Number(m.ema200) && Number((_a = m.ema200Slope) !== null && _a !== void 0 ? _a : 0) > 0 && regime.marketState !== 'BEAR';
     // Paper-study mode: ignore the market-regime gate entirely — treat the market as constructive so
     // fully-qualified breakouts enter as normal signals (no regime-ignored flag). SEPA_IGNORE_REGIME=0 restores it.
-    const indexUp = runtime_1.SEPA_CONFIG.IGNORE_REGIME_GATE ? true : indexUpRaw;
+    const indexUp = ignoreRegime ? true : indexUpRaw;
     // Trend template + near-52w-high + RS leadership + VDU
     const sma10 = Number(features.sma10);
     const sma50Rising = features.sma50Rising === true;
@@ -514,7 +531,7 @@ async function evaluateSepaSignal(db, jobId, symbol, dateId, features, regime, a
     // study mode (IGNORE_REGIME_GATE) we still stage fully-qualified setups in a down market and
     // flag the signal as regime-ignored so it stands out.
     const regimeIgnored = !indexUp;
-    if (regimeIgnored && !runtime_1.SEPA_CONFIG.IGNORE_REGIME_GATE)
+    if (regimeIgnored && !ignoreRegime)
         return;
     // Fundamentals veto — a confirmed CRITICAL earnings-quality flag blocks the buy
     // (the watchlist row is still tracked/badged above). Fail-soft on missing data.
@@ -613,12 +630,12 @@ function athPullbackSetup(f, close) {
  * advisory "buy-the-dip on a leader" calls. Writes an APPROVED ATHPullbackEOD signal;
  * the final leader selection + shared-equity-book funds gate run in doPlaceOrders.
  */
-async function evaluateAthSignal(db, jobId, symbol, dateId, features, regime, account, openPositions) {
+async function evaluateAthSignal(db, jobId, symbol, dateId, features, regime, account, openPositions, ignoreRegime) {
     var _a;
     // 1. Index-regime gate — only buy leaders while the index is in a confirmed uptrend.
     const m = regime.metrics;
     const indexUp = !!m && Number(m.close) > Number(m.ema200) && Number((_a = m.ema200Slope) !== null && _a !== void 0 ? _a : 0) > 0 && regime.marketState !== 'BEAR';
-    if (!indexUp && !runtime_1.SEPA_CONFIG.IGNORE_REGIME_GATE)
+    if (!indexUp && !ignoreRegime)
         return;
     // Fundamentals veto (shared with SEPA) — CRITICAL earnings-quality flag blocks the buy.
     if (await isFundamentallyBlocked(db, symbol)) {
@@ -820,10 +837,11 @@ async function doEvaluateSignals(jobId, symbol, runDate, forceRegime, universeId
         if (runtime_1.SEPA_CONFIG.SEPA_ONLY) {
             if (isMetalsSymbol)
                 return; // never trade the metal ETFs on the equity path
-            await evaluateSepaSignal(db, jobId, symbol, dateId, features, regime, account, openPositions);
+            const ignoreRegime = await getIgnoreRegimeGate(db);
+            await evaluateSepaSignal(db, jobId, symbol, dateId, features, regime, account, openPositions, ignoreRegime);
             // ATH-Pullback runs ALONGSIDE SEPA on equities (inverse trigger, shared equity book).
             if (runtime_1.ATH_CONFIG.ENABLED) {
-                await evaluateAthSignal(db, jobId, symbol, dateId, features, regime, account, openPositions);
+                await evaluateAthSignal(db, jobId, symbol, dateId, features, regime, account, openPositions, ignoreRegime);
             }
             return;
         }

@@ -4,6 +4,7 @@ import { PaperPosition, PaperOrder } from '../models';
 import { CalendarService } from './calendar';
 import { EXIT_PROFILES, SEPA_CONFIG, METALS_CONFIG, ATH_CONFIG } from '../config/runtime';
 import { getBarOn, getWindowOnOrBefore } from './barCache';
+import { getIgnoreRegimeGate } from './strategy';
 
 const getDb = () => {
     if (admin.apps.length === 0) admin.initializeApp();
@@ -38,7 +39,8 @@ export async function doManageTrades(dateId: string, jobId: string) {
     // exist yet); a genuinely missing prior regime is treated as NOT off, so we never
     // liquidate on absent data — only on a confirmed index-uptrend break.
     let sepaRegimeOff = false;
-    if (SEPA_CONFIG.SEPA_ONLY && !SEPA_CONFIG.IGNORE_REGIME_GATE) {
+    const ignoreRegime = await getIgnoreRegimeGate(db);
+    if (SEPA_CONFIG.SEPA_ONLY && !ignoreRegime) {
         const regimeDateId = (await CalendarService.getPrevTradingDateId(dateId)) || dateId;
         const regimeSnap = await db.collection('regime').doc(regimeDateId).get();
         const rd: any = regimeSnap.exists ? regimeSnap.data() : null;

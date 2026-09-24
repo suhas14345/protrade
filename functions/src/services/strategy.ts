@@ -347,6 +347,20 @@ async function doRiskApproval(signal: Signal, account: AccountConfig, regime: Re
 }
 
 /**
+ * Effective "ignore market regime" flag: the dashboard-controlled Firestore setting
+ * (settings/strategy.ignoreRegimeGate) overrides the SEPA_IGNORE_REGIME env default.
+ * Governs BOTH entry staging and the exit-side regime liquidation (kept consistent).
+ */
+export async function getIgnoreRegimeGate(db: FirebaseFirestore.Firestore): Promise<boolean> {
+  try {
+    const snap = await db.collection('settings').doc('strategy').get();
+    const v = snap.exists ? (snap.data() as any)?.ignoreRegimeGate : undefined;
+    if (typeof v === 'boolean') return v;
+  } catch { /* fall back to env default */ }
+  return SEPA_CONFIG.IGNORE_REGIME_GATE;
+}
+
+/**
  * SEPA (Minervini) faithful entry evaluator. Runs ONLY when SEPA_CONFIG.SEPA_ONLY
  * is true and fully replaces the multi-strategy logic. Pillars: index-regime gate,
  * trend template (close>50>150>200 SMA, 200 rising), within HI_PROX of the 52-week
@@ -363,6 +377,7 @@ async function evaluateSepaSignal(
   regime: Regime,
   account: AccountConfig,
   openPositions: any[],
+  ignoreRegime: boolean,
 ): Promise<void> {
   // Feature availability + current close — needed by BOTH the watchlist and the entry gates.
   const sma50 = Number(features.sma50);
@@ -386,7 +401,7 @@ async function evaluateSepaSignal(
   const indexUpRaw = !!m && Number(m.close) > Number(m.ema200) && Number(m.ema200Slope ?? 0) > 0 && regime.marketState !== 'BEAR';
   // Paper-study mode: ignore the market-regime gate entirely — treat the market as constructive so
   // fully-qualified breakouts enter as normal signals (no regime-ignored flag). SEPA_IGNORE_REGIME=0 restores it.
-  const indexUp = SEPA_CONFIG.IGNORE_REGIME_GATE ? true : indexUpRaw;
+  const indexUp = ignoreRegime ? true : indexUpRaw;
 
   // Trend template + near-52w-high + RS leadership + VDU
   const sma10 = Number(features.sma10);
@@ -521,7 +536,7 @@ async function evaluateSepaSignal(
   // study mode (IGNORE_REGIME_GATE) we still stage fully-qualified setups in a down market and
   // flag the signal as regime-ignored so it stands out.
   const regimeIgnored = !indexUp;
-  if (regimeIgnored && !SEPA_CONFIG.IGNORE_REGIME_GATE) return;
+  if (regimeIgnored && !ignoreRegime) return;
 
   // Fundamentals veto — a confirmed CRITICAL earnings-quality flag blocks the buy
   // (the watchlist row is still tracked/badged above). Fail-soft on missing data.
@@ -633,11 +648,12 @@ async function evaluateAthSignal(
   regime: Regime,
   account: AccountConfig,
   openPositions: any[],
+  ignoreRegime: boolean,
 ): Promise<void> {
   // 1. Index-regime gate — only buy leaders while the index is in a confirmed uptrend.
   const m = regime.metrics;
   const indexUp = !!m && Number(m.close) > Number(m.ema200) && Number(m.ema200Slope ?? 0) > 0 && regime.marketState !== 'BEAR';
-  if (!indexUp && !SEPA_CONFIG.IGNORE_REGIME_GATE) return;
+  if (!indexUp && !ignoreRegime) return;
 
   // Fundamentals veto (shared with SEPA) — CRITICAL earnings-quality flag blocks the buy.
   if (await isFundamentallyBlocked(db, symbol)) {
@@ -848,10 +864,11 @@ export async function doEvaluateSignals(jobId: string, symbol: string, runDate: 
     // entire multi-strategy path below (it does its own regime/RS/stop gating).
     if (SEPA_CONFIG.SEPA_ONLY) {
       if (isMetalsSymbol) return; // never trade the metal ETFs on the equity path
-      await evaluateSepaSignal(db, jobId, symbol, dateId, features, regime, account, openPositions);
+      const ignoreRegime = await getIgnoreRegimeGate(db);
+      await evaluateSepaSignal(db, jobId, symbol, dateId, features, regime, account, openPositions, ignoreRegime);
       // ATH-Pullback runs ALONGSIDE SEPA on equities (inverse trigger, shared equity book).
       if (ATH_CONFIG.ENABLED) {
-        await evaluateAthSignal(db, jobId, symbol, dateId, features, regime, account, openPositions);
+        await evaluateAthSignal(db, jobId, symbol, dateId, features, regime, account, openPositions, ignoreRegime);
       }
       return;
     }
