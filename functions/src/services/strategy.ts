@@ -497,7 +497,16 @@ async function evaluateSepaSignal(
   // Focused watchlist: only QUALITY setups that pass every SEPA gate (trend template + near-high +
   // RS≥70 + valid VCP). With the large universe this drops the noise; excludes invalidated/failed names.
   const buyReady = trendTemplate && nearHigh && rsLeader && vcpPassed;
-  if (vcpState && vcpState !== 'INVALIDATED' && buyReady) {
+  // Also surface genuine breakouts rejected by a quality gate, so the dashboard shows WHAT broke
+  // out and WHY it wasn't bought (visibility into the filter) — not just the buy-ready setups.
+  const rejectReasons = (buyReady ? [] : [
+    !trendTemplate ? 'not in trend template (close>50>150>200, 200 rising)' : null,
+    !nearHigh ? '>25% below 52-week high' : null,
+    !rsLeader ? 'RS < 70 (not a leader)' : null,
+    !vcpPassed ? 'VCP not confirmed (contraction / volume dry-up)' : null,
+  ].filter(Boolean)) as string[];
+  const rejectedBreakout = breakoutTriggered && !buyReady;
+  if (vcpState && vcpState !== 'INVALIDATED' && (buyReady || rejectedBreakout)) {
     const watchlistRef = db.collection('watchlist').doc(dateId).collection('items').doc(`${symbol}_SepaBreakoutEOD`);
     await watchlistRef.set({
       symbol,
@@ -508,6 +517,8 @@ async function evaluateSepaSignal(
       // Fully passes every SEPA entry gate except (possibly) the index regime — the standout row.
       sepaQualified: sepaFullyQualified,
       regimeIgnored: sepaFullyQualified && !indexUp,
+      rejected: !buyReady,
+      rejectReasons,
       close,
       pivot: Number.isFinite(pivot) ? pivot : null,
       structuralLow: Number.isFinite(structuralLow) ? structuralLow : null,

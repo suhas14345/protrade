@@ -928,7 +928,8 @@ function App() {
               ) : (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem', maxHeight: '460px', overflowY: 'auto', paddingRight: '0.5rem' }}>
                   {[...watchlist].sort((a, b) => {
-                    // Rank: TRIGGERED first, then closest-below-pivot (READY/SETUP), then EXTENDED/INVALIDATED.
+                    // Buy-ready first; rejected breakouts sink to the bottom. Then TRIGGERED/READY/…
+                    if (!!a.rejected !== !!b.rejected) return a.rejected ? 1 : -1;
                     const rank = (s: string) => ({ TRIGGERED: 0, READY: 1, SETUP: 2, EXTENDED: 3, INVALIDATED: 4 } as any)[s] ?? 5;
                     if (rank(a.status) !== rank(b.status)) return rank(a.status) - rank(b.status);
                     return Math.abs(a.distToPivotPct ?? 1) - Math.abs(b.distToPivotPct ?? 1);
@@ -951,6 +952,11 @@ function App() {
                           </div>
                         </div>
                         <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                          {w.rejected && (
+                            <span title={(w.rejectReasons || []).join('; ')} style={{ fontSize: '0.6rem', fontWeight: 700, padding: '0.15rem 0.4rem', borderRadius: '4px', color: '#f87171', border: '1px solid rgba(248,113,113,0.5)', whiteSpace: 'nowrap' }}>
+                              ✗ REJECTED
+                            </span>
+                          )}
                           {w.sepaQualified && (
                             <span title={w.regimeIgnored ? 'Fully SEPA-qualified — staged despite down market (regime ignored)' : 'Fully SEPA-qualified setup'} style={{ fontSize: '0.6rem', fontWeight: 700, padding: '0.15rem 0.4rem', borderRadius: '4px', color: '#0f172a', background: '#fbbf24', whiteSpace: 'nowrap' }}>
                               ⭐ SEPA{w.regimeIgnored ? ' • REGIME-IGN' : ''}
@@ -973,6 +979,7 @@ function App() {
                         <br />
                         {w.structuralLow != null && <>Stop ref ₹{w.structuralLow.toFixed(2)} • </>}
                         Vol-dryup {w.features?.vcpVolumeRatio != null ? `${w.features.vcpVolumeRatio.toFixed(2)}x` : '—'} {w.features?.vcpVolumeDryUp ? '✅' : '❌'} • ATR↓ {w.features?.atrCompressing ? '✅' : '❌'}
+                        {w.rejected && (w.rejectReasons?.length > 0) && (<><br /><span style={{ color: '#f87171' }}>Not bought — {w.rejectReasons.join(', ')}</span></>)}
                       </div>
                     </div>
                     );
