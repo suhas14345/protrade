@@ -62,14 +62,16 @@ async function doManageTrades(dateId, jobId) {
         .get();
     if (positionsSnap.empty)
         return;
-    // SEPA regime-off liquidation reads the PREVIOUS trading day's regime: within
-    // a day's pipeline doManageTrades runs BEFORE doComputeRegime, so regime/{today}
-    // does not exist yet — reading it would look "off" every day and dump the whole
-    // book daily. Use the last regime that actually exists. A genuinely missing prior
-    // regime (e.g. first managed day) is treated as NOT off, so we never force-
+    // SEPA/ATH regime-off liquidation is the EXIT-SIDE MIRROR of the entry regime gate,
+    // so the two stay consistent: we only force-liquidate leaders on an index-uptrend break
+    // when we also REQUIRE index-up to ENTER. When IGNORE_REGIME_GATE is on (always-hunt,
+    // the default paper config), entries ignore the regime AND positions are managed purely
+    // by their own stop/trail — never dumped on regime alone. Reads the PREVIOUS trading
+    // day's regime (doManageTrades runs before doComputeRegime, so regime/{today} doesn't
+    // exist yet); a genuinely missing prior regime is treated as NOT off, so we never
     // liquidate on absent data — only on a confirmed index-uptrend break.
     let sepaRegimeOff = false;
-    if (runtime_1.SEPA_CONFIG.SEPA_ONLY) {
+    if (runtime_1.SEPA_CONFIG.SEPA_ONLY && !runtime_1.SEPA_CONFIG.IGNORE_REGIME_GATE) {
         const regimeDateId = (await calendar_1.CalendarService.getPrevTradingDateId(dateId)) || dateId;
         const regimeSnap = await db.collection('regime').doc(regimeDateId).get();
         const rd = regimeSnap.exists ? regimeSnap.data() : null;

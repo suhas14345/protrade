@@ -9,6 +9,12 @@ Config lives in [functions/src/config/runtime.ts](functions/src/config/runtime.t
 (`SEPA_CONFIG`, `ATH_CONFIG`, `METALS_CONFIG`); evaluators in
 [functions/src/services/strategy.ts](functions/src/services/strategy.ts).
 
+**Regime handling (symmetric):** `SEPA_CONFIG.IGNORE_REGIME_GATE` (default ON) governs the market
+regime on both sides. When ON, the equity strategies enter fully-qualified setups even in a
+down/BEAR tape **and** are not force-liquidated on a regime break — positions exit only on their
+own stop/trail. Set `SEPA_IGNORE_REGIME=0` to make both entry and exit respect the regime
+(no new entries in a downtrend; existing leaders liquidated when the index breaks its uptrend).
+
 ---
 
 ## 1. SEPA — `SepaBreakoutEOD` (BUY, equities)

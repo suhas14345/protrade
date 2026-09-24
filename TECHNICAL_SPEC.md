@@ -249,7 +249,10 @@ trend template (`close > SMA50 > SMA150 > SMA200`, 200-SMA rising), within `HI_P
 of the 52-week high, **RS `rsScore ≥ RS_MIN_RATING` (70)** (falls back to `rsRank126 ≤ RS_TOP` on
 warmup), VCP contraction/volume dry-up. Risk `RISK_PCT` 1.25%, hard stop 7%, trailing lock at +15%
 (trail 20%), `MAX_POS` 10, equity-curve throttle at 6% drawdown. `IGNORE_REGIME_GATE` default ON
-(paper study). Capital book `BOOK_PCT` 0.70.
+governs the regime on **both** sides symmetrically: entries are staged even in a down/BEAR tape,
+**and** positions are not force-liquidated on a regime break (they exit only on their own
+stop/trail). Set `SEPA_IGNORE_REGIME=0` to make both entry and exit respect the regime. Capital
+book `BOOK_PCT` 0.70.
 
 ### 7.2 ATH-Pullback — `ATHPullbackEOD` (equities, BUY) — default ON
 Buys leaders near all-time highs on an orderly pullback into the 50-SMA buy zone (inverse of the
