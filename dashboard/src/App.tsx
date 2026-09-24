@@ -22,6 +22,17 @@ async function gw(action: string, body: Record<string, unknown> = {}, opts?: { r
   return res.json();
 }
 
+// Map internal exit-reason codes to human-readable labels + explanations for the UI.
+const EXIT_REASON_LABELS: Record<string, { label: string; desc: string }> = {
+  EXIT_STOP:      { label: 'Stop-loss',      desc: 'Price hit the stop-loss level.' },
+  EXIT_THESIS:    { label: 'Thesis exit',    desc: 'Regime/thesis exit — the index broke its uptrend (turned BEAR), so trend-following leaders were liquidated together. For metals, price closed below its 200-day average.' },
+  EXIT_TARGET:    { label: 'Target hit',     desc: 'Reached the profit target.' },
+  EXIT_TIME:      { label: 'Time stop',      desc: 'Maximum holding period reached.' },
+  PARTIAL_PROFIT: { label: 'Partial profit', desc: 'Partial profit booked; the rest of the position stays open.' },
+};
+function exitReasonLabel(code?: string) { return (code && EXIT_REASON_LABELS[code]?.label) || code || 'N/A'; }
+function exitReasonDesc(code?: string) { return (code && EXIT_REASON_LABELS[code]?.desc) || code || ''; }
+
 // Basic types to match backend models
 interface Position {
   symbol: string;
@@ -454,7 +465,7 @@ function App() {
       p.qty,
       p.avgEntryPrice,
       p.realizedPnl,
-      p.exitReason || "N/A",
+      exitReasonLabel(p.exitReason),
       p.lastUpdatedAt?.toDate?.().toISOString() || "N/A"
     ]);
     const csvContent = [headers, ...rows].map(e => e.join(",")).join("\n");
@@ -1137,7 +1148,7 @@ function App() {
                       <td>{p.qty}</td>
                       <td>₹{(p.entryPrice || p.avgEntryPrice || 0).toFixed(2)}</td>
                       <td className={(p.realizedPnl||0) >= 0 ? 'up-text' : 'down-text'}>{(p.realizedPnl||0) >= 0 ? '+' : ''}₹{(p.realizedPnl||0).toFixed(2)}</td>
-                      <td><div className="trend-badge range" style={{ fontSize: '0.65rem' }}>{p.exitReason}</div></td>
+                      <td><div className="trend-badge range" style={{ fontSize: '0.65rem', cursor: 'help' }} title={exitReasonDesc(p.exitReason)}>{exitReasonLabel(p.exitReason)}</div></td>
                       <td style={{ color: '#444', fontSize: '0.75rem' }}>{p.lastUpdatedAt?.toDate?.().toLocaleDateString() || 'N/A'}</td>
                     </tr>
                   ))}
