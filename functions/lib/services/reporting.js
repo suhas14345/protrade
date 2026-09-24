@@ -43,7 +43,7 @@ const getDb = () => {
     return admin.firestore();
 };
 async function generateJobReport(jobId, runDate) {
-    var _a, _b, _c, _d, _e, _f, _g;
+    var _a, _b, _c, _d, _e, _f, _g, _h;
     const db = getDb();
     const dateId = runDate.replace(/-/g, '');
     // 1. Fetch Job Data
@@ -103,18 +103,29 @@ async function generateJobReport(jobId, runDate) {
     // Signal generation diagnosis — distinguishes a regime block from genuinely no setups.
     const marketState = (regimeData === null || regimeData === void 0 ? void 0 : regimeData.marketState) || 'UNKNOWN';
     const tradeAllowed = regimeData === null || regimeData === void 0 ? void 0 : regimeData.tradeAllowed;
+    // The index-regime gate is bypassed when IGNORE_REGIME_GATE is on (dashboard/env override),
+    // so a BEAR state does NOT block entries — report the true cause instead of "gate closed".
+    let ignoreRegime = false;
+    try {
+        const stratSnap = await db.collection('settings').doc('strategy').get();
+        const sv = stratSnap.exists ? (_h = stratSnap.data()) === null || _h === void 0 ? void 0 : _h.ignoreRegimeGate : undefined;
+        const { SEPA_CONFIG } = await Promise.resolve().then(() => __importStar(require('../config/runtime')));
+        ignoreRegime = typeof sv === 'boolean' ? sv : SEPA_CONFIG.IGNORE_REGIME_GATE;
+    }
+    catch ( /* default false */_j) { /* default false */ }
+    const regimeBlocks = !ignoreRegime && (tradeAllowed === false || marketState === 'TRANSITION' || marketState === 'BEAR');
     report += `\n## 3. Signal Generation Diagnosis\n`;
     report += `- **Symbols evaluated:** ${evalCounts.done + evalCounts.skipped + evalCounts.error} (skipped ${evalCounts.skipped}, errors ${evalCounts.error})\n`;
     report += `- **Signals generated:** ${signals.length}\n`;
     if (signals.length === 0) {
-        if (tradeAllowed === false || marketState === 'TRANSITION' || marketState === 'BEAR') {
+        if (regimeBlocks) {
             report += `- **Verdict:** ⛔ **Regime gate closed** — no entries permitted. `;
             report += `Market state \`${marketState}\`, tradeAllowed=\`${tradeAllowed}\`. ${(regimeData === null || regimeData === void 0 ? void 0 : regimeData.reason) || ''}\n`;
             report += `- The strategy engine short-circuited before scoring candidates; this is an intentional risk-off block, not a data problem.\n`;
         }
         else {
-            report += `- **Verdict:** ✅ **Regime permitted trading** (state \`${marketState}\`) but **no symbol met the entry criteria** `;
-            report += `(SEPA trend-template + within-15%-of-52w-high + RS top-40, or ATH pullback-into-50SMA). Genuinely no setups.\n`;
+            const regimeNote = (marketState === 'BEAR' || marketState === 'TRANSITION') ? ` Regime is \`${marketState}\` but the regime gate is OFF (ignoreRegimeGate=${ignoreRegime}), so it is NOT blocking entries — ` : ' ';
+            report += `- **Verdict:** ✅ **No symbol met the entry criteria** (SEPA trend-template + near-52w-high + RS≥top, or ATH pullback-into-50SMA).${regimeNote}genuinely no setups.\n`;
         }
     }
     else {

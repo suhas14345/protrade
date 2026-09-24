@@ -106,6 +106,7 @@ function App() {
   const [settingsValidation, setSettingsValidation] = useState<{ valid: boolean; otp?: string; message: string } | null>(null);
   const [strategySettings, setStrategySettings] = useState<{ ignoreRegimeGate: boolean; source?: string } | null>(null);
   const [strategyStatus, setStrategyStatus] = useState<string | null>(null);
+  const [strategyStats, setStrategyStats] = useState<{ strategies: any[]; totals?: any } | null>(null);
   const [telegramForm, setTelegramForm] = useState({ botToken: '', chatId: '', enabled: false });
   const [telegramStatus, setTelegramStatus] = useState<string | null>(null);
   const [fundForm, setFundForm] = useState({ eodhdApiKey: '' });
@@ -380,6 +381,7 @@ function App() {
   useEffect(() => {
     if (!authToken) return;
     gw('getStrategySettings').then((r: any) => setStrategySettings({ ignoreRegimeGate: !!r.ignoreRegimeGate, source: r.source })).catch(() => {});
+    gw('strategyStats').then((r: any) => setStrategyStats(r)).catch(() => {});
   }, [authToken]);
 
   const handleUpdateConfig = async () => {
@@ -1132,6 +1134,39 @@ function App() {
               </div>
             </section>
           </div>
+
+          <section className="card" style={{ marginTop: '1.5rem' }}>
+            <h3 style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '1rem' }}>
+              <BarChart3 size={18} /> Strategy Performance <span style={{ color: '#475569', fontSize: '0.7rem', fontWeight: 400 }}>(all closed trades)</span>
+            </h3>
+            {!strategyStats ? (
+              <div style={{ color: '#64748b', fontSize: '0.85rem' }}>Loading…</div>
+            ) : strategyStats.strategies.length === 0 ? (
+              <div style={{ color: '#64748b', fontSize: '0.85rem' }}>No closed trades yet.</div>
+            ) : (
+              <div style={{ overflowX: 'auto' }}>
+                <table className="table">
+                  <thead>
+                    <tr><th>Strategy</th><th>Trades</th><th>Win %</th><th>Net P&amp;L</th><th>Avg R</th><th>Profit Factor</th><th>Best</th><th>Worst</th></tr>
+                  </thead>
+                  <tbody>
+                    {strategyStats.strategies.map((s: any, i: number) => (
+                      <tr key={i}>
+                        <td><span className="symbol-tag" style={{ background: 'rgba(255,255,255,0.05)', color: '#fff' }}>{s.strategy}</span></td>
+                        <td>{s.trades} <span style={{ color: '#475569', fontSize: '0.7rem' }}>({s.wins}W/{s.losses}L)</span></td>
+                        <td className={s.winRate >= 50 ? 'up-text' : 'down-text'}>{s.winRate}%</td>
+                        <td className={s.netPnl >= 0 ? 'up-text' : 'down-text'}>{s.netPnl >= 0 ? '+' : ''}₹{Number(s.netPnl).toLocaleString('en-IN')}</td>
+                        <td className={(s.avgR ?? 0) >= 0 ? 'up-text' : 'down-text'}>{s.avgR == null ? '—' : (s.avgR >= 0 ? '+' : '') + s.avgR + 'R'}</td>
+                        <td>{s.profitFactor == null ? '∞' : s.profitFactor}</td>
+                        <td className="up-text">+₹{Number(s.best).toLocaleString('en-IN')}</td>
+                        <td className="down-text">₹{Number(s.worst).toLocaleString('en-IN')}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </section>
 
           <section className="card history-area">
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>

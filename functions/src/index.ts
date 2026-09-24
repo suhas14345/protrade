@@ -328,6 +328,37 @@ export const gateway = functions.runWith(v1Options).https.onRequest(async (req, 
                 res.status(200).send({ message: 'Strategy settings saved', ignoreRegimeGate: val });
                 break;
             }
+            case 'strategyStats': {
+                const sdb = admin.apps.length ? admin.firestore() : admin.initializeApp() && admin.firestore();
+                const tsnap = await sdb.collection('portfolio').doc('default').collection('trades').get();
+                const g: Record<string, any> = {};
+                tsnap.forEach(d => {
+                    const t = d.data() as any;
+                    const st = t.strategy || 'UNKNOWN';
+                    const pnl = Number(t.realizedPnl) || 0;
+                    const r = Number(t.rMultiple);
+                    const s = g[st] || (g[st] = { strategy: st, trades: 0, wins: 0, losses: 0, netPnl: 0, grossWin: 0, grossLoss: 0, rSum: 0, rCount: 0, best: -Infinity, worst: Infinity });
+                    s.trades++; s.netPnl += pnl;
+                    if (pnl > 0) { s.wins++; s.grossWin += pnl; } else { s.losses++; s.grossLoss += Math.abs(pnl); }
+                    if (Number.isFinite(r)) { s.rSum += r; s.rCount++; }
+                    s.best = Math.max(s.best, pnl); s.worst = Math.min(s.worst, pnl);
+                });
+                const strategies = Object.values(g).map((s: any) => ({
+                    strategy: s.strategy,
+                    trades: s.trades,
+                    wins: s.wins,
+                    losses: s.losses,
+                    winRate: s.trades ? Math.round(s.wins / s.trades * 1000) / 10 : 0,
+                    netPnl: Math.round(s.netPnl),
+                    avgR: s.rCount ? Math.round(s.rSum / s.rCount * 100) / 100 : null,
+                    profitFactor: s.grossLoss > 0 ? Math.round(s.grossWin / s.grossLoss * 100) / 100 : (s.grossWin > 0 ? null : 0),
+                    best: s.trades ? Math.round(s.best) : 0,
+                    worst: s.trades ? Math.round(s.worst) : 0,
+                })).sort((a, b) => b.netPnl - a.netPnl);
+                const totals = strategies.reduce((acc, s) => ({ trades: acc.trades + s.trades, netPnl: acc.netPnl + s.netPnl }), { trades: 0, netPnl: 0 });
+                res.status(200).send({ strategies, totals });
+                break;
+            }
             case 'getTelegramSettings': {
                 const tdb = admin.apps.length ? admin.firestore() : admin.initializeApp() && admin.firestore();
                 const tsnap = await tdb.collection('settings').doc('telegram').get();
