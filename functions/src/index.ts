@@ -273,6 +273,11 @@ export const gateway = functions.runWith(v1Options).https.onRequest(async (req, 
                     res.status(200).send({ message: `Skipped: ${scanDate} is not a trading day` });
                     break;
                 }
+                const screenDb = admin.apps.length ? admin.firestore() : admin.initializeApp() && admin.firestore();
+                if ((await screenDb.collection('settings').doc('strategy').get()).data()?.tradingPaused === true) {
+                    res.status(200).send({ message: 'Skipped: trading is paused (universe screening paused; data sync continues)' });
+                    break;
+                }
                 const { doScreenUniverse } = await import('./services/universeScreen');
                 await doScreenUniverse({ body: { ...req.body, force: true } }, res);
                 break;
@@ -316,16 +321,21 @@ export const gateway = functions.runWith(v1Options).https.onRequest(async (req, 
                     ignoreRegimeGate: stored !== null ? stored : SEPA_CONFIG.IGNORE_REGIME_GATE,
                     source: stored !== null ? 'firestore' : 'env-default',
                     envDefault: SEPA_CONFIG.IGNORE_REGIME_GATE,
+                    tradingPaused: sdata.tradingPaused === true,
                 });
                 break;
             }
             case 'updateStrategySettings': {
                 const sdb = admin.apps.length ? admin.firestore() : admin.initializeApp() && admin.firestore();
-                const raw = (req.body?.ignoreRegimeGate ?? req.query?.ignoreRegimeGate);
-                const val = (raw === true || raw === 'true') ? true : ((raw === false || raw === 'false') ? false : null);
-                if (val === null) { res.status(400).send({ error: 'ignoreRegimeGate must be a boolean' }); break; }
-                await sdb.collection('settings').doc('strategy').set({ ignoreRegimeGate: val, updatedAt: admin.firestore.Timestamp.now() }, { merge: true });
-                res.status(200).send({ message: 'Strategy settings saved', ignoreRegimeGate: val });
+                const toBool = (r: any) => (r === true || r === 'true') ? true : ((r === false || r === 'false') ? false : null);
+                const ir = toBool(req.body?.ignoreRegimeGate ?? req.query?.ignoreRegimeGate);
+                const tp = toBool(req.body?.tradingPaused ?? req.query?.tradingPaused);
+                if (ir === null && tp === null) { res.status(400).send({ error: 'Provide ignoreRegimeGate and/or tradingPaused (boolean)' }); break; }
+                const update: Record<string, any> = { updatedAt: admin.firestore.Timestamp.now() };
+                if (ir !== null) update.ignoreRegimeGate = ir;
+                if (tp !== null) update.tradingPaused = tp;
+                await sdb.collection('settings').doc('strategy').set(update, { merge: true });
+                res.status(200).send({ message: 'Strategy settings saved', ignoreRegimeGate: ir, tradingPaused: tp });
                 break;
             }
             case 'strategyStats': {
@@ -435,6 +445,13 @@ export const gateway = functions.runWith(v1Options).https.onRequest(async (req, 
             }
             case 'scheduledEod': {
                 const db = admin.apps.length ? admin.firestore() : admin.initializeApp() && admin.firestore();
+                // Global pause switch (dashboard): skip the scheduled EOD trading run when paused.
+                // Daily symbol-data sync (history-fill-500, quote-fill) + session renewal keep running.
+                if ((await db.collection('settings').doc('strategy').get()).data()?.tradingPaused === true) {
+                    console.log('[Scheduler] Scheduled EOD skipped: trading is PAUSED (dashboard)');
+                    res.status(200).send({ message: 'Skipped: scheduled trading is paused (daily data sync continues)' });
+                    break;
+                }
                 // Holiday guard: skip if today is not a trading day
                 const todayEod = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
                 const { isTradingDay: isTradingDayCheck } = await import('./services/scheduler');

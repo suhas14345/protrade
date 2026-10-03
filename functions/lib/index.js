@@ -58,7 +58,7 @@ async function checkRuntimeKillSwitch() {
  * V3.0: Wired middleware — validation, auth, rate limiting, kill switch
  */
 exports.gateway = functions.runWith(v1Options).https.onRequest(async (req, res) => {
-    var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k, _l, _m, _o, _p, _q, _r, _s, _t, _u, _v;
+    var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k, _l, _m, _o, _p, _q, _r, _s, _t, _u, _v, _w, _x, _y, _z, _0;
     // CORS: allow dashboard origin
     res.set('Access-Control-Allow-Origin', '*');
     res.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
@@ -310,6 +310,11 @@ exports.gateway = functions.runWith(v1Options).https.onRequest(async (req, res) 
                     res.status(200).send({ message: `Skipped: ${scanDate} is not a trading day` });
                     break;
                 }
+                const screenDb = admin.apps.length ? admin.firestore() : admin.initializeApp() && admin.firestore();
+                if (((_c = (await screenDb.collection('settings').doc('strategy').get()).data()) === null || _c === void 0 ? void 0 : _c.tradingPaused) === true) {
+                    res.status(200).send({ message: 'Skipped: trading is paused (universe screening paused; data sync continues)' });
+                    break;
+                }
                 const { doScreenUniverse } = await Promise.resolve().then(() => __importStar(require('./services/universeScreen')));
                 await doScreenUniverse({ body: Object.assign(Object.assign({}, req.body), { force: true }) }, res);
                 break;
@@ -338,7 +343,7 @@ exports.gateway = functions.runWith(v1Options).https.onRequest(async (req, res) 
             }
             case 'validateTotpSecret': {
                 const { validateTotpSecret } = await Promise.resolve().then(() => __importStar(require('./services/kite_automation')));
-                const seed = ((_d = (_c = req.body) === null || _c === void 0 ? void 0 : _c.totpSecret) !== null && _d !== void 0 ? _d : (_e = req.query) === null || _e === void 0 ? void 0 : _e.totpSecret);
+                const seed = ((_e = (_d = req.body) === null || _d === void 0 ? void 0 : _d.totpSecret) !== null && _e !== void 0 ? _e : (_f = req.query) === null || _f === void 0 ? void 0 : _f.totpSecret);
                 const result = await validateTotpSecret(seed);
                 res.status(200).send(result);
                 break;
@@ -352,19 +357,26 @@ exports.gateway = functions.runWith(v1Options).https.onRequest(async (req, res) 
                     ignoreRegimeGate: stored !== null ? stored : SEPA_CONFIG.IGNORE_REGIME_GATE,
                     source: stored !== null ? 'firestore' : 'env-default',
                     envDefault: SEPA_CONFIG.IGNORE_REGIME_GATE,
+                    tradingPaused: sdata.tradingPaused === true,
                 });
                 break;
             }
             case 'updateStrategySettings': {
                 const sdb = admin.apps.length ? admin.firestore() : admin.initializeApp() && admin.firestore();
-                const raw = ((_g = (_f = req.body) === null || _f === void 0 ? void 0 : _f.ignoreRegimeGate) !== null && _g !== void 0 ? _g : (_h = req.query) === null || _h === void 0 ? void 0 : _h.ignoreRegimeGate);
-                const val = (raw === true || raw === 'true') ? true : ((raw === false || raw === 'false') ? false : null);
-                if (val === null) {
-                    res.status(400).send({ error: 'ignoreRegimeGate must be a boolean' });
+                const toBool = (r) => (r === true || r === 'true') ? true : ((r === false || r === 'false') ? false : null);
+                const ir = toBool((_h = (_g = req.body) === null || _g === void 0 ? void 0 : _g.ignoreRegimeGate) !== null && _h !== void 0 ? _h : (_j = req.query) === null || _j === void 0 ? void 0 : _j.ignoreRegimeGate);
+                const tp = toBool((_l = (_k = req.body) === null || _k === void 0 ? void 0 : _k.tradingPaused) !== null && _l !== void 0 ? _l : (_m = req.query) === null || _m === void 0 ? void 0 : _m.tradingPaused);
+                if (ir === null && tp === null) {
+                    res.status(400).send({ error: 'Provide ignoreRegimeGate and/or tradingPaused (boolean)' });
                     break;
                 }
-                await sdb.collection('settings').doc('strategy').set({ ignoreRegimeGate: val, updatedAt: admin.firestore.Timestamp.now() }, { merge: true });
-                res.status(200).send({ message: 'Strategy settings saved', ignoreRegimeGate: val });
+                const update = { updatedAt: admin.firestore.Timestamp.now() };
+                if (ir !== null)
+                    update.ignoreRegimeGate = ir;
+                if (tp !== null)
+                    update.tradingPaused = tp;
+                await sdb.collection('settings').doc('strategy').set(update, { merge: true });
+                res.status(200).send({ message: 'Strategy settings saved', ignoreRegimeGate: ir, tradingPaused: tp });
                 break;
             }
             case 'strategyStats': {
@@ -447,7 +459,7 @@ exports.gateway = functions.runWith(v1Options).https.onRequest(async (req, res) 
             }
             case 'sendDigest': {
                 const { sendDailyDigest } = await Promise.resolve().then(() => __importStar(require('./services/telegram')));
-                const digestDate = (((_j = req.body) === null || _j === void 0 ? void 0 : _j.date) || ((_k = req.query) === null || _k === void 0 ? void 0 : _k.date));
+                const digestDate = (((_o = req.body) === null || _o === void 0 ? void 0 : _o.date) || ((_p = req.query) === null || _p === void 0 ? void 0 : _p.date));
                 const result = await sendDailyDigest(digestDate);
                 if (result.sent)
                     res.status(200).send({ message: 'Digest sent' });
@@ -477,7 +489,7 @@ exports.gateway = functions.runWith(v1Options).https.onRequest(async (req, res) 
             }
             // V3.1: Scheduled actions — called by Cloud Scheduler
             case 'scheduledKiteRenew': {
-                const manual = !!((_l = req.body) === null || _l === void 0 ? void 0 : _l.manual);
+                const manual = !!((_q = req.body) === null || _q === void 0 ? void 0 : _q.manual);
                 console.log(`[Scheduler] ${manual ? 'Manual' : 'Auto'}-renewing Kite session...`);
                 const { autoRenewKiteSessionHandler } = await Promise.resolve().then(() => __importStar(require('./services/kite_automation')));
                 const result = await autoRenewKiteSessionHandler({ manual });
@@ -494,6 +506,13 @@ exports.gateway = functions.runWith(v1Options).https.onRequest(async (req, res) 
             }
             case 'scheduledEod': {
                 const db = admin.apps.length ? admin.firestore() : admin.initializeApp() && admin.firestore();
+                // Global pause switch (dashboard): skip the scheduled EOD trading run when paused.
+                // Daily symbol-data sync (history-fill-500, quote-fill) + session renewal keep running.
+                if (((_r = (await db.collection('settings').doc('strategy').get()).data()) === null || _r === void 0 ? void 0 : _r.tradingPaused) === true) {
+                    console.log('[Scheduler] Scheduled EOD skipped: trading is PAUSED (dashboard)');
+                    res.status(200).send({ message: 'Skipped: scheduled trading is paused (daily data sync continues)' });
+                    break;
+                }
                 // Holiday guard: skip if today is not a trading day
                 const todayEod = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
                 const { isTradingDay: isTradingDayCheck } = await Promise.resolve().then(() => __importStar(require('./services/scheduler')));
@@ -551,7 +570,7 @@ exports.gateway = functions.runWith(v1Options).https.onRequest(async (req, res) 
             case 'startMorningExecution': {
                 // Manual trigger defaults to the live hunt universe.
                 const { doStartMorningExecution } = await Promise.resolve().then(() => __importStar(require('./services/orchestrator')));
-                await doStartMorningExecution({ query: { date: (_m = req.body) === null || _m === void 0 ? void 0 : _m.date, universe: ((_o = req.body) === null || _o === void 0 ? void 0 : _o.universe) || runtime_1.DEFAULT_UNIVERSE } }, res);
+                await doStartMorningExecution({ query: { date: (_s = req.body) === null || _s === void 0 ? void 0 : _s.date, universe: ((_t = req.body) === null || _t === void 0 ? void 0 : _t.universe) || runtime_1.DEFAULT_UNIVERSE } }, res);
                 break;
             }
             case 'syncNseHolidays': {
@@ -563,7 +582,7 @@ exports.gateway = functions.runWith(v1Options).https.onRequest(async (req, res) 
             }
             case 'syncCorporateEvents': {
                 const { syncAllCorporateEvents } = await Promise.resolve().then(() => __importStar(require('./services/eventSync')));
-                const lookAhead = Number((_p = req.body) === null || _p === void 0 ? void 0 : _p.lookAheadDays) || 30;
+                const lookAhead = Number((_u = req.body) === null || _u === void 0 ? void 0 : _u.lookAheadDays) || 30;
                 const result = await syncAllCorporateEvents(lookAhead);
                 res.status(200).send({
                     message: 'Corporate events synced',
@@ -576,10 +595,10 @@ exports.gateway = functions.runWith(v1Options).https.onRequest(async (req, res) 
             case 'backfillHistorical': {
                 const { runHistoricalBackfill } = await Promise.resolve().then(() => __importStar(require('./services/historicalBackfill')));
                 const result = await runHistoricalBackfill({
-                    universeId: ((_q = req.body) === null || _q === void 0 ? void 0 : _q.universe) || 'midsmall400',
-                    startISO: (_r = req.body) === null || _r === void 0 ? void 0 : _r.start,
-                    endISO: (_s = req.body) === null || _s === void 0 ? void 0 : _s.end,
-                    maxSymbols: Number((_t = req.body) === null || _t === void 0 ? void 0 : _t.maxSymbols) || 500,
+                    universeId: ((_v = req.body) === null || _v === void 0 ? void 0 : _v.universe) || 'midsmall400',
+                    startISO: (_w = req.body) === null || _w === void 0 ? void 0 : _w.start,
+                    endISO: (_x = req.body) === null || _x === void 0 ? void 0 : _x.end,
+                    maxSymbols: Number((_y = req.body) === null || _y === void 0 ? void 0 : _y.maxSymbols) || 500,
                 });
                 res.status(200).send(result);
                 break;
@@ -587,14 +606,14 @@ exports.gateway = functions.runWith(v1Options).https.onRequest(async (req, res) 
             case 'resetTradingState': {
                 const { runResetTradingState } = await Promise.resolve().then(() => __importStar(require('./services/resetState')));
                 const result = await runResetTradingState({
-                    equity: Number((_u = req.body) === null || _u === void 0 ? void 0 : _u.equity) || 1000000,
+                    equity: Number((_z = req.body) === null || _z === void 0 ? void 0 : _z.equity) || 1000000,
                 });
                 res.status(200).send(result);
                 break;
             }
             case 'cleanupStale': {
                 const { runStaleCleanup } = await Promise.resolve().then(() => __importStar(require('./services/cleanupStale')));
-                const result = await runStaleCleanup((_v = req.body) === null || _v === void 0 ? void 0 : _v.retention);
+                const result = await runStaleCleanup((_0 = req.body) === null || _0 === void 0 ? void 0 : _0.retention);
                 res.status(200).send({ message: 'Stale data cleaned', deleted: result });
                 break;
             }

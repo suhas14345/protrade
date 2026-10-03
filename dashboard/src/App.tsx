@@ -104,7 +104,7 @@ function App() {
   const [settingsStatus, setSettingsStatus] = useState<string | null>(null);
   const [settingsSaving, setSettingsSaving] = useState(false);
   const [settingsValidation, setSettingsValidation] = useState<{ valid: boolean; otp?: string; message: string } | null>(null);
-  const [strategySettings, setStrategySettings] = useState<{ ignoreRegimeGate: boolean; source?: string } | null>(null);
+  const [strategySettings, setStrategySettings] = useState<{ ignoreRegimeGate: boolean; source?: string; tradingPaused?: boolean } | null>(null);
   const [strategyStatus, setStrategyStatus] = useState<string | null>(null);
   const [strategyStats, setStrategyStats] = useState<{ strategies: any[]; totals?: any } | null>(null);
   const [telegramForm, setTelegramForm] = useState({ botToken: '', chatId: '', enabled: false });
@@ -380,7 +380,7 @@ function App() {
 
   useEffect(() => {
     if (!authToken) return;
-    gw('getStrategySettings').then((r: any) => setStrategySettings({ ignoreRegimeGate: !!r.ignoreRegimeGate, source: r.source })).catch(() => {});
+    gw('getStrategySettings').then((r: any) => setStrategySettings({ ignoreRegimeGate: !!r.ignoreRegimeGate, source: r.source, tradingPaused: !!r.tradingPaused })).catch(() => {});
     gw('strategyStats').then((r: any) => setStrategyStats(r)).catch(() => {});
   }, [authToken]);
 
@@ -1423,6 +1423,37 @@ function App() {
                     }}
                   >
                     Regime filter: {strategySettings.ignoreRegimeGate ? '🔴 OFF (always hunt)' : '🟢 ON (respect regime)'}
+                  </button>
+                  <span style={{ color: '#64748b', fontSize: '0.72rem' }}>click to toggle</span>
+                </div>
+              ) : <p style={{ color: '#64748b', fontSize: '0.8rem' }}>Loading…</p>}
+              {strategyStatus && <p style={{ marginTop: '0.75rem', fontSize: '0.8rem', color: strategyStatus.startsWith('✅') ? '#10b981' : '#ef4444' }}>{strategyStatus}</p>}
+            </div>
+            <div className="card" style={{ marginBottom: '1.5rem' }}>
+              <h3 style={{ color: '#94a3b8', marginBottom: '1rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                <Settings size={18} /> Automation — Pause Trading
+              </h3>
+              <p style={{ color: '#64748b', fontSize: '0.8rem', marginBottom: '1rem' }}>
+                When <b>PAUSED</b>, the scheduled EOD trading run and nightly universe screening are skipped.
+                Daily symbol-data sync (history-fill &amp; quote-fill) and Kite session renewal keep running, so bars
+                stay current. Manual runs from this dashboard still work.
+              </p>
+              {strategySettings ? (
+                <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+                  <button
+                    className="btn-premium"
+                    style={{ background: strategySettings.tradingPaused ? 'rgba(239,68,68,0.15)' : 'rgba(16,185,129,0.15)', border: `1px solid ${strategySettings.tradingPaused ? 'rgba(239,68,68,0.5)' : 'rgba(16,185,129,0.5)'}` }}
+                    onClick={async () => {
+                      const newPaused = !strategySettings.tradingPaused;
+                      setStrategyStatus(null);
+                      try {
+                        await gw('updateStrategySettings', { tradingPaused: newPaused });
+                        setStrategySettings({ ...strategySettings, tradingPaused: newPaused });
+                        setStrategyStatus(`✅ Scheduled trading ${newPaused ? 'PAUSED — data sync continues' : 'RESUMED'}`);
+                      } catch (err: any) { setStrategyStatus(`❌ ${err.message}`); }
+                    }}
+                  >
+                    Scheduled trading: {strategySettings.tradingPaused ? '⏸️ PAUSED' : '▶️ ACTIVE'}
                   </button>
                   <span style={{ color: '#64748b', fontSize: '0.72rem' }}>click to toggle</span>
                 </div>
