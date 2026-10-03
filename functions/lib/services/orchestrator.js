@@ -242,6 +242,13 @@ async function runDeepSyncLogic(jobId, universeId, forceDays) {
     // 1. Get symbols
     const symbolsSnap = await db.collection('universes').doc(universeId).collection('members').get();
     const symbols = symbolsSnap.docs.map(d => d.id);
+    // Metals sleeve ETFs aren't in any universe — keep their daily bars synced via the deep-sync too,
+    // so a trading PAUSE (which skips the EOD run) doesn't leave GOLDBEES/SILVERBEES with stale bars.
+    if (runtime_1.METALS_CONFIG.ENABLED) {
+        for (const m of runtime_1.METALS_CONFIG.SYMBOLS)
+            if (!symbols.includes(m))
+                symbols.push(m);
+    }
     await db.collection('jobs').doc(jobId).update({ 'counts.total': symbols.length, updatedAt: firestore_1.Timestamp.now() });
     // 2. Dispatch tasks
     for (const symbol of symbols) {
